@@ -64,6 +64,37 @@ flatpak run io.github.wyze3306.BedrockOnLinux
 > run `pip install --user cryptography`). `bedrock-on-linux doctor` reports
 > anything missing.
 
+## macOS (experimental)
+
+The [`macos`](https://github.com/Wyze3306/BedrockOnLinux/tree/macos) branch
+runs the launcher **natively on macOS** and drives a macOS-native Wine instead
+of the Linux-only GDK-Proton. It auto-detects whichever runtime you have, in
+this order — or point it at a specific build with `BOL_WINE=/path/to/wine`:
+
+- **Apple Game Porting Toolkit** (recommended, Apple Silicon, best D3D→Metal) —
+  `brew install apple/apple/game-porting-toolkit`
+- **CrossOver** — <https://www.codeweavers.com/crossover>
+- **plain Wine** — `brew install --cask wine-stable`
+
+```bash
+git checkout macos
+brew install apple/apple/game-porting-toolkit   # or CrossOver / Wine
+scripts/build-macos-app.sh        # → dist/BedrockOnLinux.app (+ .dmg)
+./bedrock-on-linux gui            # …or just run it from source
+bedrock-on-linux doctor           # checks your Python, Tk and Wine backend
+```
+
+Data lives in `~/Library/Application Support/bedrock-on-linux`.
+
+> **Status — please read.** The launcher, the binary patches, the DLL shims
+> (XCurl / libHttpClient / cryptbase / GameInput) and the host-side Microsoft
+> pre-auth are all portable and run on macOS. What is **not** ported is the
+> engine that makes the *in-game* Microsoft sign-in work: the WineGDK XUser
+> fork is compiled into GDK-Proton (Linux) and has **no macOS build yet**. So
+> on macOS expect **offline / LAN play to work**, while the in-game Microsoft
+> login and online servers stay **unverified** until a macOS WineGDK engine
+> exists. Contributions toward that engine are very welcome.
+
 ## Play
 
 1. Open **BedrockOnLinux**.
@@ -137,6 +168,7 @@ free software under their own licenses. Realms is not supported.
 ```bash
 scripts/build-release.sh        # .deb + AppImage + portable .pyz → dist/
 scripts/build-flatpak.sh        # Flatpak bundle → dist/ (needs flatpak-builder)
+scripts/build-macos-app.sh      # macOS .app (+ .dmg) → dist/  (run on the macos branch, on a Mac)
 ```
 
 The launcher is a small Python package, [`bol/`](bol/) — one module per

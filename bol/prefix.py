@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import CACHE, COMPAT, HOME, LOGS, PFX, UMU_DIR, UMU_REPO
 from .log import die, info, ok, warn
+from .platform import IS_MAC
 from .proton import proton_path
 from .util import _pkill, asset_url, download, gh_latest
 
@@ -89,6 +90,18 @@ def proton_umu_cmd(exe, prefix=None):
     return [sys.executable, str(ensure_umu()), exe], env
 
 
+def wine_cmd(exe, prefix=None):
+    """Backend-agnostic '(argv, env)' to run a Windows program or verb in our
+    prefix. Linux → GDK-Proton through umu (the Steam Linux Runtime); macOS →
+    the native Wine backend (bol.winemac). Every caller — the login registry
+    writes, wineboot, GameInput, the launch itself — goes through here, so the
+    two engines stay interchangeable and the rest of the code is OS-agnostic."""
+    if IS_MAC:
+        from . import winemac
+        return winemac.mac_wine_cmd(exe, prefix)
+    return proton_umu_cmd(exe, prefix)
+
+
 def boot_prefix(prefix=None):
     """Ensure the Wine prefix is initialised — i.e. drive_c/windows/system32
     exists. Proton/umu create and boot the prefix on first use, but several
@@ -101,7 +114,7 @@ def boot_prefix(prefix=None):
     if sys32.is_dir():
         return True
     info("Initialising the Wine prefix (first run) …")
-    cmd, env = proton_umu_cmd("wineboot", prefix=pfx)
+    cmd, env = wine_cmd("wineboot", prefix=pfx)
     cmd.append("-u")
     env.setdefault("WINEDEBUG", "-all")
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -122,9 +135,14 @@ def boot_prefix(prefix=None):
 
 
 def kill_prefix_procs(prefix: Path):
-    """Kill every process running in a specific Wine prefix, matched by its
-    WINEPREFIX env var via /proc — so tearing down one prefix's install never
-    touches a game running in another prefix."""
+    """Kill every process running in a specific Wine prefix, so tearing down one
+    prefix's install never touches a game running in another prefix. Linux
+    matches the WINEPREFIX env var via /proc; macOS (no /proc) uses the clean
+    'wineserver -k' on that prefix."""
+    if IS_MAC:
+        from . import winemac
+        winemac.kill_prefix(prefix)
+        return
     target = ("WINEPREFIX=" + str(prefix)).encode() + b"\0"
     for pdir in Path("/proc").glob("[0-9]*"):
         try:
@@ -136,6 +154,12 @@ def kill_prefix_procs(prefix: Path):
 
 def kill_wine():
     """Kill leftover wine/Proton (a hung run locks the prefix)."""
+    if IS_MAC:
+        from . import winemac
+        try:
+            winemac.kill_prefix(active_prefix())
+        except Exception:
+            pass
     for pat in ("wineserver", "winedevice.exe", "GDK-Proton",
                 "Minecraft.Windows.exe", "umu_run.py", "umu-shim",
                 "pv-adverb", "pressure-vessel"):

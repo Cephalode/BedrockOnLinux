@@ -21,6 +21,7 @@ from .config import (
     WINE_BUILD_PKGS,
 )
 from .log import BolError, die, info, ok, warn
+from .platform import pm_hint
 from .proton import patch_proton
 from .util import (
     asset_url,
@@ -31,13 +32,6 @@ from .util import (
     run,
     save_settings,
 )
-
-def _pm_hint():
-    return next((h for pm, h in (
-        ("apt-get", "sudo apt install {}"), ("dnf", "sudo dnf install {}"),
-        ("pacman", "sudo pacman -S {}"), ("zypper", "sudo zypper in {}"))
-        if shutil.which(pm)), "install: {}")
-
 
 def _stock_proton_root(progress=None):
     """Latest Weather-OS GDK-Proton extracted to PROTON_DIR/_stock — the
@@ -71,7 +65,7 @@ def _winegdk_sync():
     repo = s.get("winegdk_repo") or WINEGDK_REPO
     branch = s.get("winegdk_branch") or WINEGDK_BRANCH
     if not shutil.which("git"):
-        die("git is required — " + _pm_hint().format("git"))
+        die("git is required — " + pm_hint().format("git"))
     synced = False
     if (WINEGDK_SRC / ".git").is_dir():
         info(f"Updating WineGDK ({branch}) …")
@@ -205,7 +199,7 @@ def ensure_winegdk(force=False, progress=None):
                 "  This usually means no prebuilt was published for this "
                 "version yet (please report it). To build locally instead "
                 "(no deb-src needed):\n  "
-                + _pm_hint().format(WINE_BUILD_PKGS)
+                + pm_hint().format(WINE_BUILD_PKGS)
                 + "\n  then re-run.")
         base = _stock_proton_root(progress)
         # Build Wine straight into a fresh copy of the stock GDK-Proton's

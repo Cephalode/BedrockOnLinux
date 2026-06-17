@@ -11,6 +11,7 @@ from .fixups import fix_curl_ssl, hide_signin_button, install_gdk_xbox_dlls
 from .gameinput import install_gameinput
 from .games import _auto_mc_version, _game_root, download_game, use_game_dir
 from .log import info, ok, warn
+from .platform import IS_MAC
 from .prefix import active_prefix, boot_prefix, ensure_umu
 from .proton import ensure_proton
 from .util import load_settings, mkdirs
@@ -31,12 +32,21 @@ def do_setup(game_dir=None, mc_ver=None, proton_tag=None, pp_tag=None,
     if not cur or not _game_root(Path(cur)):
         use_game_dir(download_game(_auto_mc_version(s), progress, force=force))
     gd = Path(load_settings()["game_dir"])
-    if load_settings().get("proton_source") == "winegdk":
+    if IS_MAC:
+        # macOS has no GDK-Proton / umu; detect a native Wine (Game Porting
+        # Toolkit / CrossOver / Wine) instead. The Xbox-Live OSS + OpenSSL
+        # XCurl DLLs are Windows PE images that Wine loads the same way, so
+        # they still apply on top of the native backend.
+        from .winemac import ensure_wine
+        ensure_wine(force)
+        install_gdk_xbox_dlls(gd)
+    elif load_settings().get("proton_source") == "winegdk":
         ensure_winegdk(force, progress)
         install_gdk_xbox_dlls(gd)       # before fix_curl_ssl, which keeps XCurl
     else:
         ensure_proton(proton_tag, force, progress)  # user-supplied dir/url
-    ensure_umu(force)
+    if not IS_MAC:
+        ensure_umu(force)               # Steam Linux Runtime launcher (Linux only)
     fix_curl_ssl(gd)
     boot_prefix()                              # create the prefix (system32) first
     install_gameinput(active_prefix(), gd)

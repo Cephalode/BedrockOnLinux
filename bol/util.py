@@ -2,9 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 import json
-import os
-import re
-import shutil
 import subprocess
 import urllib.error
 import urllib.parse
@@ -24,6 +21,9 @@ from .config import (
     WINEGDK_REPO,
 )
 from .log import IS_TTY, die
+# Process kill + screen size are OS-specific; the platform layer owns them.
+# Re-exported under their long-standing private names so importers don't change.
+from .platform import kill_pattern as _pkill, screen_wh as _screen_wh
 
 def run(cmd, **kw):
     kw.setdefault("check", True)
@@ -132,33 +132,3 @@ def asset_url(release, predicate):
         if predicate(a["name"]):
             return a["browser_download_url"], a["name"], a.get("size", 0)
     return None, None, 0
-
-
-def _screen_wh():
-    """Primary screen WxH from xrandr (for gamescope sizing), or None."""
-    if not shutil.which("xrandr"):
-        return None
-    try:
-        out = subprocess.run(["xrandr"], capture_output=True, text=True,
-                             timeout=5).stdout
-    except Exception:
-        return None
-    m = re.search(r"current\s+(\d+)\s+x\s+(\d+)", out)
-    return (m.group(1), m.group(2)) if m else None
-
-
-def _pkill(pattern):
-    """Best-effort kill of processes whose cmdline matches `pattern`."""
-    if shutil.which("pkill"):
-        subprocess.run(["pkill", "-9", "-f", pattern],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            cl = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
-            if pattern.encode() in cl:
-                os.kill(int(pid), 9)
-        except Exception:
-            pass

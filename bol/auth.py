@@ -18,7 +18,7 @@ from .config import (
     WINEGDK_REG,
 )
 from .log import BolError, die, err, info, ok, warn
-from .prefix import proton_umu_cmd
+from .prefix import wine_cmd
 from .util import http_post_form
 
 # ----------------------------------------------------------------------
@@ -449,8 +449,8 @@ def xbl_preauth(msa_access_token):
 def wine_reg_set_refresh_token(token):
     """Seed the MSA refresh token where WineGDK's XUser reads it
     (HKLM\\Software\\Wine\\WineGDK 'RefreshToken'), written through the same
-    proton/umu runtime (and prefix) used to launch the game."""
-    cmd, env = proton_umu_cmd("reg")
+    Wine runtime (and prefix) used to launch the game."""
+    cmd, env = wine_cmd("reg")
     cmd += ["add", "HKLM\\" + WINEGDK_REG, "/v", "RefreshToken",
             "/t", "REG_SZ", "/d", token, "/f"]
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -476,7 +476,7 @@ def wine_apply_winegdk_prereqs():
     LOGS.mkdir(parents=True, exist_ok=True)
     log = open(LOGS / "native-login.log", "a")
     def _regadd(*args):
-        cmd, env = proton_umu_cmd("reg")
+        cmd, env = wine_cmd("reg")
         cmd += ["add", *args, "/f"]
         try:
             subprocess.run(cmd, env=env, stdout=log,

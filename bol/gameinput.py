@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import CACHE, LOGS
 from .log import info, ok, warn
-from .prefix import kill_prefix_procs, proton_umu_cmd
+from .prefix import kill_prefix_procs, wine_cmd
 
 def gameinput_redist_ok(prefix: Path):
     """True when the NATIVE Microsoft GameInput redist is fully installed.
@@ -202,7 +202,7 @@ def _set_gameinput_registry(prefix: Path):
     rf = CACHE / "gameinput.reg"
     CACHE.mkdir(parents=True, exist_ok=True)
     rf.write_text(reg, encoding="utf-16")        # UTF-16 + BOM (Wine needs it)
-    cmd, env = proton_umu_cmd("reg", prefix=prefix)
+    cmd, env = wine_cmd("reg", prefix=prefix)
     cmd += ["import", "Z:" + str(rf).replace("/", "\\")]
     try:
         subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL,
@@ -254,7 +254,7 @@ def _install_gameinput_via_msi(prefix: Path, msi: Path):
     install the moment they appear, scoped to this prefix."""
     LOGS.mkdir(parents=True, exist_ok=True)
     log = open(LOGS / "native-login.log", "a")
-    cmd, env = proton_umu_cmd("msiexec", prefix=prefix)
+    cmd, env = wine_cmd("msiexec", prefix=prefix)
     env["WINEDEBUG"] = "-all"
     overrides = ["cryptbase=n,b"]
     if env.get("WINEDLLOVERRIDES"):

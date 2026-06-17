@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 import os
-import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -15,6 +14,7 @@ from .gamesetup import do_setup
 from .launch import launch
 from . import log
 from .log import BolError, _LEVELS, warn
+from .platform import IS_MAC, open_path
 from .prefix import _mc_running, kill_wine, reset_prefix
 from .update import check_for_update, self_update
 from .util import load_settings, save_settings
@@ -36,11 +36,13 @@ def gui():
     try:
         root = tk.Tk()
     except tk.TclError as e:
-        # No usable X11 display — e.g. a pure Wayland session where the X11
-        # socket wasn't granted (Flatpak issue #7). Don't dump a traceback.
-        warn(f"No graphical display available ({e}). The launcher GUI needs an "
-             "X11 (or XWayland) display. Use the command line instead, e.g. "
-             "'bedrock-on-linux play', '… setup', '… login' or '… doctor'.")
+        # No usable display — e.g. a pure Wayland session where the X11 socket
+        # wasn't granted (Flatpak issue #7). Don't dump a traceback.
+        hint = ("Use the command line instead, e.g. 'bedrock-on-linux play', "
+                "'… setup', '… login' or '… doctor'.")
+        if not IS_MAC:
+            hint = "The launcher GUI needs an X11 (or XWayland) display. " + hint
+        warn(f"No graphical display available ({e}). {hint}")
         return
     root.title(PRETTY)
     root.geometry("880x560")
@@ -137,7 +139,7 @@ def gui():
             pass
     tk.Label(hw, text="Minecraft Bedrock", bg=BG, fg=FG,
              font=("", 23, "bold")).pack(pady=(12, 2))
-    tk.Label(hw, text="Bedrock Edition for Linux",
+    tk.Label(hw, text=f"Bedrock Edition for {'macOS' if IS_MAC else 'Linux'}",
              bg=BG, fg=SUB, font=("", 11)).pack()
 
     # ---- bottom bar: version selector (left), gear/details/PLAY (right) ----
@@ -333,10 +335,8 @@ def gui():
                  font=("monospace", 20, "bold")).pack(padx=18, pady=10)
         row = tk.Frame(d, bg=PANEL)
         row.pack(fill="x", pady=(14, 0))
-        button(row, "Open link", lambda: subprocess.Popen(
-            ["xdg-open", url], stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL), GREEN, "white", GREEN_H,
-            ("", 11, "bold"), 16, 9).pack(side="left")
+        button(row, "Open link", lambda: open_path(url), GREEN, "white",
+               GREEN_H, ("", 11, "bold"), 16, 9).pack(side="left")
         button(row, "Copy code", lambda: (root.clipboard_clear(),
                root.clipboard_append(code)), PANEL2, FG, "#363b46",
                ("", 11), 16, 9).pack(side="left", padx=10)
@@ -470,12 +470,8 @@ def gui():
 
         for label, fn in (
             ("Import content (.mcpack / .mcworld / .mcaddon)…", do_import),
-            ("Open Minecraft folder", lambda: subprocess.Popen(
-                ["xdg-open", str(_mojang_dir())], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL)),
-            ("Open logs folder", lambda: subprocess.Popen(
-                ["xdg-open", str(LOGS)], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL)),
+            ("Open Minecraft folder", lambda: open_path(_mojang_dir())),
+            ("Open logs folder", lambda: open_path(LOGS)),
             ("Repair (reset Wine prefix)", lambda: threading.Thread(
                 target=reset_prefix, daemon=True).start()),
             ("Force stop Minecraft", kill_wine),

@@ -1,15 +1,19 @@
 """bol.config — constants, paths, repos and URLs (no logic, no side effects)."""
 # SPDX-License-Identifier: MIT
 
-import os
 from pathlib import Path
+
+from .platform import data_home
 
 APP = "bedrock-on-linux"
 PRETTY = "BedrockOnLinux"
 VERSION = "1.1.2"
 
 HOME = Path.home()
-DATA = Path(os.environ.get("BOL_HOME", HOME / ".local/share" / APP))
+# ~/.local/share/<app> on Linux, ~/Library/Application Support/<app> on macOS;
+# $BOL_HOME overrides either. Everything below derives from DATA, so the whole
+# tree follows the platform automatically.
+DATA = data_home(APP)
 PROTON_DIR = DATA / "proton"
 UMU_DIR = DATA / "umu"
 COMPAT = DATA / "compatdata"          # Proton-managed Wine prefix lives here

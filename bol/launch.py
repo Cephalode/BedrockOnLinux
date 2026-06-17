@@ -22,6 +22,7 @@ from .fixups import _install_cryptbase_in_prefix
 from .gameinput import install_gameinput
 from .gamesetup import diagnose
 from .log import die, info, ok, warn
+from .platform import IS_MAC
 from .prefix import (
     active_prefix,
     boot_prefix,
@@ -34,6 +35,10 @@ from .proton import custom_proton, patch_proton, proton_path
 from .util import _screen_wh, load_settings
 
 def launch(_pp=None, _repaired=False, _force_x11=False, _no_gamescope=False):
+    # macOS runs through a native Wine backend, not GDK-Proton/umu — and none of
+    # the X11/Wayland/gamescope/Proton machinery below applies there.
+    if IS_MAC:
+        return _launch_mac(_repaired=_repaired)
     s = load_settings()
     gd = s.get("game_dir")
     if not gd or not Path(gd, "Minecraft.Windows.exe").exists():
@@ -310,4 +315,131 @@ def launch(_pp=None, _repaired=False, _force_x11=False, _no_gamescope=False):
             return launch(_pp, _repaired=True, _force_x11=_force_x11)
         warn("Still failing after an automatic repair — likely a GPU/display "
              "issue, not the prefix.")
+    return rc
+
+
+def _launch_mac(_repaired=False):
+    """Launch Minecraft through the macOS-native Wine backend (bol.winemac).
+
+    The native-login pre-flight — token refresh, registry seeding, host-side
+    Xbox Live pre-auth, GameInput, cryptbase — is identical to the Linux path;
+    it all rides on wine_cmd(), which dispatches to the native Wine here. What
+    differs is the run itself: no Proton, no umu, no X11/Wayland/gamescope (the
+    Wine Cocoa driver presents the window), and a simpler post-mortem.
+
+    Caveat: the in-game Microsoft sign-in relies on the WineGDK XUser fork,
+    which is compiled into GDK-Proton (Linux) and has no macOS build yet — on
+    macOS the login path is wired up but unverified. Offline / LAN is expected
+    to work. See the README (macOS) section.
+    """
+    from . import winemac
+    s = load_settings()
+    gd = s.get("game_dir")
+    if not gd or not Path(gd, "Minecraft.Windows.exe").exists():
+        die("No game — choose a Minecraft version first.")
+    if not winemac.wine_bin():
+        die("No macOS Wine configured — run Install / Update.")
+
+    # ---- shared native-login pre-flight (engine-agnostic; goes via wine_cmd) ----
+    tok = msa_load().get("refresh_token")
+    if not tok:
+        die("No Microsoft account linked — click 'Sign in' first.")
+    try:
+        fresh = msa_refresh(tok)
+    except Exception as e:
+        fresh = None
+        warn(f"Token refresh skipped ({e}) — using cached token.")
+    if fresh:
+        msa_save({"refresh_token": fresh["refresh_token"],
+                  "obtained": int(time.time())})
+        tok = fresh["refresh_token"]
+    wine_apply_winegdk_prereqs()
+    boot_prefix()                  # ensure system32 exists before writing into it
+    _install_cryptbase_in_prefix()
+    try:
+        install_gameinput(active_prefix(), Path(gd))
+    except Exception as e:
+        warn(f"GameInput check failed ({e}) — continuing.")
+    wine_reg_set_refresh_token(tok)
+    access = (fresh or {}).get("access_token") if fresh else None
+    ensure_login_deps()
+    xbl_preauth(access or "")
+    kill_wine()
+
+    # ---- run natively (Cocoa display; no Proton/umu/X11/gamescope) ----
+    exe = str(CONTENT / "Minecraft.Windows.exe")
+    cmd, env = winemac.mac_wine_cmd(exe)
+    diag = (s.get("diagnostics", False) or os.environ.get("BOL_DIAG") == "1")
+    env["WINEDEBUG"] = (os.environ.get("WINEDEBUG")
+                        or ("+gdkc,+winhttp,warn+all" if diag else "fixme-all"))
+    if diag or os.environ.get("BOL_XCURL_LOG") == "1":
+        env["XCURL_LOG"] = "1"
+    # The same WineGDK runtime environment the Linux path sets: these are read
+    # by the game's own DLLs (and by Wine) regardless of the Wine flavour.
+    # cryptbase=n,b prefers our RNG stub but falls back to the builtin; the VR
+    # runtimes are disabled so Bedrock's startup VR probe fails cleanly.
+    overrides = ["cryptbase=n,b", "vrclient=", "vrclient_x64=", "openvr_api=",
+                 "wineopenxr="]
+    if env.get("WINEDLLOVERRIDES"):
+        overrides.append(env["WINEDLLOVERRIDES"])
+    env["WINEDLLOVERRIDES"] = ";".join(overrides)
+    env["MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_SHOWUI"] = "0"
+    env["MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_FAILFAST"] = "0"
+    env["MICROSOFT_WINDOWSAPPRUNTIME_DEPLOYMENT_INITIALIZE_ONERRORSHOWUI"] = "0"
+    # TLS 1.3 off at the GnuTLS level (harmless if this Wine doesn't use GnuTLS;
+    # the WinHttp DefaultSecureProtocols reg key set in the prereqs forces TLS
+    # 1.2 either way — Azure Front Door FINs Wine's TLS 1.3 ClientHello).
+    prio = DATA / "etc" / "gnutls-no-tls13.cfg"
+    if not prio.exists():
+        prio.parent.mkdir(parents=True, exist_ok=True)
+        prio.write_text("[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT\n")
+    env["GNUTLS_SYSTEM_PRIORITY_FILE"] = str(prio)
+    env["GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID"] = "0"
+    # Host-side pre-auth blob via the Z: drive (Z: maps to '/' under Wine on
+    # macOS too), so DeviceAuth_Initialize skips the broken Wine-side POST.
+    preauth = DATA / "winegdk-preauth" / "device.json"
+    if preauth.exists():
+        env["WINEGDK_PREAUTH_DEVICE"] = "Z:" + str(preauth).replace("/", "\\")
+    rp = s.get("xsts_rp")
+    if rp:
+        host = s.get("xsts_rp_host") or "b980a380.minecraft.playfabapi.com"
+        san = "".join(c.upper() if c.isalnum() else "_" for c in host)
+        env["WINEGDK_XSTS_RP_" + san] = rp
+        info(f"XSTS relying party override [{host}] = {rp}")
+
+    info("Starting Minecraft … sign in with Microsoft in-game, then "
+         "join your server from the Servers tab.")
+    glog = open(LOGS / "minecraft.log", "w")
+    rc = None
+    hits = []
+    try:
+        proc = subprocess.Popen(cmd, env=env, cwd=str(CONTENT), stdout=glog,
+                                stderr=subprocess.STDOUT)
+        started = time.time()
+        announced = False
+        while True:
+            try:
+                rc = proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                if not announced and time.time() - started > 8:
+                    announced = True
+                    ok("Minecraft is running — close the game window to come "
+                       "back here.")
+    finally:
+        glog.close()
+        patch_options()
+        ok(f"Game closed (exit {rc}).")
+        hits = diagnose()
+    # Self-repair once for a genuinely broken prefix (the login token lives in
+    # DATA/msa, not the prefix, so it survives the reset).
+    if any("prefix broken" in h.lower() for h in hits) and not _repaired:
+        warn("Broken Wine prefix — repairing and relaunching once…")
+        reset_prefix()
+        try:
+            install_gameinput(active_prefix(),
+                              Path(load_settings()["game_dir"]))
+        except Exception as e:
+            warn(f"Re-bootstrap after repair failed ({e}).")
+        return _launch_mac(_repaired=True)
     return rc

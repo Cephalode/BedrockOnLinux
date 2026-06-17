@@ -14,6 +14,7 @@ from .gamesetup import do_setup
 from .gui import gui
 from .launch import launch
 from .log import BolError, IS_TTY, die, info, ok, warn
+from .platform import IS_MAC
 from .prefix import reset_prefix
 from .update import check_for_update, self_update, update_kind
 
@@ -88,7 +89,10 @@ def main():
         elif a.cmd == "gui":
             gui()
         else:
-            if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+            # macOS has no DISPLAY/WAYLAND_DISPLAY, but Tk (Aqua) is always
+            # available in a desktop session — default to the GUI there too.
+            if (IS_MAC or os.environ.get("DISPLAY")
+                    or os.environ.get("WAYLAND_DISPLAY")):
                 gui()
             else:
                 p.print_help()
