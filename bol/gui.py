@@ -213,6 +213,14 @@ def gui():
     T.THEME_DIM    = T.GOLD_DIM if _init_beta else T.GREEN_DIM
 
     ctk.set_appearance_mode("Light" if s.get("light_theme", False) else "Dark")
+
+    _ui_scale = float(s.get("ui_scale", 1.0) or 1.0)
+    try:
+        ctk.set_widget_scaling(_ui_scale)
+        ctk.set_window_scaling(_ui_scale)
+    except Exception:
+        pass
+
     try:
         root = ctk.CTk(className=PRETTY)
     except Exception as e:
@@ -1351,6 +1359,48 @@ def gui():
         tab_tools = _mk_sf(tabs.add("Tools"))
 
         # ---- General --------------------------------------------------
+        ctk.CTkLabel(tab_general, text="UI scale", text_color=T.FG,
+                     font=font(13)).pack(anchor="w", pady=(4, 2), padx=4)
+        ctk.CTkLabel(tab_general,
+                     text="Useful on high-DPI / 4K displays. "
+                          "Changing this restarts the app.",
+                     text_color=T.SUB, font=font(11)
+                     ).pack(anchor="w", pady=(0, 8), padx=4)
+
+        scale_pill = ctk.CTkFrame(tab_general, fg_color=T.CARD_2, corner_radius=10)
+        scale_pill.pack(anchor="w", pady=(0, 14), padx=4)
+
+        _scale_opts = [("100%", 1.0), ("150%", 1.5), ("200%", 2.0)]
+        _cur_scale = float(load_settings().get("ui_scale", 1.0) or 1.0)
+        _scale_btns = {}
+
+        def _refresh_scale_btns(active):
+            for val, btn in _scale_btns.items():
+                if val == active:
+                    btn.configure(fg_color=T.THEME_ACCENT, text_color="#ffffff",
+                                  hover_color=T.THEME_HOV)
+                else:
+                    btn.configure(fg_color="transparent", text_color=T.SUB,
+                                  hover_color=T.CARD_3)
+
+        def pick_scale(factor):
+            if factor == _cur_scale:
+                return
+            s2 = load_settings()
+            s2["ui_scale"] = factor
+            save_settings(s2)
+            _refresh_scale_btns(factor)
+            relaunch_app()
+
+        for label, val in _scale_opts:
+            b = ctk.CTkButton(
+                scale_pill, text=label, width=64, height=30,
+                corner_radius=8, font=font(12, "bold"),
+                border_width=0, command=lambda v=val: pick_scale(v))
+            b.pack(side="left", padx=3, pady=3)
+            _scale_btns[val] = b
+        _refresh_scale_btns(_cur_scale if _cur_scale in _scale_btns else 1.0)
+
         theme_v = tk.BooleanVar(value=load_settings().get("light_theme", False))
         
         def save_theme():
@@ -2429,6 +2479,22 @@ def gui():
         try:
             if os.environ.get("APPIMAGE"):
                 os.execv(os.environ["APPIMAGE"], [os.environ["APPIMAGE"], "gui"])
+
+            # Only re-exec as `python -m bol` if *this* process was itself
+            # started that way (e.g. `python3 -m bol gui` in a venv/pip
+            # install). .deb, Flatpak, and the local installer run bol via
+            # a wrapper script (bedrock-on-linux) that adds
+            # /usr/lib/bedrock-on-linux, /app/lib/bedrock-on-linux, or the
+            # source dir to sys.path in-memory — that path is lost after
+            # exec, so re-launching those via `-m bol` fails with
+            # "No module named bol". For those, and for the packaged
+            # zipapp, just re-exec the original launcher/target directly.
+            main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            started_via_module = bool(main_spec and main_spec.name)
+
+            if started_via_module:
+                os.execv(sys.executable, [sys.executable, "-m", "bol", "gui"])
+
             tgt = os.path.realpath(sys.argv[0] or __file__)
             os.execv(sys.executable, [sys.executable, tgt, "gui"])
         except Exception:
