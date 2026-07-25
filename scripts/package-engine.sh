@@ -313,10 +313,10 @@ verify_winegdk_source_provenance() {
     "ee0543f11737a11f5edec389967bb41482c7f5eda3807c24d171dd6bf6301274" \
     "WineGDK r12 source delta"
   verify_sha256 "$native_root/README.md" \
-    "e8df56f517ed0c63710f55a45386ae26c25ac2145f4220c3fc98526e422a7246" \
+    "9a54dd6962a1768f3d4574e24f94b034be6088f9d9816b8ba8facef7ff1c2904" \
     "WineGDK native5 source-delta README"
   verify_sha256 "$native_root/SOURCE-SHA256SUMS" \
-    "4fdedc09d56a2832fb5eb57d55572bec39622ffcf2fb374baa9cc3fd61ef0852" \
+    "2b6785f1ae3fe35c4e8dc243704b7150358a53948b0e43c47e193ce5b4a3ba01" \
     "WineGDK native5 source hash lock"
   verify_sha256 \
     "$native_root/0001-winegdk-native5-Xbox-and-file-picker-runtime.patch" \
@@ -324,7 +324,7 @@ verify_winegdk_source_provenance() {
     "WineGDK native5 source delta"
   verify_sha256 \
     "$native_root/0002-windows.storage-use-legacy-single-file-dialog.patch" \
-    "31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5" \
+    "1efa57958295263754bb5fa1bd59ff90af6f3ff3f52173be6c6c7fa6f3c74f42" \
     "WineGDK single-file dialog fallback"
 }
 
