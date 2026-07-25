@@ -72,23 +72,30 @@
   <releases>
     <release version="2.1.0" date="2026-07-25">
       <description>
-        <p>Improves startup reliability across Linux desktops, fixes LAN and
-           controller integration, and adds safer multi-profile and client
+        <p>Improves startup reliability across Linux desktops, LAN diagnostics
+           and controller integration, and adds safer multi-profile and client
            workflows.</p>
         <ul>
-          <li>handles X11, XWayland, Steam Game Mode and multi-monitor dialogs
-              automatically, including scaled and scrollable themed dialogs;</li>
+          <li>handles X11, XWayland, Hyprland, Steam Game Mode, Steam Deck and
+              multi-monitor dialogs automatically, including scaled and
+              scrollable themed dialogs, global native-Wayland overrides and
+              XWayland presentation recovery;</li>
+          <li>fixes Minecraft&apos;s in-game world and custom-skin picker with a
+              pinned native WineGDK implementation;</li>
           <li>migrates application data safely to the active XDG layout and
               keeps native, AppImage, Debian and Flatpak storage consistent;</li>
-          <li>adds LAN diagnostics and actionable guidance for discovery,
-              version mismatches and full-world errors, without requiring
-              environment variables;</li>
+          <li>adds same-tag game-build refresh, LAN diagnostics and actionable
+              guidance for discovery, version mismatches and full-world errors,
+              without requiring environment variables;</li>
           <li>adds graphical GPU-crash acknowledgement, safer renderer
-              diagnostics and a guarded legacy compatibility renderer;</li>
-          <li>improves controller discovery and desktop/game-mode input
-              handling, including DualSense devices;</li>
-          <li>adds isolated local Xbox profiles with shared immutable assets,
-              plus transactional relocation and launch locking;</li>
+              diagnostics, automatic cleanup of completed launch markers and a
+              guarded legacy compatibility renderer;</li>
+          <li>configures SDL or Steam Input automatically for DualSense and
+              DualSense Edge controllers;</li>
+          <li>adds isolated local Xbox profiles with shared large downloads
+              protected by setup and launch locks;</li>
+          <li>repairs partial Wine prefixes and fixes Wine boot failures with a
+              native cryptbase random-number implementation;</li>
           <li>hardens external client DLL injection and reports immediate game
               crashes instead of claiming a false success;</li>
           <li>strengthens downloads, archive imports, engine provenance,
