@@ -280,6 +280,12 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         self.assertIn(overlay, text)
         self.assertLess(text.index(snapshot), text.index(overlay))
 
+    def test_packager_pins_current_native_source_provenance(self):
+        text = PACKAGER.read_text()
+        for path in (DELTA / "README.md", SOURCE_SUMS, PATCH, FOLLOWUP_PATCH):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertIn(digest, text, path.name)
+
     def test_packager_requires_native_app_context_in_both_architectures(self):
         text = PACKAGER.read_text()
         arch_loop = text.index('for arch in "${ARCHES[@]}"; do',
