@@ -2,37 +2,118 @@
 
 ## 2.1.0 — 2026-07-25
 
-- Fix Minecraft's in-game world and custom-skin file picker with a pinned,
-  reproducible WineGDK engine patch.
-- Add isolated local Xbox profiles that share large game, engine and runtime
-  downloads under a shared lock while keeping accounts, prefixes, settings and
-  worlds separate.
-- Improve startup and dialogs across X11, XWayland, Hyprland, scaled displays
-  and multi-monitor desktops, including automatic recovery from global native
-  Wayland overrides and XWayland presentation issues.
-- Fix borderless fullscreen in Steam Game Mode and on Steam Deck.
-- Configure SDL or Steam Input automatically for DualSense and DualSense Edge
-  controllers.
-- Add read-only Xbox and LAN diagnostics, including routes, DNS, TLS, clock,
-  VPN observations, version mismatches and actionable full-world guidance.
-- Repair partial Wine prefixes and WineGDK activation safely, and refresh
-  replaced same-tag game archives transactionally.
-- Fix Wine boot failures by providing the missing native
-  `cryptbase.SystemFunction036` random-number implementation.
-- Add a guarded legacy WineD3D renderer for systems limited to Vulkan 1.2.
-- Make GPU incident acknowledgement conditional, revalidated and available in
-  the graphical interface, and remove cleanly completed launch markers
-  automatically.
-- Migrate Flatpak data to private XDG storage without destructive merging.
-- Harden external client DLL injection and report immediate game crashes.
-- Add `.mcskin` imports, clearer Xbox/connection errors and stricter release
-  provenance, integrity and packaging checks.
+### Startup, engine, and compatibility
+
+- Repair or reject partial Wine prefixes instead of reporting an incomplete
+  installation as successful, including timed-out `wineboot`, incomplete
+  registry hives, missing WineGDK activation, and residual Wine processes.
+- Provide the missing native `cryptbase.SystemFunction036` implementation,
+  removing the RNG recursion that prevented Wine services and the game window
+  from starting.
+- Upgrade the managed engine to `wow64-archs-native6` and UMU to 1.4.3.
+- Disable incompatible global Proton options such as
+  `PROTON_ENABLE_WAYLAND=1` automatically while preserving overrides explicitly
+  configured in Advanced Settings.
+- Recover stale XWayland `DISPLAY` values from session sockets owned by the
+  current user, including on Hyprland, and improve image restoration after
+  switching virtual desktops.
+- Use the primary RandR monitor rather than the combined virtual-desktop size
+  and tolerate non-UTF-8 system output.
+- Recognize nested Gamescope sessions, remove Wine decorations on Steam Deck,
+  and improve fullscreen behavior in Steam Game Mode.
+- Configure DualSense and DualSense Edge through Steam Input when a virtual
+  controller is present, and SDL otherwise.
+- Add an explicit opt-in WineD3D compatibility renderer for systems limited to
+  Vulkan 1.2.
+- Repair WinRT activation and open the native file chooser for world imports
+  and skin-file selection. Applying a custom skin is still a known issue; see
+  #39 below.
+- Add direct `.mcskin` package import while Minecraft is stopped.
+- Detect Minecraft archives replaced under the same tag, verify their identity
+  and digest, and activate or restore them transactionally.
+- Harden 64-bit DLL injection with a timeout, process validation,
+  immediate-crash detection, and accurate failure messages.
+
+### Xbox accounts, profiles, and multiplayer
+
+- Add isolated local Xbox profiles. Each profile keeps its own account, prefix,
+  settings, and worlds while large game, engine, and runtime downloads are
+  shared under a lock.
+- Serialize preparation, repair, launch, and shared-resource access to prevent
+  inconsistent concurrent installations or sessions.
+- Make Xbox pre-authentication errors more precise and actionable without
+  retaining or printing response secrets.
+- Add `doctor --network` and `doctor --host <IP>` for read-only checks of DNS,
+  TLS 1.2+, clock/RTC, routes, VPN/container interfaces, and
+  Xbox/PlayFab/Minecraft endpoints.
+- Recognize `InitialConnection-13`, `InitialConnection-25`, client/host build
+  mismatches, and the misleading “world full” message, with guidance that does
+  not require users to configure environment variables manually.
+
+### Interface, storage, and recovery
+
+- Redesign the interface with tabbed settings, version search/filtering,
+  persistent version selection, Copy/Clear log actions, and consistent
+  PLAY/STOP states.
+- Integrate application and Minecraft changelogs into the GUI and add the
+  `changelog` CLI command, with disk caching, Markdown rendering, links,
+  filtering, and controlled refresh.
+- Rework Microsoft sign-in with a locally generated QR code, synchronized
+  theme, gamertag retrieval, and two-step sign-out.
+- Replace generic Tk dialogs with themed, centered, resizable, scrollable
+  dialogs suitable for high scaling and multi-monitor desktops.
+- Add 100/150/200% UI scaling, fix application restart outside a zipapp, and
+  preserve theme choices.
+- Add persistent Gamescope arguments and custom environment-variable fields
+  with safe parsing of quoted values.
+- Add GUI-driven data relocation with free-space checks, locking, internal-link
+  repair, rollback, and safe restart.
+- Honor `XDG_DATA_HOME`. Flatpak now writes to its private storage and migrates
+  the previous directory transactionally without merging two populated trees;
+  the old tree remains available as a recovery backup.
+- Expose acknowledgement of an earlier GPU incident in the GUI only when
+  eligible, revalidate it under lock, and remove orphaned markers after a clean
+  exit.
+
+### Security, integrity, and publication
+
+- Stop forwarding an ambient `GITHUB_TOKEN` to non-GitHub hosts.
+- Harden downloads and extraction against path traversal, unsafe links,
+  partial archives, and unverified replacements.
+- Add a public, reproducible, attested pipeline for OpenSSL-XCurl,
+  vkd3d-proton, WineGDK, the managed engine, and all four application formats.
+- Pin source trees, containers, APT snapshots, Python dependencies,
+  intermediate digests, and final artifacts; mismatches now fail closed.
+- Separate read-only build jobs from attestation/publication jobs, add a
+  rolling nightly release, and include a bill of materials in releases.
+- Add CI checks for tests, Python compilation, ShellCheck, actionlint, Ruff,
+  Zizmor, CodeQL, published-pin validation, and a native Wine RNG test.
+- Separate `SHA256SUMS` for application artifacts from `inputs.sha256` for
+  separately published engine and XCurl inputs.
+
+### Validation
+
+- Pass 441 automated tests and 29 subtests.
+- Pass Ruff, high-confidence Vulture, actionlint, Zizmor, and AppStream
+  validation.
+- Rebuild the WineGDK prefix and native6 engine reproducibly.
+- Load `wine-11.1` successfully inside the pinned Steam sniper runtime.
+- Build `.deb`, `.pyz`, AppImage, and Flatpak artifacts with the expected
+  version and metadata.
 
 Known limitations:
 
-- Xodus support is not part of this release.
-- Achievement submission has not been validated end to end.
-- Hardware-specific stutter reported on the RX 9060 XT remains under
-  investigation.
-- Borion and other version-specific third-party DLLs remain unsupported and
-  may crash the game.
+- #39: the skin selection dialog works and the game records the choice, but
+  applying the selected custom skin can still terminate the game with
+  `RoFailFastWithErrorContext`.
+- #48/#61: the launcher diagnoses known “world full” causes but cannot alter a
+  remote Windows host.
+- #15: Xodus is not included in this release.
+- #55: Xbox achievement submission has not been validated end to end.
+- #63: RX 9060 XT-specific stutter remains under investigation.
+- #90: Borion and other version-specific third-party DLLs are not guaranteed
+  and may crash Minecraft.
+- WineD3D is a degraded compatibility mode; performance and rendering are not
+  guaranteed.
+- Published builds target x86-64 glibc Linux. The graphical launcher requires
+  X11/XWayland; ARM and musl-only systems are not supported.
