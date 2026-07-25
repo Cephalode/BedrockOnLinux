@@ -4,6 +4,8 @@
 import base64
 import os
 import shutil
+import socket
+import stat
 import subprocess
 import re
 import sys
@@ -34,6 +36,7 @@ from .relocation import (
     FILES_TO_MOVE,
 )
 from .content import _mojang_dir, import_content
+from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
 from .games import list_mc_versions
 from .gamesetup import do_setup
 from .inject import run_injector
@@ -46,11 +49,20 @@ from .prefix import (
     prefix_operation_lock,
     reset_prefix,
 )
+from .profiles import (
+    create_profile,
+    profile_launch_command,
+    require_profile_shortcuts_supported,
+    write_profile_shortcut,
+)
 from .update import check_for_update, self_update
 from .util import load_settings, save_settings
+from .x11 import monitor_geometries
 
 RE_MD_TOKENS = re.compile(r"(\*\*|`|__|\[[^\]]+\]\([^)]+\))")
 RE_MD_LINK = re.compile(r"^\[([^\]]+)\]\(([^)]+)\)$")
+_DIALOG_SCREEN_MARGIN = (40, 80)
+_DIALOG_MAX_PHYSICAL_SIZE = (760, 640)
 
 
 def _desktop_error(message):
@@ -66,9 +78,126 @@ def _desktop_error(message):
             pass
 
 
-# --------------------------------------------------------------------------
-# Palette
-# --------------------------------------------------------------------------
+_X11_SOCKET_NAME = re.compile(r"^X([0-9]+)$")
+_X11_DISPLAY_NUMBER = re.compile(r"^(?:[^:]*)?:([0-9]+)(?:\.[0-9]+)?$")
+
+
+def _display_connection_error(error):
+    """Return whether Tcl failed specifically while opening an X display."""
+    message = str(error).casefold()
+    return (
+        "couldn't connect to display" in message
+        or "no display name and no $display environment variable" in message
+    )
+
+
+def _owned_x11_socket_displays(
+        socket_dir=Path("/tmp/.X11-unix"), uid=None):
+    """List local X displays whose filesystem socket belongs to this user."""
+    socket_dir = Path(socket_dir)
+    if uid is None:
+        uid = os.getuid()
+    try:
+        entries = list(socket_dir.iterdir())
+    except OSError:
+        return ()
+
+    displays = []
+    for entry in entries:
+        match = _X11_SOCKET_NAME.fullmatch(entry.name)
+        if not match:
+            continue
+        try:
+            metadata = entry.lstat()
+        except OSError:
+            continue
+        if metadata.st_uid != uid or not stat.S_ISSOCK(metadata.st_mode):
+            continue
+        displays.append((int(match.group(1)), f":{match.group(1)}"))
+    return tuple(display for _, display in sorted(displays))
+
+
+def _display_number(display):
+    if not isinstance(display, str):
+        return None
+    match = _X11_DISPLAY_NUMBER.fullmatch(display.strip())
+    return int(match.group(1)) if match else None
+
+
+def _x11_socket_is_listening(socket_dir, display, timeout=0.1):
+    """Return whether the display's filesystem socket accepts a connection."""
+    number = _display_number(display)
+    if number is None:
+        return False
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(timeout)
+        client.connect(str(Path(socket_dir) / f"X{number}"))
+        return True
+    except OSError:
+        return False
+    finally:
+        client.close()
+
+
+def _create_gui_root(
+        ctk, tk, *, environ=None, socket_dir=Path("/tmp/.X11-unix"),
+        attempted=None):
+    """Create the Tk root, recovering from a stale Wayland-session DISPLAY.
+
+    Hyprland can select a new XWayland display number while a desktop launcher
+    or terminal retains an older DISPLAY value.  Retry only after Tcl reports a
+    display connection failure, and only against filesystem sockets owned by
+    this uid.  XAUTHORITY is deliberately left untouched.
+    """
+    environ = os.environ if environ is None else environ
+    attempted = [] if attempted is None else attempted
+    original_present = "DISPLAY" in environ
+    original_display = environ.get("DISPLAY")
+    attempted.append(original_display or "<unset>")
+
+    def restore_display():
+        if original_present:
+            environ["DISPLAY"] = original_display
+        else:
+            environ.pop("DISPLAY", None)
+
+    try:
+        return ctk.CTk(className=PRETTY)
+    except tk.TclError as first_error:
+        if (not environ.get("WAYLAND_DISPLAY")
+                or not _display_connection_error(first_error)):
+            raise
+
+        candidates = _owned_x11_socket_displays(socket_dir)
+        original_number = _display_number(original_display)
+        # Preserve Xauthority failures on a live display; only bypass orphaned
+        # sockets.
+        if (original_number is not None
+                and f":{original_number}" in candidates
+                and _x11_socket_is_listening(
+                    socket_dir, f":{original_number}")):
+            raise
+
+        for candidate in candidates:
+            if _display_number(candidate) == original_number:
+                continue
+            environ["DISPLAY"] = candidate
+            attempted.append(candidate)
+            try:
+                return ctk.CTk(className=PRETTY)
+            except tk.TclError as retry_error:
+                if not _display_connection_error(retry_error):
+                    restore_display()
+                    raise
+            except Exception:
+                restore_display()
+                raise
+
+        restore_display()
+        raise first_error
+
+
 class Theme:
     BG          = ("#f2f4f7", "#0f1115")
     FG          = ("#0f1115", "#f2f4f7")
@@ -83,20 +212,12 @@ class Theme:
 
     RED         = ("#d35446", "#e2685a")
     RED_HOV     = ("#bc4a3d", "#ea7c70")
-    RED_DIM     = ("#fceceb", "#341f1d")
-    RED_LIGHT   = ("#451c17", "#f2b3ac")
-    RED_MUTED   = ("#b06259", "#c98279")
-    RED_DARK    = ("#f2b3ac", "#451c17")
 
     GREEN       = ("#43a047", "#43a047")
     GREEN_HOV   = ("#3b8e3f", "#4fc153")
     GREEN_DIM   = ("#e6f4e6", "#1c2c1c")
-    GREEN_LIGHT = ("#33421f", "#cfe8c2")
-    GREEN_MUTED = ("#6e8a69", "#9fb89a")
-    GREEN_DARK  = ("#cfe8c2", "#33421f")
 
     BLUE        = ("#3b7bc4", "#5b9bd9")
-    BLUE_HOV    = ("#2a6bb4", "#6caae6")
     BLUE_DIM    = ("#e6f0fa", "#16202c")
     BLUE_LIGHT  = ("#1f3342", "#c2d6e8")
     BLUE_MUTED  = ("#69829e", "#9ab3c9")
@@ -105,26 +226,258 @@ class Theme:
     GOLD        = ("#d8a230", "#e3b34a")
     GOLD_HOV    = ("#c2912a", "#f3c35a")
     GOLD_DIM    = ("#fcf3e1", "#33291a")
-    GOLD_LIGHT  = ("#473510", "#f2ce79")
-    GOLD_MUTED  = ("#b58c31", "#c9a657")
-    GOLD_DARK   = ("#f2ce79", "#473510")
 
     BROWN       = ("#8c6446", "#a67958")
-    BROWN_HOV   = ("#75533a", "#bf8d69")
-    BROWN_DIM   = ("#f5ede8", "#2b1c12")
-    BROWN_LIGHT = ("#302217", "#d6b49c")
-    BROWN_MUTED = ("#805e45", "#a68267")
-    BROWN_DARK  = ("#d6b49c", "#302217")
 
     CONSOLE_BG  = ("#f8f9fa", "#0b0d11")
     CONSOLE_FG  = ("#3b8e3f", "#7fd97f")
 
-    @classmethod
-    def r(cls, color):
+    @staticmethod
+    def r(color):
         import customtkinter as ctk
         if isinstance(color, tuple):
             return color[0] if ctk.get_appearance_mode() == "Light" else color[1]
         return color
+
+
+def _messagebox_height(message):
+    lines = str(message).splitlines() or [""]
+    wrapped_lines = sum(max(1, (len(line) + 47) // 48) for line in lines)
+    return max(210, min(520, 170 + wrapped_lines * 19))
+
+
+def _fit_dialog_size(requested, viewport, window_scaling):
+    requested_width, requested_height = requested
+    viewport_width, viewport_height = viewport
+    scale = max(0.4, float(window_scaling))
+    margin_width, margin_height = _DIALOG_SCREEN_MARGIN
+    max_width, max_height = _DIALOG_MAX_PHYSICAL_SIZE
+    usable_width = min(max_width, max(1, viewport_width - margin_width))
+    usable_height = min(max_height, max(1, viewport_height - margin_height))
+    return (
+        min(requested_width, max(1, int(usable_width / scale))),
+        min(requested_height, max(1, int(usable_height / scale))),
+    )
+
+
+def _select_monitor_bounds(owner, monitors, fallback):
+    owner_x, owner_y, owner_width, owner_height = owner
+    valid_monitors = tuple(
+        monitor for monitor in monitors
+        if monitor[2] > 0 and monitor[3] > 0
+    )
+    if not valid_monitors:
+        return fallback
+    center_x = owner_x + owner_width // 2
+    center_y = owner_y + owner_height // 2
+
+    def score(monitor):
+        x, y, width, height = monitor
+        contains_center = (
+            x <= center_x < x + width
+            and y <= center_y < y + height
+        )
+        overlap_width = max(
+            0, min(owner_x + owner_width, x + width) - max(owner_x, x))
+        overlap_height = max(
+            0, min(owner_y + owner_height, y + height) - max(owner_y, y))
+        distance = (
+            abs(center_x * 2 - (x * 2 + width))
+            + abs(center_y * 2 - (y * 2 + height))
+        )
+        return contains_center, overlap_width * overlap_height, -distance
+
+    return max(valid_monitors, key=score)
+
+
+def _centered_window_position(owner, window, bounds):
+    owner_x, owner_y, owner_width, owner_height = owner
+    window_width, window_height = window
+    bound_x, bound_y, bound_width, bound_height = bounds
+    x = owner_x + (owner_width - window_width) // 2
+    y = owner_y + (owner_height - window_height) // 2
+    max_x = bound_x + max(0, bound_width - window_width)
+    max_y = bound_y + max(0, bound_height - window_height)
+    return (
+        max(bound_x, min(x, max_x)),
+        max(bound_y, min(y, max_y)),
+    )
+
+
+def _geometry_position(geometry):
+    match = re.search(r"([+-]{1,2}\d+)([+-]{1,2}\d+)$", geometry)
+    if match is None:
+        return None
+
+    def coordinate(value):
+        return int(value.replace("+-", "-").replace("++", "+"))
+
+    return coordinate(match.group(1)), coordinate(match.group(2))
+
+
+class _ThemedMessageBox:
+    def __init__(
+            self, ctk, tk, root, theme, font, mkbtn, dialog,
+            window_scaling=1.0, monitor_provider=None):
+        self.ctk = ctk
+        self.tk = tk
+        self.root = root
+        self.theme = theme
+        self.font = font
+        self.mkbtn = mkbtn
+        self.dialog = dialog
+        self.window_scaling = window_scaling
+        self.monitor_provider = monitor_provider or (lambda: ())
+
+    def _show(self, title, message, kind, buttons, parent=None):
+        title = "" if title is None else str(title)
+        message = "" if message is None else str(message)
+        owner = self.root if parent is None else parent.winfo_toplevel()
+        try:
+            previous_focus = self.root.focus_get()
+        except self.tk.TclError:
+            previous_focus = None
+        theme = self.theme
+        accent, accent_hover, glyph = {
+            "info": (theme.THEME_ACCENT, theme.THEME_HOV, "ℹ"),
+            "question": (theme.THEME_ACCENT, theme.THEME_HOV, "?"),
+            "warning": (theme.GOLD, theme.GOLD_HOV, "⚠"),
+            "error": (theme.RED, theme.RED_HOV, "✕"),
+        }.get(kind, (theme.THEME_ACCENT, theme.THEME_HOV, "ℹ"))
+
+        owner.update_idletasks()
+        fallback_bounds = (
+            owner.winfo_vrootx(), owner.winfo_vrooty(),
+            owner.winfo_vrootwidth(), owner.winfo_vrootheight(),
+        )
+        monitor_bounds = _select_monitor_bounds(
+            (
+                owner.winfo_rootx(), owner.winfo_rooty(),
+                owner.winfo_width(), owner.winfo_height(),
+            ),
+            self.monitor_provider(),
+            fallback_bounds,
+        )
+        width, height = _fit_dialog_size(
+            (480, _messagebox_height(message)),
+            monitor_bounds[2:],
+            self.window_scaling,
+        )
+        window = self.dialog(
+            title, width, height, parent=owner, bounds=monitor_bounds)
+        try:
+            previous_grab = window.grab_current()
+        except self.tk.TclError:
+            previous_grab = None
+        result = {"value": buttons[0]}
+        closed = False
+
+        def choose(value):
+            nonlocal closed
+            if closed:
+                return "break"
+            closed = True
+            result["value"] = value
+            try:
+                if window.grab_current() == window:
+                    window.grab_release()
+            except self.tk.TclError:
+                pass
+            try:
+                window.destroy()
+            except self.tk.TclError:
+                pass
+            if previous_grab is not None:
+                try:
+                    if previous_grab.winfo_exists():
+                        previous_grab.grab_set()
+                except self.tk.TclError:
+                    pass
+            return "break"
+
+        cancel = buttons[0]
+        default = buttons[-1]
+        window.protocol("WM_DELETE_WINDOW", lambda: choose(cancel))
+        window.bind("<Escape>", lambda _event: choose(cancel))
+        window.bind("<Return>", lambda _event: choose(default))
+        window.bind("<KP_Enter>", lambda _event: choose(default))
+
+        header = self.ctk.CTkFrame(window, fg_color="transparent")
+        header.pack(fill="x", padx=22, pady=(20, 6))
+        self.ctk.CTkLabel(
+            header, text=glyph, font=self.font(22, "bold"),
+            text_color=accent, width=28,
+        ).pack(side="left", padx=(0, 8))
+        self.ctk.CTkLabel(
+            header, text=title, font=self.font(16, "bold"),
+            text_color=theme.FG, anchor="w", justify="left",
+        ).pack(side="left", fill="x", expand=True)
+
+        row = self.ctk.CTkFrame(window, fg_color="transparent")
+        row.pack(side="bottom", fill="x", padx=22, pady=(6, 20))
+        default_button = None
+        for index in range(len(buttons) - 1, -1, -1):
+            value = buttons[index]
+            is_default = value == default
+            button = self.mkbtn(
+                row, value, lambda value=value: choose(value),
+                kind="primary" if is_default else "ghost",
+                width=100, height=38, font=self.font(13, "bold"),
+                **({
+                    "fg_color": accent,
+                    "hover_color": accent_hover,
+                } if is_default else {}),
+            )
+            button.pack(side="right", padx=(8, 0) if index else 0)
+            if is_default:
+                default_button = button
+
+        body = self.ctk.CTkTextbox(
+            window, fg_color="transparent", border_width=0,
+            text_color=theme.SUB, font=self.font(14), wrap="word",
+            activate_scrollbars=True,
+        )
+        body.pack(fill="both", expand=True, padx=22, pady=(0, 6))
+        body.insert("1.0", message)
+        body.configure(state="disabled")
+
+        window.update_idletasks()
+        try:
+            window.wait_visibility()
+            window.grab_set()
+            default_button.focus_set()
+        except self.tk.TclError:
+            choose(cancel)
+        if not closed:
+            window.wait_window()
+        focus_target = previous_focus or owner
+        try:
+            if focus_target.winfo_exists():
+                focus_target.focus_set()
+        except self.tk.TclError:
+            pass
+        return result["value"]
+
+    def showinfo(
+            self, title=None, message=None, parent=None, icon=None, **_kwargs):
+        return self._show(
+            title, message, icon or "info", ("OK",), parent).casefold()
+
+    def showerror(
+            self, title=None, message=None, parent=None, icon=None, **_kwargs):
+        return self._show(
+            title, message, icon or "error", ("OK",), parent).casefold()
+
+    def showwarning(
+            self, title=None, message=None, parent=None, icon=None, **_kwargs):
+        return self._show(
+            title, message, icon or "warning", ("OK",), parent).casefold()
+
+    def askyesno(
+            self, title=None, message=None, parent=None, icon=None, **_kwargs):
+        return self._show(
+            title, message, icon or "question", ("No", "Yes"), parent
+        ) == "Yes"
 
 
 def _create_play_icon(size=16, fg_color="white", bg_color="black"):
@@ -188,10 +541,14 @@ def _create_kill_icon(size=16, fg_color="white", bg_color="black"):
     return img
 
 def gui():
-    if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+    if (os.environ.get("WAYLAND_DISPLAY")
+            and not os.environ.get("DISPLAY")
+            and not _owned_x11_socket_displays()):
         _desktop_error(
-            "The launcher needs XWayland. Install or enable XWayland, then "
-            "open BedrockOnLinux again; command-line tools remain available.")
+            "No XWayland display was published to this session. Install or "
+            "enable XWayland and make sure the app launcher inherited the "
+            "current DISPLAY/XAUTHORITY environment; command-line tools "
+            "remain available.")
         return
     from .deps import ensure_gui_deps
     ensure_gui_deps()
@@ -220,13 +577,24 @@ def gui():
     except Exception:
         pass
 
+    attempted_displays = []
+    original_display = os.environ.get("DISPLAY")
     try:
-        root = ctk.CTk(className=PRETTY)
+        root = _create_gui_root(
+            ctk, tk, attempted=attempted_displays)
     except Exception as e:
+        tried = ", ".join(attempted_displays) or (
+            original_display or "<unset>")
         _desktop_error(
-            f"No usable X11/XWayland display ({e}). Enable XWayland or use "
-            "the command line.")
+            f"No usable X11/XWayland display ({e}). Tried DISPLAY={tried}. "
+            "Check that the app launcher inherited this session's DISPLAY "
+            "and XAUTHORITY, or use the command line.")
         return
+    retained_display = os.environ.get("DISPLAY")
+    if retained_display != original_display:
+        warn(
+            "Recovered a stale XWayland session display: "
+            f"{original_display or '<unset>'} → {retained_display}.")
     root.title(PRETTY)
     root.geometry("980x650")
     root.minsize(860, 640)
@@ -296,118 +664,72 @@ def gui():
         opts.update(kw)
         return ctk.CTkButton(parent, text=text, **opts)
 
-    def center_over_root(win, w, h):
-        root.update_idletasks()
-        x = root.winfo_rootx() + (root.winfo_width() - w) // 2
-        y = root.winfo_rooty() + (root.winfo_height() - h) // 2
-        win.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
+    def center_over(
+            win, owner, bounds=None, compensate_decorations=True):
+        owner.update_idletasks()
+        win.update_idletasks()
+        if bounds is None:
+            bounds = (
+                win.winfo_vrootx(), win.winfo_vrooty(),
+                win.winfo_vrootwidth(), win.winfo_vrootheight(),
+            )
+        x, y = _centered_window_position(
+            (
+                owner.winfo_rootx(), owner.winfo_rooty(),
+                owner.winfo_width(), owner.winfo_height(),
+            ),
+            (win.winfo_width(), win.winfo_height()),
+            bounds,
+        )
+        position = _geometry_position(win.geometry())
+        if compensate_decorations and position is not None:
+            decoration_x = max(0, win.winfo_rootx() - position[0])
+            decoration_y = max(0, win.winfo_rooty() - position[1])
+            x -= decoration_x
+            y -= decoration_y
+            bound_x, bound_y, bound_width, bound_height = bounds
+            outer_width = win.winfo_width() + decoration_x * 2
+            outer_height = win.winfo_height() + decoration_y
+            x = max(
+                bound_x,
+                min(x, bound_x + max(0, bound_width - outer_width)),
+            )
+            y = max(
+                bound_y,
+                min(y, bound_y + max(0, bound_height - outer_height)),
+            )
+        win.geometry(f"{x:+d}{y:+d}")
 
-    def dialog(title, w, h):
+    def dialog(title, w, h, parent=None, bounds=None):
         """A CTkToplevel with consistent chrome: centered, dark, Esc-to-close."""
-        d = ctk.CTkToplevel(root)
+        owner = (root if parent is None else parent).winfo_toplevel()
+        d = ctk.CTkToplevel(owner)
         d.title(title)
         d.configure(fg_color=T.CARD)
-        d.transient(root)
+        d.transient(owner)
         d.resizable(False, False)
-        center_over_root(d, w, h)
-        # Some window managers ignore the geometry set above because the
-        # window isn't mapped yet and place it themselves (often top/
-        # right). Re-center once it's actually on screen.
-        d.after(10, lambda: center_over_root(d, w, h))
-        d.after(120, lambda: (center_over_root(d, w, h), d.lift()))
-        d.bind("<Escape>", lambda e: d.destroy())
+        d.geometry(f"{w}x{h}")
+        center_over(
+            d, owner, bounds, compensate_decorations=False)
+
+        def recenter(lift=False):
+            if not d.winfo_exists():
+                return
+            center_over(d, owner, bounds)
+            if lift:
+                d.lift()
+
+        # Some window managers ignore geometry until the window is mapped.
+        d.after(10, recenter)
+        d.after(120, lambda: recenter(lift=True))
+        d.bind("<Escape>", lambda _event: d.destroy())
         return d
 
-    # ----------------------------------------------------------------
-    # Themed messagebox — built from this app's own dialog()/mkbtn()
-    # chrome instead of a third-party widget, so it matches pixel-for-
-    # pixel (same card color, corner radius, button styles, fonts).
-    # Drop-in replacement for tkinter.messagebox: showinfo / showerror /
-    # showwarning / askyesno, called the same way (title, message,
-    # parent=..., icon=...). `parent`/extra kwargs are accepted for
-    # compatibility but this always centers over the main window, same
-    # as the rest of the app's dialogs (e.g. restart_prompt()).
-    # ----------------------------------------------------------------
-    _MSG_ACCENT = {
-        "info":     (T.THEME_ACCENT, T.THEME_HOV, "ℹ"),
-        "question": (T.THEME_ACCENT, T.THEME_HOV, "?"),
-        "warning":  (T.GOLD,         T.GOLD_HOV,  "⚠"),
-        "error":    (T.RED,          T.RED_HOV,   "✕"),
-    }
-
-    def _msgbox(title, message, kind="info", buttons=("OK",)):
-        accent, accent_hov, glyph = _MSG_ACCENT.get(kind, _MSG_ACCENT["info"])
-        message = str(message)
-
-        w = 440
-        # Rough height estimate from line count so short and long
-        # messages both look right; clamps keep it sane either way.
-        approx_lines = message.count("\n") + 1 + len(message) // 42
-        h = max(180, min(440, 140 + approx_lines * 22))
-
-        d = dialog(title, w, h)
-        d.grab_set()
-        result = {"value": buttons[0]}
-
-        def choose(val):
-            result["value"] = val
-            d.grab_release()
-            d.destroy()
-
-        d.protocol("WM_DELETE_WINDOW", lambda: choose(buttons[0]))
-        d.bind("<Escape>", lambda e: choose(buttons[0]))
-
-        head = ctk.CTkFrame(d, fg_color="transparent")
-        head.pack(fill="x", padx=22, pady=(20, 6))
-        ctk.CTkLabel(head, text=glyph, font=font(22, "bold"),
-                     text_color=accent, width=28).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(head, text=title, font=font(16, "bold"),
-                     text_color=T.FG, anchor="w", justify="left"
-                     ).pack(side="left", fill="x", expand=True)
-
-        body = ctk.CTkFrame(d, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=22, pady=(0, 6))
-        ctk.CTkLabel(body, text=message, font=font(14), text_color=T.SUB,
-                     anchor="w", justify="left", wraplength=w - 44
-                     ).pack(fill="both", expand=True)
-
-        row = ctk.CTkFrame(d, fg_color="transparent")
-        row.pack(fill="x", padx=22, pady=(0, 20))
-        if len(buttons) == 1:
-            mkbtn(row, buttons[0], lambda: choose(buttons[0]), kind="primary",
-                  width=100, height=38, font=font(13, "bold"),
-                  fg_color=accent, hover_color=accent_hov).pack(side="right")
-        else:
-            mkbtn(row, buttons[1], lambda: choose(buttons[1]), kind="primary",
-                  width=100, height=38, font=font(13, "bold"),
-                  fg_color=accent, hover_color=accent_hov).pack(side="right")
-            mkbtn(row, buttons[0], lambda: choose(buttons[0]), kind="ghost",
-                  width=100, height=38, font=font(13)).pack(side="right", padx=(0, 8))
-
-        d.wait_window()
-        return result["value"]
-
-    class messagebox:
-        """Drop-in replacement for tkinter.messagebox (see _msgbox above)."""
-
-        @staticmethod
-        def showinfo(title=None, message=None, parent=None, **kw):
-            _msgbox(title, message, "info", ("OK",))
-
-        @staticmethod
-        def showerror(title=None, message=None, parent=None, **kw):
-            _msgbox(title, message, "error", ("OK",))
-
-        @staticmethod
-        def showwarning(title=None, message=None, parent=None, **kw):
-            _msgbox(title, message, "warning", ("OK",))
-
-        @staticmethod
-        def askyesno(title=None, message=None, parent=None, icon=None, **kw):
-            return _msgbox(title, message, icon or "question",
-                            ("No", "Yes")) == "Yes"
-
-    mb = messagebox
+    messagebox = _ThemedMessageBox(
+        ctk, tk, root, T, font, mkbtn, dialog,
+        window_scaling=_ui_scale,
+        monitor_provider=monitor_geometries,
+    )
 
     class Tooltip:
         """Small delayed hover label for icon-only buttons."""
@@ -455,9 +777,6 @@ def gui():
     tab_game = None
     tab_launcher = None
 
-    # ==================================================================
-    # Top bar: brand + account
-    # ==================================================================
     top = ctk.CTkFrame(root, fg_color="transparent")
     top.pack(fill="x", padx=22, pady=(18, 8))
 
@@ -475,9 +794,14 @@ def gui():
                              text_color=T.FG)
     brand_lbl.pack(side="left", padx=(3, 6), pady=8)
     
-    brand_lbl.bind("<Button-1>", lambda e: toggle_changelog())
-    brand_lbl.bind("<Enter>", lambda e: brand_lbl.configure(text_color=T.THEME_ACCENT))
-    brand_lbl.bind("<Leave>", lambda e: brand_lbl.configure(text_color=T.FG))
+    brand_lbl.bind("<Button-1>", lambda _event: toggle_changelog())
+    brand_lbl.bind(
+        "<Enter>",
+        lambda _event: brand_lbl.configure(text_color=T.THEME_ACCENT),
+    )
+    brand_lbl.bind(
+        "<Leave>", lambda _event: brand_lbl.configure(text_color=T.FG)
+    )
     Tooltip(brand_lbl, "Changelog")
 
     ctk.CTkLabel(brand, text=f"v{VERSION}", font=font(12, "bold"), text_color=T.SUB
@@ -496,8 +820,8 @@ def gui():
             
     for w in [icon_btn, ll]:
         w.bind("<Button-1>", _open_github)
-        w.bind("<Enter>", lambda e: _icon_hover(True))
-        w.bind("<Leave>", lambda e: _icon_hover(False))
+        w.bind("<Enter>", lambda _event: _icon_hover(True))
+        w.bind("<Leave>", lambda _event: _icon_hover(False))
         Tooltip(w, "GitHub")
 
     acct = ctk.CTkFrame(top, fg_color=T.CARD, corner_radius=14)
@@ -516,9 +840,6 @@ def gui():
     acct_txt_lbl._tooltip = Tooltip(acct_txt_lbl, "")
     acct_btn._tooltip = Tooltip(acct_btn, "")
 
-    # ==================================================================
-    # View area
-    # ==================================================================
     view_area = ctk.CTkFrame(root, fg_color="transparent")
     view_area.pack(fill="both", expand=True, padx=22, pady=6)
 
@@ -539,9 +860,6 @@ def gui():
         fg_color=T.THEME_DIM, bg_color=T.CARD, corner_radius=8)
     selected_chip.pack(pady=(14, 0))
 
-    # ==================================================================
-    # Status + progress
-    # ==================================================================
     status = ctk.CTkFrame(root, fg_color="transparent")
     status.pack(fill="x", padx=26, pady=(4, 0))
     status_txt = tk.StringVar(value="Select a version to play.")
@@ -552,9 +870,6 @@ def gui():
                                progress_color=T.THEME_ACCENT, fg_color=T.CARD_2)
     prog.set(0)
 
-    # ==================================================================
-    # Control dock: version picker · details · settings · play
-    # ==================================================================
     dock = ctk.CTkFrame(root, fg_color=T.CARD, corner_radius=16,
                          border_width=1, border_color=T.BORDER)
     dock.pack(fill="x", padx=22, pady=(10, 16))
@@ -686,7 +1001,7 @@ def gui():
             selected_chip.configure(text="")
             return
         is_beta = "BETA" in lab
-        
+
         s = load_settings()
         changed = False
         if s.get("ui_is_beta") != is_beta:
@@ -700,7 +1015,7 @@ def gui():
             
         if changed:
             save_settings(s)
-            
+
         selected_chip.configure(
             text=f"  {lab.split('  ')[0]}"
                  f"{'  ·  BETA' if is_beta else ''}  ",
@@ -717,7 +1032,8 @@ def gui():
         try:
             if hasattr(play_btn, "_tooltip"):
                 is_kill = "Kill" in play_btn._tooltip.text
-                play_btn._tooltip.text = f"{'Kill' if is_kill else 'Play'} {cur_mc_ver}"
+                play_btn._tooltip.text = (
+                    f"{'Kill' if is_kill else 'Play'} {cur_mc_ver}")
         except Exception:
             pass
 
@@ -768,7 +1084,7 @@ def gui():
             s2["picker_height"] = new_h
             save_settings(s2)
             
-        def update_position(e=None):
+        def update_position(_event=None):
             if _pick["win"] != win: return
             try:
                 cur_x = ver_field.winfo_rootx() - root.winfo_rootx()
@@ -790,7 +1106,7 @@ def gui():
         for widget in (grip_container, grip):
             widget.bind("<B1-Motion>", drag_resize)
             widget.bind("<ButtonRelease-1>", end_drag)
-            widget.bind("<Button-1>", lambda e: search.focus_set())
+            widget.bind("<Button-1>", lambda _event: search.focus_set())
 
         ver_arrow.configure(text="▴")
 
@@ -819,8 +1135,11 @@ def gui():
                 text_color=c_bg if lab == cur else T.FG,
                 font=font(12), command=lambda l=lab: set_version(l))
             if lab != cur:
-                def _enter(e, r=row, c=c_bg): r.configure(text_color=c)
-                def _leave(e, r=row): r.configure(text_color=T.FG)
+                def _enter(_event, r=row, c=c_bg):
+                    r.configure(text_color=c)
+
+                def _leave(_event, r=row):
+                    r.configure(text_color=T.FG)
                 row.bind("<Enter>", _enter, add="+")
                 row.bind("<Leave>", _leave, add="+")
             _pick["buttons"].append((lab, row))
@@ -846,18 +1165,14 @@ def gui():
             shown = [lab for lab in labels if q in lab.lower()] if q else labels
             if shown:
                 set_version(shown[0])
-                return "break"
             return "break"
 
         search.bind("<KeyRelease>", rebuild)
         search.bind("<Return>", on_enter)
-        search.bind("<Escape>", lambda e: close_picker())
-        search.bind("<KeyRelease>", rebuild)
-        search.bind("<Return>", on_enter)
-        search.bind("<Escape>", lambda e: close_picker())
+        search.bind("<Escape>", lambda _event: close_picker())
         
         rebuild()
-        win.bind("<Escape>", lambda e: close_picker())
+        win.bind("<Escape>", lambda _event: close_picker())
         
     def global_click(event):
         w = _pick.get("win")
@@ -901,9 +1216,9 @@ def gui():
             ver_lbl.configure(text_color=T.FG)
             
     for _w in (ver_field, ver_lbl, ver_arrow):
-        _w.bind("<Enter>", lambda e: _ver_hover(True))
-        _w.bind("<Leave>", lambda e: _ver_hover(False))
-        _w.bind("<Button-1>", lambda e: open_picker())
+        _w.bind("<Enter>", lambda _event: _ver_hover(True))
+        _w.bind("<Leave>", lambda _event: _ver_hover(False))
+        _w.bind("<Button-1>", lambda _event: open_picker())
 
     rbox = ctk.CTkFrame(bar, fg_color="transparent")
     rbox.pack(side="right")
@@ -934,9 +1249,6 @@ def gui():
     det_btn.pack(side="right", padx=(0, 8))
     Tooltip(det_btn, "Show Activity Logs")
 
-    # ==================================================================
-    # Details / log panel
-    # ==================================================================
     detwrap = ctk.CTkFrame(dock, fg_color=T.CARD_2, corner_radius=12, height=220)
     detwrap.pack_propagate(False)
     log_head = ctk.CTkFrame(detwrap, fg_color="transparent")
@@ -993,9 +1305,6 @@ def gui():
             detwrap.pack_forget()
             det_btn.configure(text_color=T.FG, fg_color=T.CARD_2)
 
-    # ==================================================================
-    # Status / progress helpers
-    # ==================================================================
     def set_status(t, color=T.SUB):
         root.after(0, lambda: (status_txt.set(t),
                                 status_lbl.configure(text_color=color)))
@@ -1082,9 +1391,6 @@ def gui():
                 bar_busy()
     log._LOG_SINK = lambda m: root.after(0, glog, m)
 
-    # ==================================================================
-    # Account
-    # ==================================================================
     def acct_state(ph):
         gt = msa_gamertag() or "Xbox Live"
         if ph == "in":
@@ -1199,7 +1505,7 @@ def gui():
             acct_state("in" if msa_signed_in() else "out")
             d.destroy()
         d.protocol("WM_DELETE_WINDOW", on_close)
-        d.bind("<Escape>", lambda e: on_close())
+        d.bind("<Escape>", lambda _event: on_close())
         row = ctk.CTkFrame(d, fg_color="transparent")
         row.pack(anchor="center", pady=(24, 8))
         mkbtn(row, "Sign In to your Microsoft account", lambda: subprocess.Popen(
@@ -1285,9 +1591,6 @@ def gui():
                           height=32, font=font(16), corner_radius=8)
         copy_btn.pack(side="left", padx=(2, 0))
 
-    # ==================================================================
-    # Versions
-    # ==================================================================
     def refresh_versions():
         beta = load_settings().get("show_betas", False)
         try:
@@ -1322,9 +1625,6 @@ def gui():
         except ValueError:
             return None
 
-    # ==================================================================
-    # Play & Kill
-    # ==================================================================
     def busy(on):
         ui["busy"] = on
         import warnings
@@ -1374,6 +1674,24 @@ def gui():
                 set_status("Minecraft closed.", T.SUB)
             except Exception as e:
                 message = str(e) or type(e).__name__
+                try:
+                    ack = gpu_crash_acknowledgement_status()
+                except Exception:
+                    ack = None
+                if ack and ack.can_acknowledge:
+                    if ack.previous_boot_fault:
+                        message += (
+                            "\n\nAfter repairing/updating the graphics driver "
+                            "and rebooting, open Settings → Tools to "
+                            "acknowledge this verified previous-boot fault."
+                        )
+                    else:
+                        message += (
+                            "\n\nThis interrupted launch belongs to a previous "
+                            "boot and no fatal driver event was detected. "
+                            "After checking why it stopped, open Settings → "
+                            "Tools to acknowledge it."
+                        )
                 log._LOG_SINK(f"xx {message}")
                 set_status("Minecraft could not start.", T.RED)
                 root.after(0, lambda text=message: messagebox.showerror(
@@ -1384,9 +1702,6 @@ def gui():
                 root.after(0, lambda: busy(False))
         threading.Thread(target=work, daemon=False).start()
 
-    # ==================================================================
-    # Settings (tabbed) — built in, lives in view_area next to the hero
-    # ==================================================================
     settings_view = ctk.CTkFrame(view_area, fg_color=T.CARD, corner_radius=18,
                                   border_width=1, border_color=T.BORDER)
 
@@ -1452,7 +1767,6 @@ def gui():
         tab_advanced = _mk_sf(tabs.add("Advanced"))
         tab_tools = _mk_sf(tabs.add("Tools"))
 
-        # ---- General --------------------------------------------------
         ctk.CTkLabel(tab_general, text="UI scale", text_color=T.FG,
                      font=font(13)).pack(anchor="w", pady=(4, 2), padx=4)
         ctk.CTkLabel(tab_general,
@@ -1547,7 +1861,6 @@ def gui():
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=8, padx=4)
 
-        # ---- Advanced ---------------------------------------------------
         diag_v = tk.BooleanVar(value=load_settings().get("diagnostics", False))
 
         def save_diag():
@@ -1559,6 +1872,24 @@ def gui():
                       variable=diag_v, command=save_diag,
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=(4, 12), padx=4)
+
+        legacy_renderer_v = tk.BooleanVar(
+            value=load_settings().get("renderer", "auto") == "opengl")
+
+        def save_renderer():
+            s2 = load_settings()
+            s2["renderer"] = (
+                "opengl" if legacy_renderer_v.get() else "auto"
+            )
+            save_settings(s2)
+
+        ctk.CTkSwitch(
+            tab_advanced,
+            text="Legacy compatibility renderer\n"
+                 "(bypasses DXVK on Vulkan 1.2 GPUs such as Intel Haswell)",
+            variable=legacy_renderer_v, command=save_renderer,
+            progress_color=T.THEME_ACCENT, font=font(13),
+        ).pack(anchor="w", pady=(0, 12), padx=4)
 
         ctk.CTkLabel(tab_advanced, text="Custom environment variables",
                      text_color=T.SUB, font=font(11, "bold"),
@@ -1581,7 +1912,7 @@ def gui():
             env_entry.insert(0, saved_env)
         env_entry.bind("<KeyRelease>", save_custom_env)
         env_entry.bind("<FocusOut>", save_custom_env)
-        env_entry.bind("<Return>", lambda e: "break")
+        env_entry.bind("<Return>", lambda _event: "break")
         
         ctk.CTkLabel(tab_advanced, text="Gamescope arguments",
                      text_color=T.SUB, font=font(11, "bold"),
@@ -1604,9 +1935,8 @@ def gui():
             gamescope_entry.insert(0, saved_gamescope)
         gamescope_entry.bind("<KeyRelease>", save_gamescope)
         gamescope_entry.bind("<FocusOut>", save_gamescope)
-        gamescope_entry.bind("<Return>", lambda e: "break")
+        gamescope_entry.bind("<Return>", lambda _event: "break")
 
-        # ===== Game files location =====
         def fmt_size(bytes_val):
             for unit in ['B', 'KB', 'MB', 'GB']:
                 if bytes_val < 1024.0:
@@ -1629,7 +1959,6 @@ def gui():
 
         loc_var = tk.StringVar(value=get_install_location())
 
-        # --- Path row (simple, flat) ---
         path_row = ctk.CTkFrame(tab_advanced, fg_color="transparent")
         path_row.pack(fill="x", padx=4, pady=(0, 2))
 
@@ -1647,7 +1976,6 @@ def gui():
         loc_field.pack(side="left", fill="x", expand=True, padx=(0, 4))
         loc_tip = Tooltip(loc_field, "Full path")
 
-        # --- Copy button ---
         def _copy_path():
             root.clipboard_clear()
             root.clipboard_append(loc_var.get())
@@ -1659,7 +1987,6 @@ def gui():
         copy_btn.pack(side="right", padx=(0, 2))
         Tooltip(copy_btn, "Copy path")
 
-        # --- Open button ---
         def _open_folder():
             try:
                 subprocess.Popen(["xdg-open", loc_var.get()],
@@ -1673,7 +2000,6 @@ def gui():
         open_btn.pack(side="right", padx=(0, 2))
         Tooltip(open_btn, "Open in file manager")
 
-        # --- Free space display (below) ---
         loc_free_var = tk.StringVar(value="")
         free_lbl = ctk.CTkLabel(tab_advanced, textvariable=loc_free_var,
                                 text_color=T.MUTED, font=font(10), anchor="w")
@@ -1695,7 +2021,6 @@ def gui():
 
         _refresh_free_space()
 
-        # --- Buttons row (Browse / Reset) ---
         loc_row = ctk.CTkFrame(tab_advanced, fg_color="transparent")
         loc_row.pack(fill="x", pady=(4, 2), padx=4)
 
@@ -1726,16 +2051,14 @@ def gui():
             if _relocate_blocked():
                 return
 
-            # Check if relocation is allowed (BOL_HOME not externally set)
             if not is_relocation_allowed():
-                mb.showerror(
+                messagebox.showerror(
                     "Relocation disabled",
                     "BOL_HOME is set in the environment. The location cannot be changed via the GUI.",
                     parent=d
                 )
                 return
 
-            # Try Zenity first (modern GTK dialog)
             chosen = None
             try:
                 result = subprocess.run(
@@ -1746,17 +2069,14 @@ def gui():
                 if result.returncode == 0 and result.stdout.strip():
                     chosen = result.stdout.strip()
                 else:
-                    # User cancelled or error – just return
                     return
             except FileNotFoundError:
-                # Zenity not installed – fallback to Tkinter
                 from tkinter import filedialog
                 chosen = filedialog.askdirectory(
                     parent=d, title="Choose a folder for BedrockOnLinux's files",
                     mustexist=False
                 )
             except subprocess.SubprocessError:
-                # Other subprocess error – fallback to Tkinter
                 from tkinter import filedialog
                 chosen = filedialog.askdirectory(
                     parent=d, title="Choose a folder for BedrockOnLinux's files",
@@ -1771,7 +2091,7 @@ def gui():
             if paths_overlap(old_dir, new_dir):
                 if old_dir.resolve() == new_dir.resolve():
                     return
-                mb.showerror(
+                messagebox.showerror(
                     "Invalid location",
                     "The new location can't be inside the current location "
                     "(or the other way around). Choose a separate folder.",
@@ -1779,7 +2099,6 @@ def gui():
                 )
                 return
 
-            # ===== WARNING + EXPLANATION =====
             warning_msg = (
                 f"🔧 Game Location Change\n\n"
                 f"Current location: {old_dir}\n"
@@ -1790,18 +2109,17 @@ def gui():
                 f"Proceed with relocation?"
             )
 
-            if not mb.askyesno("Confirm Relocation", warning_msg, parent=d, icon='info'):
+            if not messagebox.askyesno(
+                    "Confirm Relocation", warning_msg, parent=d, icon="info"):
                 return
 
-            # ===== Check if new location already has data =====
-            # We need to check for the presence of any of the items we'll move.
             existing_data = False
             for item in DIRS_TO_MOVE + FILES_TO_MOVE:
                 if (new_dir / item).exists():
                     existing_data = True
                     break
             if existing_data:
-                if not mb.askyesno(
+                if not messagebox.askyesno(
                     "Existing data detected",
                     "The new location already contains some user data folders or files.\n\n"
                     "Proceeding will move your current data there, overwriting any existing\n"
@@ -1812,7 +2130,6 @@ def gui():
                 ):
                     return
 
-            # ===== Calculate total size of data to move =====
             total_size = 0
             for sub in DIRS_TO_MOVE:
                 src = old_dir / sub
@@ -1825,12 +2142,11 @@ def gui():
                 if settings_src.exists() and settings_src.is_file():
                     total_size += settings_src.stat().st_size
 
-            # ===== Check free space on new location =====
             new_path = new_dir if new_dir.exists() else new_dir.parent
             try:
                 free_space = shutil.disk_usage(new_path).free
             except Exception as e:
-                mb.showerror(
+                messagebox.showerror(
                     "Could not check free space",
                     f"Unable to determine free space on {new_path}:\n{e}",
                     parent=d
@@ -1838,7 +2154,7 @@ def gui():
                 return
 
             if total_size > free_space:
-                mb.showerror(
+                messagebox.showerror(
                     "Not enough free space",
                     f"The new location has {fmt_size(free_space)} free, "
                     f"but you need {fmt_size(total_size)} to move your user data.\n\n"
@@ -1847,7 +2163,6 @@ def gui():
                 )
                 return
 
-            # ===== Set busy state and acquire lock =====
             ui["busy"] = True
             loc_status.set("Moving user data…")
 
@@ -1865,43 +2180,35 @@ def gui():
                     msg = f"❌ Could not relocate user data:\n{e}"
                     ok_flag = False
                 except Exception as e:
-                    # Anything unexpected (migrate_data already rolled back
-                    # and restored the pointer on its own known failure
-                    # paths, but this is a defensive catch-all so busy
-                    # state below is always cleared regardless).
                     msg = f"❌ Could not relocate user data:\n{e}"
                     ok_flag = False
                 finally:
-                    # Release busy state
                     ui["busy"] = False
                     def finish():
                         loc_status.set("")
                         if ok_flag:
                             loc_var.set(str(new_dir))
                             _update_loc_display()
-                            # Force restart immediately
-                            mb.showinfo("Relocation Successful", msg, parent=d)
+                            messagebox.showinfo(
+                                "Relocation Successful", msg, parent=d)
                             relaunch_app()
                         else:
-                            mb.showerror("Relocation Error", msg, parent=d)
+                            messagebox.showerror(
+                                "Relocation Error", msg, parent=d)
                     d.after(0, finish)
 
-            # Run the work inside a prefix lock. If acquiring the lock
-            # itself fails (contention, timeout, etc.) work() never
-            # runs, so its own finally-block never fires either -- make
-            # sure busy state is cleared here too, or a lock failure
-            # would leave the UI permanently stuck in "busy".
+            # A lock failure occurs before work() can clear the busy state.
             def locked_work():
                 try:
                     with prefix_operation_lock("relocate user data"):
                         work()
                 except Exception as e:
-                    err_msg = str(e)  # ← Capture the error message
+                    err_msg = str(e)
                     if ui.get("busy"):
                         ui["busy"] = False
                         def fail():
                             loc_status.set("")
-                            mb.showerror(
+                            messagebox.showerror(
                                 "Relocation Error",
                                 f"Could not start relocation:\n{err_msg}",
                                 parent=d)
@@ -1912,9 +2219,8 @@ def gui():
         def do_reset():
             if _relocate_blocked():
                 return
-            # Check if relocation is allowed
             if not is_relocation_allowed():
-                mb.showerror(
+                messagebox.showerror(
                     "Relocation disabled",
                     "BOL_HOME is set in the environment. The location cannot be reset via the GUI.",
                     parent=d
@@ -1922,7 +2228,7 @@ def gui():
                 return
             if get_install_location() == default_install_location():
                 return
-            if not mb.askyesno(
+            if not messagebox.askyesno(
                     "Reset location",
                     "Reset to the default location "
                     f"({default_install_location()})?\n\nThis only clears "
@@ -1932,8 +2238,9 @@ def gui():
             clear_install_location()
             loc_var.set(default_install_location())
             _update_loc_display()
-            # Force restart
-            mb.showinfo("Reset Complete", "Location reset to default. The launcher will now restart.")
+            messagebox.showinfo(
+                "Reset Complete",
+                "Location reset to default. The launcher will now restart.")
             relaunch_app()
 
         loc_btns = ctk.CTkFrame(loc_row, fg_color="transparent")
@@ -1947,7 +2254,6 @@ def gui():
                      text_color=T.GOLD, font=font(11)
                      ).pack(anchor="w", pady=(4, 8), padx=4)
         
-        # ---- Tools --------------------------------------------------
         imp_status = tk.StringVar(value="")
 
         def do_import():
@@ -1978,13 +2284,14 @@ def gui():
                     msg += ("\n\nMinecraft is running — restart it to see the "
                             "new content.")
                 d.after(0, lambda: (imp_status.set(""),
-                                    mb.showinfo("Import", msg, parent=d)))
+                                    messagebox.showinfo(
+                                        "Import", msg, parent=d)))
             threading.Thread(target=work, daemon=True).start()
 
         def do_inject():
             from tkinter import filedialog
             if not _mc_running():
-                mb.showwarning(
+                messagebox.showwarning(
                     "DLL injector",
                     "Start Minecraft first and wait for the main menu, then "
                     "inject.", parent=d)
@@ -2011,14 +2318,45 @@ def gui():
                 except Exception as e:
                     msg = f"Couldn't inject:\n{e}"
                 d.after(0, lambda: (imp_status.set(""),
-                                    mb.showinfo("DLL injector", msg,
+                                    messagebox.showinfo("DLL injector", msg,
                                                 parent=d)))
             threading.Thread(target=work, daemon=True).start()
 
-        for label, fn, kind in (
-            ("Import content (.mcpack / .mcworld / .mcaddon)…",
+        def do_create_profile():
+            from tkinter import simpledialog
+            name = simpledialog.askstring(
+                "Create account profile",
+                "Profile name (each profile has its own Xbox login, prefix "
+                "and worlds):",
+                parent=d,
+            )
+            if not name:
+                return
+            try:
+                require_profile_shortcuts_supported()
+                profile = create_profile(name)
+                shortcut = write_profile_shortcut(
+                    name, profile_dir=profile,
+                )
+                command = profile_launch_command(profile)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Account profile", str(exc), parent=d)
+                return
+            messagebox.showinfo(
+                "Account profile created",
+                f"Created:\n{profile}\n\nDesktop shortcut:\n{shortcut}\n\n"
+                "Add that shortcut as a non-Steam game for the matching "
+                f"Steam user.\n\nDirect command:\n{command}",
+                parent=d,
+            )
+
+        tool_actions = [
+            ("Import content (.mcpack / .mcworld / .mcaddon / .mcskin)…",
              do_import, "ghost"),
             ("Inject a client DLL…", do_inject, "ghost"),
+            ("Create isolated Xbox account shortcut…",
+             do_create_profile, "ghost"),
             ("Open Minecraft folder", lambda: subprocess.Popen(
                 ["xdg-open", str(_mojang_dir())], stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL), "ghost"),
@@ -2028,18 +2366,63 @@ def gui():
             ("Repair (reset Wine prefix)", lambda: threading.Thread(
                 target=reset_prefix, daemon=True).start(), "ghost"),
             ("Force stop Minecraft", kill_wine, "danger"),
-        ):
-            mkbtn(tab_tools, label, fn, kind=kind, anchor="w",
-                  height=38).pack(fill="x", pady=3, padx=4)
+        ]
+
+        try:
+            ack_status = gpu_crash_acknowledgement_status()
+        except Exception:
+            ack_status = None
+        if ack_status and ack_status.can_acknowledge:
+            def do_ack_gpu():
+                if ack_status.previous_boot_fault:
+                    safety_instruction = (
+                        "Continue only after repairing/updating the graphics "
+                        "driver and rebooting."
+                    )
+                else:
+                    safety_instruction = (
+                        "No fatal driver event was detected for this marker. "
+                        "Continue only after checking why the previous session "
+                        "or machine stopped."
+                    )
+                if not messagebox.askyesno(
+                        "Acknowledge previous GPU incident",
+                        ack_status.message
+                        + "\n\n" + safety_instruction
+                        + " Acknowledge now?",
+                        parent=d):
+                    return
+                if acknowledge_gpu_crash():
+                    messagebox.showinfo(
+                        "GPU safety",
+                        "The previous-boot incident was acknowledged. PLAY "
+                        "will still run all current graphics safety checks.",
+                        parent=d,
+                    )
+                    gpu_ack_btn.pack_forget()
+                else:
+                    current = gpu_crash_acknowledgement_status()
+                    messagebox.showerror(
+                        "GPU safety", current.message, parent=d)
+
+            tool_actions.insert(
+                0,
+                ("Acknowledge previous GPU incident…", do_ack_gpu, "danger"),
+            )
+
+        gpu_ack_btn = None
+        for label, fn, kind in tool_actions:
+            button = mkbtn(tab_tools, label, fn, kind=kind, anchor="w",
+                           height=38)
+            button.pack(fill="x", pady=3, padx=4)
+            if label.startswith("Acknowledge previous GPU"):
+                gpu_ack_btn = button
 
         ctk.CTkLabel(tab_tools, textvariable=imp_status, text_color=T.GOLD,
                      font=font(11)).pack(anchor="w", pady=(6, 0), padx=4)
 
     _build_settings()
 
-    # ==================================================================
-    # Changelog
-    # ==================================================================
     changelog_view = ctk.CTkFrame(view_area, fg_color=T.CARD, corner_radius=18,
                                    border_width=1, border_color=T.BORDER)
 
@@ -2078,7 +2461,7 @@ def gui():
                     tags.append("code")
                 widget.insert("end", token, tuple(tags))
 
-    def render_markdown_to_text(widget, md, wrap_width=75):
+    def render_markdown_to_text(widget, md):
         lines = md.split("\n")
         in_code_block = False
         code_content = []
@@ -2106,7 +2489,6 @@ def gui():
                 code_content.append(content_line)
                 continue
 
-            # Headers
             if content_line.startswith("#"):
                 hashes = len(content_line) - len(content_line.lstrip("#"))
                 content = content_line.lstrip("#").strip()
@@ -2114,7 +2496,6 @@ def gui():
                 widget.insert("end", content + "\n", (tag, "quote") if is_quote else tag)
                 continue
 
-            # Blockquotes
             if is_quote:
                 if content_line:
                     _insert_inline_formatted(widget, content_line + "\n", "quote")
@@ -2129,13 +2510,12 @@ def gui():
                 _insert_inline_formatted(widget, content + "\n", "bullet")
                 continue
 
-            # Normal lines
             if stripped == "":
                 widget.insert("end", "\n", "normal")
             else:
                 _insert_inline_formatted(widget, line + "\n", "normal")
 
-    def render_launcher_changelog(widget, rels, dividers, wrap_width=75):
+    def render_launcher_changelog(widget, rels, dividers):
         for i, rel in enumerate(rels):
             tag_name = rel.get("tag_name", "Unknown")
             name = rel.get("name")
@@ -2152,7 +2532,7 @@ def gui():
             widget.insert("end", date + "\n", "release_date")
 
             if body:
-                render_markdown_to_text(widget, body, wrap_width=wrap_width)
+                render_markdown_to_text(widget, body)
 
             if i < len(rels) - 1:
                 div_frame = ctk.CTkFrame(widget, fg_color=T.MUTED, height=2, width=1, corner_radius=0)
@@ -2162,7 +2542,7 @@ def gui():
                 widget.insert("end", "\n\n", "divider_tag")
                 dividers.append(div_frame)
 
-    def render_game_changelog(widget, data, dividers, wrap_width=75):
+    def render_game_changelog(widget, data, dividers):
         from .util import format_display_version
         ui_sel = mc_var.get()
         ui_wants_beta = "BETA" in ui_sel if ui_sel else False
@@ -2203,7 +2583,6 @@ def gui():
                         self.w = w
                         self.tags = []
                         self.current_href = None
-                        self.in_blockquote = False
 
                     def _ensure_newlines(self, count):
                         if self.w.index("end-1c") == "1.0":
@@ -2232,7 +2611,6 @@ def gui():
                             self.li_has_content = False
                         elif tag == "blockquote":
                             self.tags.append("quote")
-                            self.in_blockquote = True
                             self._ensure_newlines(1)
                         elif tag == "p":
                             if not getattr(self, "in_li", False):
@@ -2263,7 +2641,6 @@ def gui():
                         elif tag == "blockquote":
                             if "quote" in self.tags:
                                 self.tags.remove("quote")
-                            self.in_blockquote = False
                             self._ensure_newlines(1)
                         elif tag == "p":
                             self._ensure_newlines(1)
@@ -2361,7 +2738,7 @@ def gui():
 
             tb = ctk.CTkTextbox(tab, fg_color=T.CARD_2, corner_radius=12,
                                 text_color=T.FG, font=font(11), wrap="word")
-            tb._x_scrollbar.grid = lambda *a, **k: None
+            tb._x_scrollbar.grid = lambda *_args, **_kwargs: None
             tb._x_scrollbar.grid_forget()
             
             def _tb_check(*_):
@@ -2433,7 +2810,7 @@ def gui():
                                 widget.tag_add("link_hover", ranges[i], ranges[i+1])
                         break
                         
-            def on_link_leave(event):
+            def on_link_leave(_event):
                 widget.configure(cursor="arrow")
                 widget.tag_remove("link_hover", "1.0", "end")
 
@@ -2459,13 +2836,11 @@ def gui():
                 try:
                     tb_width = container_width
                     tb.configure(width=tb_width)
-                    char_width = max(30, int((tb_width - 48) / 7.2))
                     w_width = tb_width - 48
                     dividers.clear()
                     widget.configure(state="normal")
                     widget.delete("1.0", "end")
-                    render_func(widget, data, dividers,
-                                wrap_width=char_width)
+                    render_func(widget, data, dividers)
                     widget.configure(state="disabled")
                     for div in dividers:
                         try:
@@ -2557,30 +2932,24 @@ def gui():
                 
         try:
             for btn in tabs._segmented_button._buttons_dict.values():
-                btn.bind("<Button-1>", lambda e, b=btn: _force_refresh(b.cget("text")), add="+")
+                btn.bind(
+                    "<Button-1>",
+                    lambda _event, b=btn: _force_refresh(b.cget("text")),
+                    add="+",
+                )
         except Exception:
             pass
 
     _build_changelog_view()
 
-    # ==================================================================
-    # Self-update
-    # ==================================================================
     def relaunch_app():
         na.stop()
         try:
             if os.environ.get("APPIMAGE"):
                 os.execv(os.environ["APPIMAGE"], [os.environ["APPIMAGE"], "gui"])
 
-            # Only re-exec as `python -m bol` if *this* process was itself
-            # started that way (e.g. `python3 -m bol gui` in a venv/pip
-            # install). .deb, Flatpak, and the local installer run bol via
-            # a wrapper script (bedrock-on-linux) that adds
-            # /usr/lib/bedrock-on-linux, /app/lib/bedrock-on-linux, or the
-            # source dir to sys.path in-memory — that path is lost after
-            # exec, so re-launching those via `-m bol` fails with
-            # "No module named bol". For those, and for the packaged
-            # zipapp, just re-exec the original launcher/target directly.
+            # Packaged wrappers add their module path in memory, so only
+            # preserve `python -m bol` when that was the original invocation.
             main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
             started_via_module = bool(main_spec and main_spec.name)
 
@@ -2680,7 +3049,7 @@ def gui():
         na.stop()
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", on_close)
-    def on_enter_pressed(e):
+    def on_enter_pressed(_event):
         focus = root.focus_get()
         if isinstance(focus, (tk.Entry, tk.Text)):
             return "break"
