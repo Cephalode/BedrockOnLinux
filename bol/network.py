@@ -99,6 +99,7 @@ def _tls_version(host, port, timeout, addresses):
     """Complete bounded verified TLS to a resolved IP, retaining hostname SNI."""
 
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     deadline = time.monotonic() + timeout
     last_error = None
     address_list = tuple(addresses)

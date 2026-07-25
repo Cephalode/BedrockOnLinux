@@ -271,6 +271,10 @@ class NetworkDiagnosticsTests(unittest.TestCase):
                 "xbox.example", 443, 1, ("192.0.2.7",))
 
         self.assertEqual(version, "TLSv1.3")
+        self.assertEqual(
+            context.minimum_version,
+            network.ssl.TLSVersion.TLSv1_2,
+        )
         connect.assert_called_once()
         self.assertEqual(connect.call_args.args[0], ("192.0.2.7", 443))
         context.wrap_socket.assert_called_once()
