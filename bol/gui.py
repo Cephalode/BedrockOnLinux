@@ -197,7 +197,6 @@ def gui():
     ensure_gui_deps()
     try:
         import tkinter as tk
-        from tkinter import messagebox
         import customtkinter as ctk
     except Exception as e:
         _desktop_error(
@@ -311,9 +310,104 @@ def gui():
         d.transient(root)
         d.resizable(False, False)
         center_over_root(d, w, h)
-        d.after(120, d.lift)
+        # Some window managers ignore the geometry set above because the
+        # window isn't mapped yet and place it themselves (often top/
+        # right). Re-center once it's actually on screen.
+        d.after(10, lambda: center_over_root(d, w, h))
+        d.after(120, lambda: (center_over_root(d, w, h), d.lift()))
         d.bind("<Escape>", lambda e: d.destroy())
         return d
+
+    # ----------------------------------------------------------------
+    # Themed messagebox — built from this app's own dialog()/mkbtn()
+    # chrome instead of a third-party widget, so it matches pixel-for-
+    # pixel (same card color, corner radius, button styles, fonts).
+    # Drop-in replacement for tkinter.messagebox: showinfo / showerror /
+    # showwarning / askyesno, called the same way (title, message,
+    # parent=..., icon=...). `parent`/extra kwargs are accepted for
+    # compatibility but this always centers over the main window, same
+    # as the rest of the app's dialogs (e.g. restart_prompt()).
+    # ----------------------------------------------------------------
+    _MSG_ACCENT = {
+        "info":     (T.THEME_ACCENT, T.THEME_HOV, "ℹ"),
+        "question": (T.THEME_ACCENT, T.THEME_HOV, "?"),
+        "warning":  (T.GOLD,         T.GOLD_HOV,  "⚠"),
+        "error":    (T.RED,          T.RED_HOV,   "✕"),
+    }
+
+    def _msgbox(title, message, kind="info", buttons=("OK",)):
+        accent, accent_hov, glyph = _MSG_ACCENT.get(kind, _MSG_ACCENT["info"])
+        message = str(message)
+
+        w = 440
+        # Rough height estimate from line count so short and long
+        # messages both look right; clamps keep it sane either way.
+        approx_lines = message.count("\n") + 1 + len(message) // 42
+        h = max(180, min(440, 140 + approx_lines * 22))
+
+        d = dialog(title, w, h)
+        d.grab_set()
+        result = {"value": buttons[0]}
+
+        def choose(val):
+            result["value"] = val
+            d.grab_release()
+            d.destroy()
+
+        d.protocol("WM_DELETE_WINDOW", lambda: choose(buttons[0]))
+        d.bind("<Escape>", lambda e: choose(buttons[0]))
+
+        head = ctk.CTkFrame(d, fg_color="transparent")
+        head.pack(fill="x", padx=22, pady=(20, 6))
+        ctk.CTkLabel(head, text=glyph, font=font(22, "bold"),
+                     text_color=accent, width=28).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(head, text=title, font=font(16, "bold"),
+                     text_color=T.FG, anchor="w", justify="left"
+                     ).pack(side="left", fill="x", expand=True)
+
+        body = ctk.CTkFrame(d, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=(0, 6))
+        ctk.CTkLabel(body, text=message, font=font(14), text_color=T.SUB,
+                     anchor="w", justify="left", wraplength=w - 44
+                     ).pack(fill="both", expand=True)
+
+        row = ctk.CTkFrame(d, fg_color="transparent")
+        row.pack(fill="x", padx=22, pady=(0, 20))
+        if len(buttons) == 1:
+            mkbtn(row, buttons[0], lambda: choose(buttons[0]), kind="primary",
+                  width=100, height=38, font=font(13, "bold"),
+                  fg_color=accent, hover_color=accent_hov).pack(side="right")
+        else:
+            mkbtn(row, buttons[1], lambda: choose(buttons[1]), kind="primary",
+                  width=100, height=38, font=font(13, "bold"),
+                  fg_color=accent, hover_color=accent_hov).pack(side="right")
+            mkbtn(row, buttons[0], lambda: choose(buttons[0]), kind="ghost",
+                  width=100, height=38, font=font(13)).pack(side="right", padx=(0, 8))
+
+        d.wait_window()
+        return result["value"]
+
+    class messagebox:
+        """Drop-in replacement for tkinter.messagebox (see _msgbox above)."""
+
+        @staticmethod
+        def showinfo(title=None, message=None, parent=None, **kw):
+            _msgbox(title, message, "info", ("OK",))
+
+        @staticmethod
+        def showerror(title=None, message=None, parent=None, **kw):
+            _msgbox(title, message, "error", ("OK",))
+
+        @staticmethod
+        def showwarning(title=None, message=None, parent=None, **kw):
+            _msgbox(title, message, "warning", ("OK",))
+
+        @staticmethod
+        def askyesno(title=None, message=None, parent=None, icon=None, **kw):
+            return _msgbox(title, message, icon or "question",
+                            ("No", "Yes")) == "Yes"
+
+    mb = messagebox
 
     class Tooltip:
         """Small delayed hover label for icon-only buttons."""
@@ -1631,7 +1725,6 @@ def gui():
         def do_browse():
             if _relocate_blocked():
                 return
-            from tkinter import messagebox as mb
 
             # Check if relocation is allowed (BOL_HOME not externally set)
             if not is_relocation_allowed():
@@ -1819,7 +1912,6 @@ def gui():
         def do_reset():
             if _relocate_blocked():
                 return
-            from tkinter import messagebox as mb
             # Check if relocation is allowed
             if not is_relocation_allowed():
                 mb.showerror(
@@ -1859,7 +1951,7 @@ def gui():
         imp_status = tk.StringVar(value="")
 
         def do_import():
-            from tkinter import filedialog, messagebox as mb
+            from tkinter import filedialog
             files = filedialog.askopenfilenames(
                 parent=d, title="Import Minecraft content",
                 filetypes=[("Minecraft content",
@@ -1890,7 +1982,7 @@ def gui():
             threading.Thread(target=work, daemon=True).start()
 
         def do_inject():
-            from tkinter import filedialog, messagebox as mb
+            from tkinter import filedialog
             if not _mc_running():
                 mb.showwarning(
                     "DLL injector",
