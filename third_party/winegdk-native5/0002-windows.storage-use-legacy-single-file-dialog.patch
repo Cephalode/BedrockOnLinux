@@ -1,0 +1,127 @@
+From: BedrockOnLinux contributors
+Subject: [PATCH] windows.storage: use legacy dialog for single file picks
+
+Wine's Common Item Dialog can destroy itself before WM_INITDIALOG inside
+Minecraft and then raise a masked access violation from on_wm_destroy.  Use the
+stable GetOpenFileNameW path for single-file selection while preserving the
+WinAppSDK async operation and PickFileResult ABI.  Multi-file selection remains
+unchanged.
+
+diff --git a/dlls/windows.storage/Makefile.in b/dlls/windows.storage/Makefile.in
+index 69c6e8168d1..a9a62b6e286 100644
+--- a/dlls/windows.storage/Makefile.in
++++ b/dlls/windows.storage/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE  = windows.storage.dll
+-IMPORTS = uuid shell32 ole32 combase
++IMPORTS = uuid shell32 ole32 comdlg32 combase
+ 
+ SOURCES = \
+ 	classes.idl \
+diff --git a/dlls/windows.storage/pickers.c b/dlls/windows.storage/pickers.c
+index 9a06cd68a3e..159d329cf30 100644
+--- a/dlls/windows.storage/pickers.c
++++ b/dlls/windows.storage/pickers.c
+@@ -1056,49 +1056,60 @@ static void set_default_folder( IFileDialog *dialog, PickerLocationId location )
+ 
+ static HRESULT show_file_dialog( struct file_picker_operation *operation, IPickFileResult **result )
+ {
++    static const WCHAR supported_files[] = L"Supported files";
+     struct dialog_filters filters;
+-    IFileOpenDialog *dialog = NULL;
+-    IFileDialog *file_dialog = NULL;
+-    IShellItem *item = NULL;
+-    FILEOPENDIALOGOPTIONS options;
+-    const WCHAR *commit;
+-    WCHAR *path = NULL;
+-    UINT32 commit_length;
++    const KNOWNFOLDERID *folder_id;
++    OPENFILENAMEW dialog = {0};
++    const WCHAR *description, *pattern;
++    WCHAR *filter = NULL, *cursor, *initial_dir = NULL, *path = NULL;
++    SIZE_T description_length, filter_length, pattern_length;
++    DWORD error;
+     HRESULT hr;
+ 
++    if (!result) return E_POINTER;
+     *result = NULL;
+     if (FAILED(hr = dialog_filters_create( operation->filter_count, operation->filters, &filters )))
+         return hr;
+-    if (FAILED(hr = CoCreateInstance( &CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+-                                     &IID_IFileOpenDialog, (void **)&dialog ))) goto done;
+-    if (FAILED(hr = IFileOpenDialog_QueryInterface( dialog, &IID_IFileDialog, (void **)&file_dialog ))) goto done;
+-
+-    if (FAILED(hr = IFileDialog_SetFileTypes( file_dialog, filters.count, filters.specs ))) goto done;
+-    if (FAILED(hr = IFileDialog_SetFileTypeIndex( file_dialog, filters.count ))) goto done;
+-    if (FAILED(hr = IFileDialog_GetOptions( file_dialog, &options ))) goto done;
+-    if (FAILED(hr = IFileDialog_SetOptions( file_dialog, options | FOS_FORCEFILESYSTEM |
+-                                           FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST ))) goto done;
+ 
+-    commit = WindowsGetStringRawBuffer( operation->commit_button_text, &commit_length );
+-    if (commit_length && FAILED(hr = IFileDialog_SetOkButtonLabel( file_dialog, commit ))) goto done;
+-    set_default_folder( file_dialog, operation->location );
+-
+-    hr = IFileDialog_Show( file_dialog, operation->hwnd );
+-    if (FAILED(hr))
++    pattern = filters.combined ? filters.combined : filters.specs[0].pszSpec;
++    description = !wcscmp( pattern, L"*" ) ? filters.specs[0].pszName : supported_files;
++    description_length = wcslen( description );
++    pattern_length = wcslen( pattern );
++    filter_length = description_length + pattern_length + 3;
++    if (!(filter = calloc( filter_length, sizeof(*filter) )) ||
++        !(path = calloc( 32768, sizeof(*path) )))
+     {
+-        /* WinAppSDK treats closing or rejecting the dialog as a successful null result. */
+-        hr = S_OK;
++        hr = E_OUTOFMEMORY;
+         goto done;
+     }
+-    if (FAILED(hr = IFileOpenDialog_GetResult( dialog, &item ))) goto done;
+-    if (FAILED(hr = IShellItem_GetDisplayName( item, SIGDN_FILESYSPATH, &path ))) goto done;
+-    hr = pick_file_result_create( path, result );
++    cursor = filter;
++    memcpy( cursor, description, description_length * sizeof(*cursor) );
++    cursor += description_length + 1;
++    memcpy( cursor, pattern, pattern_length * sizeof(*cursor) );
++
++    folder_id = known_folder_from_location( operation->location );
++    if (folder_id) SHGetKnownFolderPath( folder_id, 0, NULL, &initial_dir );
++
++    dialog.lStructSize = sizeof(dialog);
++    dialog.hwndOwner = NULL;
++    dialog.lpstrFilter = filter;
++    dialog.nFilterIndex = 1;
++    dialog.lpstrFile = path;
++    dialog.nMaxFile = 32768;
++    dialog.lpstrInitialDir = initial_dir;
++    dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
++
++    if (GetOpenFileNameW( &dialog ))
++        hr = pick_file_result_create( path, result );
++    else if ((error = CommDlgExtendedError()))
++        hr = HRESULT_FROM_WIN32( error );
++    else
++        hr = S_OK;
+ 
+ done:
+-    CoTaskMemFree( path );
+-    if (item) IShellItem_Release( item );
+-    if (file_dialog) IFileDialog_Release( file_dialog );
+-    if (dialog) IFileOpenDialog_Release( dialog );
++    CoTaskMemFree( initial_dir );
++    free( path );
++    free( filter );
+     dialog_filters_destroy( &filters );
+     return hr;
+ }
+diff --git a/dlls/windows.storage/private.h b/dlls/windows.storage/private.h
+index 4855e7f847f..e0d489af300 100644
+--- a/dlls/windows.storage/private.h
++++ b/dlls/windows.storage/private.h
+@@ -27,6 +27,7 @@
+ #include "winbase.h"
+ #include "winstring.h"
+ #include "objbase.h"
++#include "commdlg.h"
+ #include "shlobj.h"
+ #include "shobjidl.h"

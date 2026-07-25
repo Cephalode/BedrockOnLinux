@@ -6,16 +6,26 @@ import re
 import unittest
 from pathlib import Path
 
-from bol.config import WINEGDK_SOURCE_COMMIT
+from bol.config import (
+    WINEGDK_SOURCE_COMMIT,
+    WINEGDK_SOURCE_MANIFEST_SHA256,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/build-winegdk-bullseye.sh"
+CONTAINER_SCRIPT = ROOT / "scripts/build-winegdk-container.sh"
 PACKAGER = ROOT / "scripts/package-engine.sh"
+BUILD_WORKFLOW = ROOT / ".github/workflows/build-winegdk.yml"
+ENGINE_WORKFLOW = ROOT / ".github/workflows/build-engine.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 BASE_PATCH = (ROOT / "third_party/winegdk-r12" /
               "online-patches-after-user-ready.patch")
 DELTA = ROOT / "third_party/winegdk-native5"
 PATCH = DELTA / "0001-winegdk-native5-Xbox-and-file-picker-runtime.patch"
+FOLLOWUP_PATCH = (
+    DELTA / "0002-windows.storage-use-legacy-single-file-dialog.patch"
+)
 SOURCE_SUMS = DELTA / "SOURCE-SHA256SUMS"
 CHANGED_FILES = {
     "dlls/windows.storage/Makefile.in",
@@ -66,8 +76,16 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             self._constant("VENDORED_PATCH_SHA256"),
         )
         self.assertEqual(
+            hashlib.sha256(FOLLOWUP_PATCH.read_bytes()).hexdigest(),
+            self._constant("VENDORED_FOLLOWUP_PATCH_SHA256"),
+        )
+        self.assertEqual(
             hashlib.sha256(SOURCE_SUMS.read_bytes()).hexdigest(),
             self._constant("SOURCE_SHA256SUMS_SHA256"),
+        )
+        self.assertEqual(
+            hashlib.sha256(SOURCE_SUMS.read_bytes()).hexdigest(),
+            WINEGDK_SOURCE_MANIFEST_SHA256,
         )
         pinned = {
             line.split("  ", 1)[1]
@@ -85,8 +103,9 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         }
         self.assertEqual(changed, CHANGED_FILES)
 
+        followup = FOLLOWUP_PATCH.read_text()
         additions = "\n".join(
-            line[1:] for line in text.splitlines()
+            line[1:] for line in (text + followup).splitlines()
             if line.startswith("+") and not line.startswith("+++")
         )
         self.assertIn("WineGDKLoadGameConfig", additions)
@@ -117,6 +136,28 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         self.assertIn("PickMultipleFilesAsync", additions)
         self.assertIn("FOS_ALLOWMULTISELECT", additions)
         self.assertIn("CLSID_FileOpenDialog", additions)
+        followup_additions = "\n".join(
+            line[1:] for line in followup.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        followup_deletions = "\n".join(
+            line[1:] for line in followup.splitlines()
+            if line.startswith("-") and not line.startswith("---")
+        )
+        self.assertIn("IMPORTS = uuid shell32 ole32 comdlg32 combase",
+                      followup_additions)
+        self.assertIn("OPENFILENAMEW dialog = {0}", followup_additions)
+        self.assertIn("GetOpenFileNameW( &dialog )", followup_additions)
+        self.assertIn("OFN_FILEMUSTEXIST", followup_additions)
+        self.assertIn("OFN_PATHMUSTEXIST", followup_additions)
+        self.assertNotIn("IFileDialog_Show( file_dialog, NULL )",
+                         followup_additions)
+        self.assertEqual(
+            followup_deletions.count(
+                "IFileDialog_Show( file_dialog, operation->hwnd )"
+            ),
+            1,
+        )
         self.assertIn("IPickFileResult_AddRef( *results = operation->result )",
                       additions)
         self.assertNotIn("payments.realms.minecraft-services.net", additions)
@@ -135,8 +176,28 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         text = SCRIPT.read_text()
         self.assertIn('apply --check "$VENDORED_BASE_PATCH"', text)
         self.assertIn('apply --check "$VENDORED_PATCH"', text)
+        self.assertIn('apply --check "$VENDORED_FOLLOWUP_PATCH"', text)
         self.assertLess(text.index('apply "$VENDORED_BASE_PATCH"'),
                         text.index('apply --check "$VENDORED_PATCH"'))
+        self.assertLess(text.index('apply "$VENDORED_PATCH"'),
+                        text.index('apply --check "$VENDORED_FOLLOWUP_PATCH"'))
+
+    def test_container_builder_applies_hash_locked_followup(self):
+        text = CONTAINER_SCRIPT.read_text()
+        self.assertIn(
+            'readonly VENDORED_FOLLOWUP_PATCH_SHA256='
+            f'"{hashlib.sha256(FOLLOWUP_PATCH.read_bytes()).hexdigest()}"',
+            text,
+        )
+        self.assertIn('apply --check "$VENDORED_FOLLOWUP_PATCH"', text)
+        self.assertLess(
+            text.index('archive --format=tar "$EXPECTED_COMMIT"'),
+            text.index('apply --check "$VENDORED_FOLLOWUP_PATCH"'),
+        )
+        self.assertLess(
+            text.index('apply "$VENDORED_FOLLOWUP_PATCH"'),
+            text.index('sha256sum --strict -c "$SOURCE_SHA256SUMS"'),
+        )
 
     def test_builder_can_finalize_the_verified_prefix_after_install(self):
         text = SCRIPT.read_text()
@@ -148,6 +209,40 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             'BOL_WINEGDK_INTERNAL=1 "$SCRIPT_PATH" --internal-finalize '
             '"$WORK_ROOT"',
             text,
+        )
+        self.assertIn(
+            "source_manifest_sha256=$SOURCE_SHA256SUMS_SHA256",
+            text,
+        )
+        self.assertIn(
+            "source_manifest_sha256=$EXPECTED_SOURCE_MANIFEST_SHA256",
+            CONTAINER_SCRIPT.read_text(),
+        )
+
+    def test_tier_one_identity_includes_the_vendored_source_manifest(self):
+        build = BUILD_WORKFLOW.read_text()
+        engine = ENGINE_WORKFLOW.read_text()
+        release = RELEASE_WORKFLOW.read_text()
+        self.assertIn(
+            'out="winegdk-prefix-${short}-${manifest_short}.tar.gz"',
+            build,
+        )
+        self.assertIn(
+            "tag_name: winegdk-${{ env.SHORT }}-${{ env.MANIFEST_SHORT }}",
+            build,
+        )
+        self.assertIn(
+            'gh release download "winegdk-${short}-${manifest_short}"',
+            engine,
+        )
+        self.assertIn(
+            '"winegdk-${wshort}-${wmshort}" '
+            '"winegdk-prefix-${wshort}-${wmshort}.tar.gz"',
+            release,
+        )
+        self.assertIn(
+            '"source_manifest_sha256": expected_source_manifest',
+            PACKAGER.read_text(),
         )
 
     def test_packager_overlays_prefix_only_after_isolated_snapshot(self):

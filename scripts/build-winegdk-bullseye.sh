@@ -25,8 +25,10 @@ readonly VENDORED_BASE_PATCH="$PROJECT_ROOT/third_party/winegdk-r12/online-patch
 readonly VENDORED_BASE_PATCH_SHA256="ee0543f11737a11f5edec389967bb41482c7f5eda3807c24d171dd6bf6301274"
 readonly VENDORED_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0001-winegdk-native5-Xbox-and-file-picker-runtime.patch"
 readonly VENDORED_PATCH_SHA256="d5630af845064b50780665e8ba335d4484a4c0b68eb396f195f840f0d2689a8b"
+readonly VENDORED_FOLLOWUP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0002-windows.storage-use-legacy-single-file-dialog.patch"
+readonly VENDORED_FOLLOWUP_PATCH_SHA256="0975dc449181e2e2d6178ee16e7958ede12e4af05b82e7ebac6a356369745b58"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
-readonly SOURCE_SHA256SUMS_SHA256="80a3d59d35ab642ec1f2546aa6ad2c180785f0e577f30d8eccdda2066d80c72e"
+readonly SOURCE_SHA256SUMS_SHA256="4fdedc09d56a2832fb5eb57d55572bec39622ffcf2fb374baa9cc3fd61ef0852"
 readonly GLIBC_CEILING="2.31"
 readonly DEBIAN_SUITE="bullseye"
 readonly DEBIAN_MIRROR="https://deb.debian.org/debian"
@@ -312,6 +314,7 @@ finalize_build() {
   cat >"$work_root/prefix/.bol-winegdk-build.env" <<EOF
 schema=1
 winegdk_commit=$EXPECTED_COMMIT
+source_manifest_sha256=$SOURCE_SHA256SUMS_SHA256
 source_date_epoch=$EXPECTED_SOURCE_DATE_EPOCH
 debian_suite=$DEBIAN_SUITE
 glibc_ceiling=$GLIBC_CEILING
@@ -358,6 +361,13 @@ CONFIG_COMMIT="$(
 )"; readonly CONFIG_COMMIT
 [[ "$CONFIG_COMMIT" == "$EXPECTED_COMMIT" ]] ||
   die "bol/config.py pins '$CONFIG_COMMIT', expected '$EXPECTED_COMMIT'"
+CONFIG_SOURCE_MANIFEST_SHA256="$(
+  awk -F'"' '/^WINEGDK_SOURCE_MANIFEST_SHA256 = "/ { print $2; exit }' \
+    "$PROJECT_ROOT/bol/config.py"
+)"
+readonly CONFIG_SOURCE_MANIFEST_SHA256
+[[ "$CONFIG_SOURCE_MANIFEST_SHA256" == "$SOURCE_SHA256SUMS_SHA256" ]] ||
+  die "bol/config.py source-manifest pin does not match the reviewed manifest"
 
 SOURCE_REPO="$(realpath -- "$2")"
 [[ -d "$SOURCE_REPO/.git" || -f "$SOURCE_REPO/.git" ]] ||
@@ -421,6 +431,11 @@ else
   SOURCE_EXPORT_COMMIT="$PUBLIC_BASE_COMMIT"
   SOURCE_DATE_EPOCH="$EXPECTED_SOURCE_DATE_EPOCH"
 fi
+[[ -f "$VENDORED_FOLLOWUP_PATCH" ]] ||
+  die "vendored WineGDK file-picker follow-up patch is missing"
+[[ "$(sha256sum "$VENDORED_FOLLOWUP_PATCH" | cut -d' ' -f1)" == \
+    "$VENDORED_FOLLOWUP_PATCH_SHA256" ]] ||
+  die "vendored WineGDK file-picker follow-up patch SHA-256 mismatch"
 [[ "$SOURCE_DATE_EPOCH" == "$EXPECTED_SOURCE_DATE_EPOCH" ]] ||
   die "WineGDK source timestamp changed: $SOURCE_DATE_EPOCH"
 
@@ -462,6 +477,7 @@ source_export_commit=$SOURCE_EXPORT_COMMIT
 public_base_commit=$PUBLIC_BASE_COMMIT
 vendored_base_patch_sha256=$VENDORED_BASE_PATCH_SHA256
 vendored_patch_sha256=$VENDORED_PATCH_SHA256
+vendored_followup_patch_sha256=$VENDORED_FOLLOWUP_PATCH_SHA256
 source_sha256sums_sha256=$SOURCE_SHA256SUMS_SHA256
 source_date_epoch=$SOURCE_DATE_EPOCH
 debian_suite=$DEBIAN_SUITE
@@ -497,6 +513,10 @@ if [[ "$SOURCE_MODE" == "public-base+vendored-patches" ]]; then
   git -C "$WORK_ROOT/source" apply "$VENDORED_PATCH" ||
     die "could not apply vendored WineGDK native patch"
 fi
+git -C "$WORK_ROOT/source" apply --check "$VENDORED_FOLLOWUP_PATCH" ||
+  die "vendored WineGDK file-picker follow-up patch does not apply"
+git -C "$WORK_ROOT/source" apply "$VENDORED_FOLLOWUP_PATCH" ||
+  die "could not apply vendored WineGDK file-picker follow-up patch"
 [[ -f "$SOURCE_SHA256SUMS" ]] || die "WineGDK source hash manifest is missing"
 [[ "$(sha256sum "$SOURCE_SHA256SUMS" | cut -d' ' -f1)" == \
     "$SOURCE_SHA256SUMS_SHA256" ]] ||
