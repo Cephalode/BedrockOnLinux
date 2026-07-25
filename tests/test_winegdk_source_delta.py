@@ -150,6 +150,20 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         self.assertIn("GetOpenFileNameW( &dialog )", followup_additions)
         self.assertIn("OFN_FILEMUSTEXIST", followup_additions)
         self.assertIn("OFN_PATHMUSTEXIST", followup_additions)
+        self.assertIn(
+            "hr = show_file_dialog( operation, &result );",
+            followup_additions,
+        )
+        self.assertIn(
+            "operation_complete( operation, hr, result );",
+            followup_additions,
+        )
+        self.assertIn(
+            "static DWORD WINAPI file_picker_worker",
+            followup_deletions,
+        )
+        self.assertIn("operation_add_ref( operation );", followup_deletions)
+        self.assertIn("CreateThread(", followup_deletions)
         self.assertNotIn("IFileDialog_Show( file_dialog, NULL )",
                          followup_additions)
         self.assertEqual(

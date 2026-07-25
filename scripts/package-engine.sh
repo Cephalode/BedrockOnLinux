@@ -15,7 +15,7 @@
 #
 # UNIVERSAL_DGC_BUILD_DIR is the output of vkd3d-proton's package-release.sh and must
 # contain x64/{d3d12,d3d12core}.dll and x86/{d3d12,d3d12core}.dll.  The build
-# used for native5/native6 is the reviewed r11/r12 v3.0.1 payload with removal
+# used for native5/native6/native7 is the reviewed r11/r12 v3.0.1 payload with removal
 # commit 76c11d2 reverted; only WineGDK changes in these revisions.
 # GDK_PROTON_BASE_ARCHIVE must be the reviewed Weather-OS release10-32
 # archive. It supplies the native XThreading runtime which WineGDK delegates

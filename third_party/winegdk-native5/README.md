@@ -11,8 +11,8 @@ inside Wine's `windows.storage.dll` for both PE architectures.
 
 The picker implementation provides the exact WinRT ABI used by Minecraft,
 including the `Microsoft.UI.WindowId` factory, validated file-type filters,
-asynchronous single- and multiple-file selection, immutable result vectors,
-cancellation, and `PickFileResult.Path`.
+single- and multiple-file selection, immutable result vectors, cancellation,
+and `PickFileResult.Path`.
 It delegates the desktop UI to Wine's `IFileOpenDialog`; closing the chooser is
 reported as a successful null result instead of raising an exception. Async
 results and completion delegates have explicit ownership rules to avoid the
@@ -20,8 +20,10 @@ use-after-free and reference-cycle hazards found in earlier prototypes.
 The follow-up `0002` patch routes single-file selection through
 `GetOpenFileNameW`. Wine's Common Item Dialog can destroy itself before
 initialization inside Minecraft; the legacy dialog avoids that failing path
-without changing the WinRT async result ABI. Multiple-file selection remains
-on `IFileOpenDialog`.
+without changing the WinRT async result ABI. The modal chooser runs on the
+caller's apartment and returns an already-completed operation, avoiding
+C++/WinRT's unsupported cross-apartment continuation path in Wine. Multiple-file
+selection remains on `IFileOpenDialog`.
 
 The former Minecraft process-memory patcher remains removed. Online state
 comes from XGame, XUser and XSAPI, while world and skin imports use the native

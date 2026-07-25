@@ -1,11 +1,17 @@
 From: BedrockOnLinux contributors
-Subject: [PATCH] windows.storage: use legacy dialog for single file picks
+Subject: [PATCH] windows.storage: keep single file picks on caller apartment
 
 Wine's Common Item Dialog can destroy itself before WM_INITDIALOG inside
 Minecraft and then raise a masked access violation from on_wm_destroy.  Use the
 stable GetOpenFileNameW path for single-file selection while preserving the
 WinAppSDK async operation and PickFileResult ABI.  Multi-file selection remains
 unchanged.
+
+C++/WinRT also preserves the apartment of an awaited operation.  Completing
+the picker from its private STA makes the continuation call Wine's unimplemented
+IContextCallback::ContextCallback and terminates the game.  Run the modal legacy
+dialog on the caller apartment and return an already-completed async operation,
+so the completion delegate is installed and invoked on that same apartment.
 
 diff --git a/dlls/windows.storage/Makefile.in b/dlls/windows.storage/Makefile.in
 index 69c6e8168d1..a9a62b6e286 100644
@@ -125,3 +131,69 @@ index 4855e7f847f..e0d489af300 100644
 +#include "commdlg.h"
  #include "shlobj.h"
  #include "shobjidl.h"
+diff --git a/dlls/windows.storage/pickers.c b/dlls/windows.storage/pickers.c
+index 159d329cf30..7c699596e1f 100644
+--- a/dlls/windows.storage/pickers.c
++++ b/dlls/windows.storage/pickers.c
+@@ -1193,15 +1193,6 @@ done:
+     return hr;
+ }
+ 
+-static BOOL operation_is_canceled( struct file_picker_operation *operation )
+-{
+-    BOOL canceled;
+-    EnterCriticalSection( &operation->cs );
+-    canceled = operation->cancel_requested;
+-    LeaveCriticalSection( &operation->cs );
+-    return canceled;
+-}
+-
+ static void operation_complete( struct file_picker_operation *operation, HRESULT hr, IPickFileResult *result )
+ {
+     IAsyncOperationCompletedHandler_PickFileResult *handler = NULL;
+@@ -1240,28 +1231,11 @@ static void operation_complete( struct file_picker_operation *operation, HRESULT
+     }
+ }
+ 
+-static DWORD WINAPI file_picker_worker( void *param )
+-{
+-    struct file_picker_operation *operation = param;
+-    IPickFileResult *result = NULL;
+-    HRESULT hr;
+-
+-    if (operation_is_canceled( operation ))
+-        hr = E_ABORT;
+-    else if (SUCCEEDED(hr = CoInitializeEx( NULL, COINIT_APARTMENTTHREADED )))
+-    {
+-        hr = show_file_dialog( operation, &result );
+-        CoUninitialize();
+-    }
+-    operation_complete( operation, hr, result );
+-    operation_release( operation );
+-    return 0;
+-}
+-
+ static HRESULT file_picker_operation_create( struct file_open_picker *picker,
+                                              IAsyncOperation_PickFileResult **out )
+ {
+     struct file_picker_operation *operation;
++    IPickFileResult *result = NULL;
+     UINT32 i;
+     HRESULT hr;
+ 
+@@ -1289,13 +1263,7 @@ static HRESULT file_picker_operation_create( struct file_open_picker *picker,
+     for (i = 0; i < operation->filter_count; ++i)
+         if (FAILED(hr = IVector_HSTRING_GetAt( picker->filters, i, &operation->filters[i] ))) goto failed;
+ 
+-    operation_add_ref( operation );
+-    if (!(operation->thread = CreateThread( NULL, 0, file_picker_worker, operation, 0, NULL )))
+-    {
+-        hr = HRESULT_FROM_WIN32( GetLastError() );
+-        operation_release( operation );
+-        goto failed;
+-    }
+-
++    hr = show_file_dialog( operation, &result );
++    operation_complete( operation, hr, result );
+     *out = &operation->IAsyncOperation_PickFileResult_iface;
+     return S_OK;
