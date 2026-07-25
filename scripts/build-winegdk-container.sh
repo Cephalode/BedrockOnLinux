@@ -19,8 +19,14 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 EXPECTED_COMMIT="$(grep -m1 '^WINEGDK_SOURCE_COMMIT = ' \
   "$PROJECT_ROOT/bol/config.py" | cut -d'"' -f2)"
+EXPECTED_SOURCE_MANIFEST_SHA256="$(
+  grep -m1 '^WINEGDK_SOURCE_MANIFEST_SHA256 = ' \
+    "$PROJECT_ROOT/bol/config.py" | cut -d'"' -f2
+)"
 readonly EXPECTED_SOURCE_DATE_EPOCH="1784308597"
 readonly GLIBC_CEILING="2.31"
+readonly VENDORED_FOLLOWUP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0002-windows.storage-use-legacy-single-file-dialog.patch"
+readonly VENDORED_FOLLOWUP_PATCH_SHA256="31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
 # Fixed build paths so Wine's embedded __FILE__ strings are stable run to run.
 readonly SRC=/winegdk/source
@@ -55,8 +61,21 @@ epoch="$(git -C "$SOURCE_REPO" show -s --format=%ct "$EXPECTED_COMMIT")"
 rm -rf "$SRC" "$BUILD"; mkdir -p "$SRC" "$BUILD" "$PREFIX"
 git -C "$SOURCE_REPO" archive --format=tar "$EXPECTED_COMMIT" | tar -x -C "$SRC"
 
+echo "== Applying reviewed file-picker follow-up"
+[ -f "$VENDORED_FOLLOWUP_PATCH" ] \
+  || { echo "!! missing WineGDK file-picker follow-up patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_FOLLOWUP_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_FOLLOWUP_PATCH_SHA256" ] \
+  || { echo "!! WineGDK file-picker follow-up patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_FOLLOWUP_PATCH" \
+  || { echo "!! WineGDK file-picker follow-up patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_FOLLOWUP_PATCH"
+
 echo "== Verifying reviewed source hashes"
 [ -f "$SOURCE_SHA256SUMS" ] || { echo "!! missing SOURCE-SHA256SUMS" >&2; exit 1; }
+[ "$(sha256sum "$SOURCE_SHA256SUMS" | cut -d' ' -f1)" = \
+  "$EXPECTED_SOURCE_MANIFEST_SHA256" ] \
+  || { echo "!! SOURCE-SHA256SUMS does not match the config pin" >&2; exit 1; }
 ( cd "$SRC" && sha256sum --strict -c "$SOURCE_SHA256SUMS" >/dev/null ) \
   || { echo "!! exported source does not match the reviewed native delta" >&2; exit 1; }
 
@@ -116,6 +135,7 @@ pv_sha="$(sha256sum "$PREFIX/.bol-winegdk-package-versions.tsv" | cut -d' ' -f1)
 cat > "$PREFIX/.bol-winegdk-build.env" <<EOF
 schema=1
 winegdk_commit=$EXPECTED_COMMIT
+source_manifest_sha256=$EXPECTED_SOURCE_MANIFEST_SHA256
 source_date_epoch=$EXPECTED_SOURCE_DATE_EPOCH
 debian_suite=bullseye
 glibc_ceiling=$GLIBC_CEILING

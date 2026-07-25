@@ -15,8 +15,8 @@
 #
 # UNIVERSAL_DGC_BUILD_DIR is the output of vkd3d-proton's package-release.sh and must
 # contain x64/{d3d12,d3d12core}.dll and x86/{d3d12,d3d12core}.dll.  The build
-# used for native5 is the reviewed r11/r12 v3.0.1 payload with removal commit
-# 76c11d2 reverted; only WineGDK changes in this experimental revision.
+# used for native5/native6 is the reviewed r11/r12 v3.0.1 payload with removal
+# commit 76c11d2 reverted; only WineGDK changes in these revisions.
 # GDK_PROTON_BASE_ARCHIVE must be the reviewed Weather-OS release10-32
 # archive. It supplies the native XThreading runtime which WineGDK delegates
 # XAsync/XTaskQueue calls to; the WineGDK wrapper cannot replace that DLL.
@@ -43,6 +43,10 @@ GDK_PROTON_BASE_ARCHIVE="${4:-${BOL_GDK_PROTON_BASE_ARCHIVE:-}}"
 WINEGDK_PREFIX="${5:-${BOL_WINEGDK_PREFIX:-}}"
 PINNED_WINEGDK_COMMIT="$(grep -m1 '^WINEGDK_SOURCE_COMMIT = ' \
   "$SRC/bol/config.py" | cut -d'"' -f2)"
+PINNED_WINEGDK_SOURCE_MANIFEST_SHA256="$(
+  grep -m1 '^WINEGDK_SOURCE_MANIFEST_SHA256 = ' \
+    "$SRC/bol/config.py" | cut -d'"' -f2
+)"
 GDK_PROTON_BASE_REPOSITORY="Weather-OS/GDK-Proton"
 GDK_PROTON_BASE_RELEASE="release10-32"
 GDK_PROTON_BASE_NAME="GDK-Proton10-32.tar.gz"
@@ -262,6 +266,7 @@ WINEGDK_NATIVE_PROVENANCE_FILES=(
   README.md
   SOURCE-SHA256SUMS
   0001-winegdk-native5-Xbox-and-file-picker-runtime.patch
+  0002-windows.storage-use-legacy-single-file-dialog.patch
 )
 
 verify_sha256() {
@@ -308,15 +313,19 @@ verify_winegdk_source_provenance() {
     "ee0543f11737a11f5edec389967bb41482c7f5eda3807c24d171dd6bf6301274" \
     "WineGDK r12 source delta"
   verify_sha256 "$native_root/README.md" \
-    "f1d97424b05c0ee13de585fea6f19793c094c7405c6dd318b5ad5353c064a665" \
+    "e8df56f517ed0c63710f55a45386ae26c25ac2145f4220c3fc98526e422a7246" \
     "WineGDK native5 source-delta README"
   verify_sha256 "$native_root/SOURCE-SHA256SUMS" \
-    "80a3d59d35ab642ec1f2546aa6ad2c180785f0e577f30d8eccdda2066d80c72e" \
+    "4fdedc09d56a2832fb5eb57d55572bec39622ffcf2fb374baa9cc3fd61ef0852" \
     "WineGDK native5 source hash lock"
   verify_sha256 \
     "$native_root/0001-winegdk-native5-Xbox-and-file-picker-runtime.patch" \
     "d5630af845064b50780665e8ba335d4484a4c0b68eb396f195f840f0d2689a8b" \
     "WineGDK native5 source delta"
+  verify_sha256 \
+    "$native_root/0002-windows.storage-use-legacy-single-file-dialog.patch" \
+    "31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5" \
+    "WineGDK single-file dialog fallback"
 }
 
 has_marker() {
@@ -403,7 +412,8 @@ verify_winegdk_source_provenance "$WINEGDK_R12_PROVENANCE_SOURCE" \
   exit 1
 }
 python3 - "$WINEGDK_BUILD_RECORD" "$WINEGDK_PACKAGE_VERSIONS" \
-  "$PINNED_WINEGDK_COMMIT" "$WINEGDK_SOURCE_DATE_EPOCH" <<'PY'
+  "$PINNED_WINEGDK_COMMIT" "$WINEGDK_SOURCE_DATE_EPOCH" \
+  "$PINNED_WINEGDK_SOURCE_MANIFEST_SHA256" <<'PY'
 import hashlib
 import re
 import sys
@@ -413,6 +423,7 @@ path = Path(sys.argv[1])
 package_versions_path = Path(sys.argv[2])
 expected_commit = sys.argv[3]
 expected_epoch = sys.argv[4]
+expected_source_manifest = sys.argv[5]
 try:
     lines = path.read_text(encoding="utf-8").splitlines()
 except (OSError, UnicodeError) as exc:
@@ -432,10 +443,13 @@ for line in lines:
 required = {
     "schema": "1",
     "winegdk_commit": expected_commit,
+    "source_manifest_sha256": expected_source_manifest,
     "source_date_epoch": expected_epoch,
     "debian_suite": "bullseye",
     "glibc_ceiling": "2.31",
 }
+if not re.fullmatch(r"[0-9a-f]{64}", expected_source_manifest):
+    raise SystemExit("invalid configured WineGDK source-manifest SHA-256")
 if set(values) != set(required) | {"package_versions_sha256"}:
     raise SystemExit(
         "WineGDK build provenance has an unexpected field set: "
@@ -779,6 +793,7 @@ for relative_root, names in (
         "native5/README.md",
         "native5/SOURCE-SHA256SUMS",
         "native5/0001-winegdk-native5-Xbox-and-file-picker-runtime.patch",
+        "native5/0002-windows.storage-use-legacy-single-file-dialog.patch",
     )),
     (gdk_proton_provenance_root, ("provenance.env",)),
 ):

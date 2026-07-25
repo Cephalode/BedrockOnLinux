@@ -281,7 +281,7 @@ class WineGDKInstallTests(unittest.TestCase):
         with mock.patch.object(Path, "replace", autospec=True,
                                side_effect=fail_candidate):
             with self.assertRaises(OSError):
-                winegdk._activate_engine(candidate)
+                winegdk._activate_engine_locked(candidate)
 
         self.assertEqual((self.engine / "proton").read_text(), "known-good")
         self.assertTrue(candidate.exists())
@@ -303,7 +303,7 @@ class WineGDKInstallTests(unittest.TestCase):
 
         with mock.patch.object(
                 winegdk, "_remove_path", side_effect=fail_rollback_cleanup):
-            winegdk._activate_engine(candidate)
+            winegdk._activate_engine_locked(candidate)
 
         self.assertEqual((self.engine / "proton").read_text(), "candidate")
         self.assertEqual((rollback / "proton").read_text(), "known-good")

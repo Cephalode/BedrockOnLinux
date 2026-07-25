@@ -170,12 +170,12 @@ def _recover_interrupted_engine_swap_locked():
         try:
             _validate_engine_candidate(WINEGDK_OUT)
             active_valid = True
-        except Exception as exc:  # noqa: BLE001 - recovery must inspect damage
+        except Exception as exc:
             active_error = exc
     try:
         _validate_engine_candidate(backup)
         backup_valid = True
-    except Exception as exc:  # noqa: BLE001 - preserve invalid diagnostics
+    except Exception as exc:
         backup_error = exc
 
     if active_valid:
@@ -212,21 +212,8 @@ def _recover_interrupted_engine_swap_locked():
                      "invalid interrupted tree: %s" % exc)
         warn("Recovered the verified game engine after an interrupted update.")
 
-
-def _activate_engine(candidate: Path):
-    """Atomically replace the managed engine, restoring it on rename failure.
-
-    ``candidate`` has already been fully extracted and validated on the same
-    filesystem.  The active tree is renamed, never deleted, until the new tree
-    is in place.  This makes a failed update unable to strand the launcher with
-    a partial engine.
-    """
-    with managed_engine_lock(PROTON_DIR):
-        _activate_engine_locked(candidate)
-
-
 def _activate_engine_locked(candidate: Path):
-    """Implementation of the engine swap while the stable lock is held."""
+    """Atomically activate a validated candidate while the stable lock is held."""
     WINEGDK_OUT.parent.mkdir(parents=True, exist_ok=True)
     backup = WINEGDK_OUT.with_name("." + WINEGDK_OUT.name + ".rollback")
 
@@ -347,9 +334,7 @@ def _install_prebuilt_winegdk_locked(progress=None, force=False):
         if root is None:
             raise ValueError("archive has no Proton tree")
         _validate_engine_candidate(root)
-        # The wrapper already owns the stable lock; taking it again through
-        # _activate_engine() could deadlock because flock locks are tied to
-        # independently opened file descriptions.
+        # The installer already owns the stable lock.
         _activate_engine_locked(root)
     except Exception as e:
         warn(f"Prebuilt engine rejected ({e}) — keeping the installed engine.")

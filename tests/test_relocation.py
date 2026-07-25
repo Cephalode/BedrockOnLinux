@@ -54,6 +54,46 @@ def test_set_and_clear_install_location(monkeypatch, tmp_path):
     assert not pointer_file.exists()
 
 
+def test_setting_xdg_location_retires_legacy_pointer(monkeypatch, tmp_path):
+    xdg_pointer = (
+        tmp_path / "xdg-config" / "bedrock-on-linux" / "install_location"
+    )
+    legacy_pointer = (
+        tmp_path / ".config" / "bedrock-on-linux" / "install_location"
+    )
+    legacy_pointer.parent.mkdir(parents=True)
+    legacy_pointer.write_text("/old/location")
+    monkeypatch.setattr(config, "HOME", tmp_path)
+    monkeypatch.setattr(config, "INSTALL_LOCATION_FILE", xdg_pointer)
+    monkeypatch.delenv("BOL_HOME", raising=False)
+
+    config.set_install_location("/new/location")
+
+    assert xdg_pointer.read_text() == "/new/location"
+    assert not legacy_pointer.exists()
+
+
+def test_clear_location_removes_legacy_fallback(monkeypatch, tmp_path):
+    xdg_pointer = (
+        tmp_path / "xdg-config" / "bedrock-on-linux" / "install_location"
+    )
+    legacy_pointer = (
+        tmp_path / ".config" / "bedrock-on-linux" / "install_location"
+    )
+    xdg_pointer.parent.mkdir(parents=True)
+    legacy_pointer.parent.mkdir(parents=True)
+    xdg_pointer.write_text("/new/location")
+    legacy_pointer.write_text("/old/location")
+    monkeypatch.setattr(config, "HOME", tmp_path)
+    monkeypatch.setattr(config, "INSTALL_LOCATION_FILE", xdg_pointer)
+    monkeypatch.delenv("BOL_HOME", raising=False)
+
+    config.clear_install_location()
+
+    assert not xdg_pointer.exists()
+    assert not legacy_pointer.exists()
+
+
 def test_set_install_location_raises_when_bol_home_is_set(monkeypatch):
     monkeypatch.setenv("BOL_HOME", "/some/path")
     with pytest.raises(RuntimeError, match="Cannot change location when BOL_HOME is set externally"):
@@ -150,6 +190,53 @@ def test_migrate_data_rejects_overlap(tmp_path, monkeypatch):
         migrate_data(old_dir, old_dir / "nested")
 
 
+def test_migration_refuses_to_break_existing_profile_links(
+        tmp_path, monkeypatch):
+    install_file = (
+        tmp_path / ".config" / "bedrock-on-linux" / "install_location"
+    )
+    monkeypatch.setattr(config, "INSTALL_LOCATION_FILE", install_file)
+    monkeypatch.setattr(relocation, "INSTALL_LOCATION_FILE", install_file)
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    metadata = old_dir / "profiles" / "alice" / "profile.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('{"name": "Alice", "slug": "alice"}')
+    (old_dir / "games").mkdir()
+
+    with pytest.raises(RelocationError, match="isolated account profiles"):
+        migrate_data(old_dir, new_dir)
+
+    assert (old_dir / "games").is_dir()
+    assert not new_dir.exists()
+    assert not install_file.exists()
+
+
+def test_migration_ignores_profile_creation_lock_without_metadata(
+        tmp_path, monkeypatch):
+    install_file = (
+        tmp_path / ".config" / "bedrock-on-linux" / "install_location"
+    )
+    monkeypatch.setattr(config, "INSTALL_LOCATION_FILE", install_file)
+    monkeypatch.setattr(relocation, "INSTALL_LOCATION_FILE", install_file)
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    _make_user_data(old_dir)
+    profiles = old_dir / "profiles"
+    profiles.mkdir()
+    (profiles / ".alice.create.lock").write_text("")
+    # A failed creation can also leave an uncommitted directory. Without its
+    # atomically written profile.json it is not listed or launchable.
+    (profiles / "alice").mkdir()
+
+    new_dir = tmp_path / "new"
+    migrate_data(old_dir, new_dir)
+
+    assert (new_dir / "games" / "1.21.0"
+            / "Minecraft.Windows.exe").is_file()
+    assert install_file.read_text().strip() == str(new_dir)
+
+
 # ===== end-to-end migration test (calls the real production code) =====
 
 def test_migration_full_workflow(tmp_path, monkeypatch):
@@ -160,6 +247,10 @@ def test_migration_full_workflow(tmp_path, monkeypatch):
     old_dir = tmp_path / "old_data"
     old_dir.mkdir()
     games_dir = _make_user_data(old_dir)
+    gpu_marker = b'{"version":2,"phase":"running"}\n'
+    gpu_ack = b'{"version":2,"acknowledged":true}\n'
+    (old_dir / ".gpu-launch-in-progress.json").write_bytes(gpu_marker)
+    (old_dir / ".gpu-safety-ack.json").write_bytes(gpu_ack)
 
     new_dir = tmp_path / "new_data"
     migrate_data(old_dir, new_dir)
@@ -170,6 +261,10 @@ def test_migration_full_workflow(tmp_path, monkeypatch):
     assert (new_dir / "compatdata" / "pfx" / "test.txt").read_text() == "prefix file"
     assert (new_dir / "content" / "test.txt").read_text() == "content file"
     assert (new_dir / "msa" / "token.json").read_text() == '{"token": "test"}'
+    assert (new_dir / ".gpu-launch-in-progress.json").read_bytes() == gpu_marker
+    assert (new_dir / ".gpu-safety-ack.json").read_bytes() == gpu_ack
+    assert not (old_dir / ".gpu-launch-in-progress.json").exists()
+    assert not (old_dir / ".gpu-safety-ack.json").exists()
 
     settings = json.loads((new_dir / "settings.json").read_text())
     assert settings["game_dir"] == str(new_games_dir.resolve())

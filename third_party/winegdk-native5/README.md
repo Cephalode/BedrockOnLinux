@@ -17,6 +17,11 @@ It delegates the desktop UI to Wine's `IFileOpenDialog`; closing the chooser is
 reported as a successful null result instead of raising an exception. Async
 results and completion delegates have explicit ownership rules to avoid the
 use-after-free and reference-cycle hazards found in earlier prototypes.
+The follow-up `0002` patch routes single-file selection through
+`GetOpenFileNameW`. Wine's Common Item Dialog can destroy itself before
+initialization inside Minecraft; the legacy dialog avoids that failing path
+without changing the WinRT async result ABI. Multiple-file selection remains
+on `IFileOpenDialog`.
 
 The former Minecraft process-memory patcher remains removed. Online state
 comes from XGame, XUser and XSAPI, while world and skin imports use the native
