@@ -324,7 +324,7 @@ verify_winegdk_source_provenance() {
     "WineGDK native5 source delta"
   verify_sha256 \
     "$native_root/0002-windows.storage-use-legacy-single-file-dialog.patch" \
-    "0975dc449181e2e2d6178ee16e7958ede12e4af05b82e7ebac6a356369745b58" \
+    "31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5" \
     "WineGDK single-file dialog fallback"
 }
 

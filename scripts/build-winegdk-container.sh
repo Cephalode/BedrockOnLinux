@@ -26,7 +26,7 @@ EXPECTED_SOURCE_MANIFEST_SHA256="$(
 readonly EXPECTED_SOURCE_DATE_EPOCH="1784308597"
 readonly GLIBC_CEILING="2.31"
 readonly VENDORED_FOLLOWUP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0002-windows.storage-use-legacy-single-file-dialog.patch"
-readonly VENDORED_FOLLOWUP_PATCH_SHA256="0975dc449181e2e2d6178ee16e7958ede12e4af05b82e7ebac6a356369745b58"
+readonly VENDORED_FOLLOWUP_PATCH_SHA256="31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
 # Fixed build paths so Wine's embedded __FILE__ strings are stable run to run.
 readonly SRC=/winegdk/source

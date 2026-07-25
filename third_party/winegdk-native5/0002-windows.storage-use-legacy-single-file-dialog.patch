@@ -118,7 +118,7 @@ diff --git a/dlls/windows.storage/private.h b/dlls/windows.storage/private.h
 index 4855e7f847f..e0d489af300 100644
 --- a/dlls/windows.storage/private.h
 +++ b/dlls/windows.storage/private.h
-@@ -27,6 +27,7 @@
+@@ -27,5 +27,6 @@
  #include "winbase.h"
  #include "winstring.h"
  #include "objbase.h"
