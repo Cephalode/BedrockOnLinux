@@ -72,14 +72,17 @@
   <releases>
     <release version="2.1.1" date="2026-07-25">
       <description>
-        <p>Fixes the crash triggered when choosing a custom skin from inside
-           Minecraft.</p>
+        <p>Fixes custom-skin selection and restores Flatpak startup with safe
+           data migration.</p>
         <ul>
           <li>completes the single-file picker on Minecraft&apos;s calling COM
               apartment instead of crossing into Wine&apos;s unsupported
               context callback;</li>
           <li>keeps the native picker attached to the game window in fullscreen
               and Gamescope sessions;</li>
+          <li>keeps Flatpak&apos;s private data directory writable while
+              migrating the previous data root read-only, fixing startup on
+              Bazzite, CachyOS and other Flatpak hosts;</li>
           <li>ships the fix in the reproducible, attested
               <code>wow64-archs-native7</code> managed engine.</li>
         </ul>

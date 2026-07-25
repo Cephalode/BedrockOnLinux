@@ -116,11 +116,13 @@ folder:
 
 All new writes stay in that private directory. For one upgrade cycle the
 manifest retains read-only access to the exact legacy
-`$XDG_DATA_HOME/bedrock-on-linux` folder, so the launcher can copy it
-atomically before any command creates the new root. The copy re-anchors the
-selected game path and internal `content` link; the host copy remains as a
-recovery backup because the transition mount is not writable. Two populated
-trees are never merged automatically.
+`~/.local/share/bedrock-on-linux` folder, so the launcher can copy it
+atomically before any command creates the new root. The explicit home-relative
+path is required: Flatpak maps the special `xdg-data` alias onto the private
+XDG destination, which would make the destination read-only. The copy
+re-anchors the selected game path and internal `content` link; the host copy
+remains as a recovery backup. Two populated trees are never merged
+automatically.
 
 If a local Flatpak permission override removed that transition access, close
 the app and temporarily restore only the read-only legacy path:
@@ -128,7 +130,7 @@ the app and temporarily restore only the read-only legacy path:
 ```bash
 flatpak kill io.github.wyze3306.BedrockOnLinux
 flatpak override --user \
-  --filesystem=xdg-data/bedrock-on-linux:ro \
+  --filesystem='~/.local/share/bedrock-on-linux:ro' \
   io.github.wyze3306.BedrockOnLinux
 flatpak run io.github.wyze3306.BedrockOnLinux
 ```

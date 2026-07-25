@@ -9,6 +9,9 @@
   custom skin.
 - Keep the native picker owned by the game window so it remains visible in
   fullscreen and Gamescope sessions.
+- Keep Flatpak's private XDG data directory writable while exposing only the
+  pre-XDG data root read-only for automatic migration, fixing the
+  `.shared-assets.lock` startup failure reported on Bazzite and CachyOS.
 - Ship the fix in the reproducible, attested `wow64-archs-native7` managed
   engine.
 
