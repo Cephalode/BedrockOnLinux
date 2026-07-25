@@ -6,7 +6,7 @@ from pathlib import Path
 
 APP = "bedrock-on-linux"
 PRETTY = "BedrockOnLinux"
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 HOME = Path.home()
 XDG_DATA_HOME = Path(

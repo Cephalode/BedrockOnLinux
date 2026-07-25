@@ -71,8 +71,8 @@ All currently supported builds target x86-64 Linux.
 ### AppImage quick start
 
 ```bash
-chmod +x BedrockOnLinux-2.1.0-x86_64.AppImage
-./BedrockOnLinux-2.1.0-x86_64.AppImage
+chmod +x BedrockOnLinux-2.1.1-x86_64.AppImage
+./BedrockOnLinux-2.1.1-x86_64.AppImage
 ```
 
 The first **PLAY** needs the matching engine archive:
@@ -95,7 +95,7 @@ The fix is therefore distributed to existing users as well as fresh installs.
 If FUSE is unavailable, AppImage can extract itself at runtime:
 
 ```bash
-APPIMAGE_EXTRACT_AND_RUN=1 ./BedrockOnLinux-2.1.0-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./BedrockOnLinux-2.1.1-x86_64.AppImage
 ```
 
 The AppImage bundles Python, Tk, the GUI toolkit, `cryptography` and CA

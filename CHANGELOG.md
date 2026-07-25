@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.1 — 2026-07-25
+
+### Fixed
+
+- Complete the in-game single-file picker on Minecraft's calling COM apartment,
+  preventing the `RoFailFastWithErrorContext` crash triggered after choosing a
+  custom skin.
+- Keep the native picker owned by the game window so it remains visible in
+  fullscreen and Gamescope sessions.
+- Ship the fix in the reproducible, attested `wow64-archs-native7` managed
+  engine.
+
 ## 2.1.0 — 2026-07-25
 
 ### Startup, engine, and compatibility
