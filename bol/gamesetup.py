@@ -10,12 +10,13 @@ from .deps import ensure_login_deps
 from .fixups import fix_curl_ssl, hide_signin_button, install_gdk_xbox_dlls
 from .gameinput import install_gameinput
 from .games import _auto_mc_version, _game_root, download_game, use_game_dir
-from .log import info, ok, warn
+from .log import BolError, info, ok, warn
 from .prefix import (
     active_prefix,
     boot_prefix,
     ensure_umu,
     prefix_operation_lock,
+    shared_assets_lock,
 )
 from .proton import ensure_proton
 from .util import load_settings, mkdirs
@@ -24,7 +25,9 @@ from .winegdk import ensure_winegdk
 def do_setup(game_dir=None, mc_ver=None, proton_tag=None, force=False,
              progress=None):
     """Install/update shared game, engine and prefix state exclusively."""
-    with prefix_operation_lock("install or update BedrockOnLinux"):
+    with shared_assets_lock(
+            "install or update BedrockOnLinux", exclusive=True), \
+            prefix_operation_lock("install or update BedrockOnLinux"):
         return _do_setup(game_dir, mc_ver, proton_tag, force, progress)
 
 
@@ -37,8 +40,6 @@ def _do_setup(game_dir=None, mc_ver=None, proton_tag=None, force=False,
         use_game_dir(download_game(mc_ver, progress, force=force))
     elif game_dir and _game_root(Path(game_dir).expanduser()):
         use_game_dir(game_dir)
-    # First run, or the configured folder was deleted → auto-(re)install
-    # the last/newest version into games/, never anywhere else.
     cur = load_settings().get("game_dir")
     if not cur or not _game_root(Path(cur)):
         use_game_dir(download_game(_auto_mc_version(s), progress, force=force))
@@ -50,7 +51,12 @@ def _do_setup(game_dir=None, mc_ver=None, proton_tag=None, force=False,
         ensure_proton(proton_tag, force, progress)
     ensure_umu(force)
     fix_curl_ssl(gd)
-    boot_prefix()
+    if not boot_prefix():
+        raise BolError(
+            "Could not initialise the Wine prefix, so setup stopped before "
+            "installing GameInput. Check "
+            f"{LOGS / 'native-login.log'} and re-run 'Install / Update'."
+        )
     install_gameinput(active_prefix(), gd)
     hide_signin_button(gd)
     ok("Setup complete — click PLAY, then sign in to Microsoft in-game.")
@@ -82,6 +88,24 @@ _DIAG_RULES = [
     (r"Authentication failed|invalid_grant|login.*failed",
      "Microsoft sign-in failed in-game — sign in again "
      "(open the link, enter the code)."),
+    (r"\bInitialConnection[-_: ]*13(?!\d)",
+     "LAN InitialConnection-13 — check that the host firewall allows "
+     "Minecraft's inbound RakNet UDP 19132 and, on Windows, that the host "
+     "network profile is Private."),
+    (r"\bInitialConnection[-_: ]*25(?!\d)",
+     "LAN InitialConnection-25 ('world full') — the host may have a stale "
+     "NetherNet/RakNet session rather than a real capacity limit. On a "
+     "Windows host, change its network profile from Public to Private, then "
+     "toggle Multiplayer Game off/on and fully restart both games. This "
+     "requires the host owner; otherwise use a correctly configured Bedrock "
+     "Dedicated Server."),
+    (r"\b(?:IncompatibleVersion|VersionMismatch|ProtocolVersionMismatch)\b|"
+     r"\b(?:outdated client|outdated server)\b|"
+     r"\bversion\s+mismatch\b|"
+     r"\b(?:client|server|host)\s+(?:build|version)\b[^\r\n]{0,100}"
+     r"\b(?:does not match|mismatch|incompatible)\b",
+     "Minecraft client/host version mismatch — select exactly the host's "
+     "Bedrock version/build before joining."),
     # Must come BEFORE the nodrv_CreateWindow rule: when SystemFunction036 is
     # unresolved, every Wine service and explorer.exe abort on RtlGenRandom, and
     # the *symptom* is a nodrv_CreateWindow / "explorer failed to start". That is
@@ -145,19 +169,33 @@ def diagnose():
         hits.append("Xbox credentials loaded, but the native XGame identity "
                     "did not initialize. Reinstall/update the managed engine "
                     "and attach the diagnostics log if online tabs stay locked.")
-    # Software-rendering fallback: if DXVK/vkd3d only found llvmpipe (Mesa's CPU
-    # rasteriser) and no real GPU Vulkan device, the GPU driver isn't active in
-    # the container. The game then runs on the CPU — slow, and the OreUI Play
-    # screen renders as black panels (the simple main menu still shows, so it
-    # looks baffling rather than obviously GPU-related). Usual cause: a GPU
-    # driver left in a bad state (fixed by a reboot / driver reinstall) or a
-    # missing Vulkan ICD. Only flag when EVERY device found is llvmpipe.
+    # Only report software rendering when every enumerated device is llvmpipe.
     devices = re.findall(r"Found device:\s*(.+)", text)
-    if devices and all("llvmpipe" in d.lower() for d in devices):
+    software_only = bool(
+        devices and all("llvmpipe" in device.lower() for device in devices)
+    )
+    if software_only:
         hits.append("Running on software rendering (llvmpipe) — your GPU's "
                     "Vulkan driver isn't active, so the game runs on the CPU "
                     "(slow, and the Play screen may render black). Reboot, or "
                     "(re)install/enable your GPU's Vulkan drivers.")
+    # WineD3D is relevant only when a real adapter lacks Vulkan 1.3.
+    lacks_vulkan_13 = re.search(
+        r"Skipping:\s*Device does not support Vulkan 1\.3|"
+        r"A Vulkan 1\.3 capable setup is required",
+        text,
+        re.I,
+    )
+    no_dxvk_adapter = re.search(
+        r"DXVK:\s*No adapters found|Failed to initialize DXVK",
+        text,
+        re.I,
+    )
+    if lacks_vulkan_13 and no_dxvk_adapter and not software_only:
+        hits.append("DXVK found no usable Vulkan 1.3 adapter — choose the "
+                    "Legacy compatibility renderer (WineD3D/DXVK fallback; "
+                    "renderer=opengl) in Settings for GPUs whose Vulkan "
+                    "driver cannot provide Vulkan 1.3.")
     if not msa_signed_in():
         hits.append("No Microsoft account linked — click 'Sign in' "
                     "before PLAY.")

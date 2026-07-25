@@ -18,6 +18,7 @@ from .config import (
     CACHE,
     COMPAT,
     DATA,
+    GAMES,
     HOME,
     LOGS,
     PFX,
@@ -92,26 +93,14 @@ def ensure_umu(force=False):
 
 
 def active_prefix():
-    """Return the app-owned prefix, unless the user explicitly opts out.
-
-    Older builds silently reused the first Heroic GDK prefix they found.  That
-    made PLAY/Repair/Force-stop modify or kill another application's Wine
-    session.  Isolation is the safe default on every distribution; advanced
-    users can still opt in deliberately with ``BOL_WINEPREFIX``.
-    """
+    """Return the isolated app prefix or an explicit ``BOL_WINEPREFIX``."""
     override = os.environ.get("BOL_WINEPREFIX", "").strip()
     return Path(override).expanduser() if override else PFX
 
 
 @contextmanager
 def prefix_operation_lock(operation="modify the Wine prefix"):
-    """Serialize every prefix-mutating operation.
-
-    The lock is intentionally held for the complete game session. Repair and
-    setup therefore cannot delete or rewrite the prefix behind a running game,
-    while the explicit Force-stop action remains lock-free so it can end that
-    session.
-    """
+    """Serialize prefix mutations for the complete game session."""
     DATA.mkdir(parents=True, exist_ok=True)
     path = DATA / ".launch.lock"
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -125,34 +114,62 @@ def prefix_operation_lock(operation="modify the Wine prefix"):
                 "or game session is already in progress. Close Minecraft or "
                 "use 'Force stop Minecraft' before trying again."
             ) from exc
-        yield
+        yield fd
     finally:
+        # Closing releases the lock when this is the last reference. PLAY
+        # passes the descriptor to UMU, so an unexpected launcher exit does
+        # not unlock setup/repair while the game wrapper is still alive.
+        os.close(fd)
+
+
+@contextmanager
+def shared_assets_lock(operation, exclusive):
+    """Coordinate shared game and engine assets across isolated profiles."""
+    try:
+        shared_root = GAMES.resolve(strict=False).parent
+        shared_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BolError(
+            f"Cannot locate the shared game-data root for {operation}: {exc}"
+        ) from exc
+    path = shared_root / ".shared-assets.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.chmod(path, 0o600)
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise BolError(
+                f"Cannot {operation}: shared Minecraft files are in use by "
+                "another BedrockOnLinux profile or are being updated."
+            ) from exc
+        yield fd
+    finally:
+        # Do not issue LOCK_UN: an inherited descriptor held by the game
+        # wrapper must keep this shared-assets lock alive if Python crashes.
+        os.close(fd)
 
 
 @contextmanager
 def launch_lock():
     """Serialize PLAY with setup/repair and without stale crash locks."""
-    with prefix_operation_lock("start Minecraft"):
-        yield
+    with shared_assets_lock(
+            "start Minecraft", exclusive=True) as shared_fd, \
+            prefix_operation_lock("start Minecraft") as prefix_fd:
+        yield shared_fd, prefix_fd
 
 
 def steam_compat_dir():
-    """A directory for STEAM_COMPAT_CLIENT_INSTALL_PATH — umu/Proton require one.
+    """Return a writable Steam compatibility directory for UMU/Proton.
 
-    We prefer the host's ~/.steam/steam: on a machine with Steam it's a symlink
-    to the real client install, which umu happily reuses. That preference is
-    also the trap — on a Steam Deck ~/.steam/steam points at ~/.local/share/Steam,
-    which our Flatpak sandbox can't see (we only grant ~/.steam, not the target),
-    leaving a *dangling* symlink: the name exists yet isn't a directory, so even
-    mkdir(exist_ok=True) raises FileExistsError on it and the launch aborts
-    (issue #19). So only create it when nothing is in the way; if anything is
-    (a dangling/foreign symlink, an unwritable ~/.steam), fall back to a dir we
-    own. Proton needs no real Steam files here — a writable empty dir is enough,
-    which is exactly what a fresh, Steam-less machine already runs with."""
+    Flatpak cannot follow Steam Deck's host symlink, so sandboxed and unusable
+    host paths fall back to app-owned storage.
+    """
+    if "FLATPAK_ID" in os.environ or Path("/.flatpak-info").exists():
+        fallback = DATA / "steamcompat"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
     steam = HOME / ".steam/steam"
     if steam.is_dir():                     # real Steam, or one we made earlier
         return steam
@@ -182,26 +199,39 @@ def proton_umu_cmd(exe, prefix=None):
         info(f"Using existing GDK prefix: {prefix}")
     steam_compat = steam_compat_dir()
     env = dict(os.environ)
-    env.update({"GAMEID": "0", "PROTONPATH": str(proton_path()),
+    env.update({"PROTONPATH": str(proton_path()),
                 "PROTON_VERB": "run", "WINEPREFIX": str(prefix),
                 "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam_compat),
+                # UMU appends "umu"; this resolves to the app-owned UMU_DIR.
+                "UMU_FOLDERS_PATH": str(DATA),
                 "UMU_RUNTIME_UPDATE": "0"})
+    # GAMEID selects protonfixes, not the inherited Steam session identity.
+    game_id = env.get("GAMEID", "").strip()
+    env["GAMEID"] = game_id or "umu-default"
     return [sys.executable, str(ensure_umu()), exe], env
 
 
+def prefix_ready(prefix: Path):
+    """Return whether Wine completed the prefix, including both main hives."""
+    prefix = Path(prefix)
+    if not (prefix / "drive_c/windows/system32").is_dir():
+        return False
+    for name in ("system.reg", "user.reg"):
+        try:
+            with (prefix / name).open("rb") as hive:
+                if not hive.read(64).startswith(b"WINE REGISTRY Version "):
+                    return False
+        except OSError:
+            return False
+    return True
+
+
 def boot_prefix(prefix=None):
-    """Ensure the Wine prefix is initialised — i.e. drive_c/windows/system32
-    exists. Proton/umu create and boot the prefix on first use, but several
-    setup steps (the cryptbase RNG stub, the GameInput redist) write straight
-    into system32; on a brand-new prefix they otherwise fail with 'system32
-    not found' (issue #10). This runs wineboot through umu and waits for
-    system32 to appear. Idempotent: returns at once once the prefix is ready."""
+    """Ensure Wine created system32 and its persistent registry hives."""
     pfx = Path(prefix or active_prefix())
-    sys32 = pfx / "drive_c/windows/system32"
-    if sys32.is_dir():
+    if prefix_ready(pfx):
         return True
-    # This is the only setup helper which may execute Wine.  Refuse a known
-    # broken display/driver before UMU or Wine can open a device.
+    # Refuse a known-bad graphics session before Wine can open a device.
     from .gpu_safety import require_safe_graphics_session
     require_safe_graphics_session()
     info("Initialising the Wine prefix (first run) …")
@@ -210,33 +240,57 @@ def boot_prefix(prefix=None):
     env = headless_setup_env(env)
     env.setdefault("WINEDEBUG", "-all")
     LOGS.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS / "native-login.log"
+    failure = None
     try:
-        with open(LOGS / "native-login.log", "a") as log:
-            subprocess.run(cmd, env=env, stdout=log,
-                           stderr=subprocess.STDOUT, timeout=300)
-    except Exception as e:
-        warn(f"wineboot failed ({e}).")
+        with log_path.open("a") as log:
+            try:
+                completed = subprocess.run(
+                    cmd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                    timeout=300)
+            except subprocess.TimeoutExpired:
+                failure = "timed out after 300 seconds"
+            except Exception as exc:
+                failure = f"raised {type(exc).__name__}: {exc}"
+            else:
+                if completed.returncode != 0:
+                    failure = f"exited with status {completed.returncode}"
+            if failure:
+                log.write(f"\nBedrockOnLinux: wineboot {failure}.\n")
+                log.flush()
+    except OSError as exc:
+        failure = (f"could not write its diagnostic log "
+                   f"({type(exc).__name__}: {exc})")
     finally:
-        # wineboot sometimes leaves services behind.  Registry updates which
-        # follow are offline, so finish the setup session gracefully first.
+        # Offline registry updates require wineboot services to be gone.
         stop_prefix_procs(pfx, grace=5)
+    if failure:
+        warn(f"Wine prefix initialisation failed: wineboot {failure}. "
+             f"Details: {log_path}")
+        return False
     end = time.time() + 30
-    while time.time() < end and not sys32.is_dir():
+    while time.time() < end and not prefix_ready(pfx):
         time.sleep(1)
-    if not sys32.is_dir():
-        warn(f"Wine prefix not initialised (no {sys32}); the in-game mouse "
-             "and native login may not work until the next launch.")
+    if not prefix_ready(pfx):
+        warn("Wine prefix initialisation finished without valid system.reg, "
+             f"user.reg, and system32 state. Details: {log_path}")
         return False
     return True
 
 
+def _environ_uses_prefix(environ, prefix):
+    """Match an exact NUL-delimited WINEPREFIX entry."""
+    target = b"WINEPREFIX=" + os.fsencode(str(prefix))
+    return target in environ.split(b"\0")
+
+
 def prefix_processes(prefix: Path):
     """Return live PIDs carrying this exact ``WINEPREFIX`` environment."""
-    target = ("WINEPREFIX=" + str(prefix)).encode() + b"\0"
     found = []
     for pdir in Path("/proc").glob("[0-9]*"):
         try:
-            if target in pdir.joinpath("environ").read_bytes():
+            if _environ_uses_prefix(
+                    pdir.joinpath("environ").read_bytes(), prefix):
                 pid = int(pdir.name)
                 if pid != os.getpid():
                     found.append(pid)
@@ -321,9 +375,15 @@ def headless_setup_env(env):
     result.pop("XAUTHORITY", None)
     result.pop("PROTON_ENABLE_WAYLAND", None)
     result["SDL_VIDEODRIVER"] = "dummy"
-    disabled = "winevulkan=;dxgi=;d3d11=;d3d12="
-    current = result.get("WINEDLLOVERRIDES", "")
-    result["WINEDLLOVERRIDES"] = disabled + (";" + current if current else "")
+    setup_keys = {"cryptbase", "winevulkan", "dxgi", "d3d11", "d3d12"}
+    current = [
+        item for item in result.get("WINEDLLOVERRIDES", "").split(";")
+        if item and item.partition("=")[0].strip().lower() not in setup_keys
+    ]
+    # wineboot needs Wine's builtin cryptbase for SystemFunction036.  A native
+    # preference here can recurse through advapi32 and leave wineboot spinning.
+    overrides = ["cryptbase=b", "winevulkan=", "dxgi=", "d3d11=", "d3d12="]
+    result["WINEDLLOVERRIDES"] = ";".join(overrides + current)
     return result
 
 
@@ -338,12 +398,16 @@ def kill_wine():
 
 
 def reset_prefix():
-    # Repair never deletes an explicitly supplied third-party prefix.
+    # Repair must never delete an explicit third-party prefix.
     with prefix_operation_lock("repair the Wine prefix"):
         stop_prefix_procs(PFX)
         require_prefix_idle(PFX, "repair the Wine prefix")
-        if COMPAT.exists():
-            shutil.rmtree(COMPAT, ignore_errors=True)
+        if COMPAT.is_symlink() or (
+                COMPAT.exists() and not COMPAT.is_dir()):
+            # Never follow a damaged or dangling compatibility-tree link.
+            COMPAT.unlink()
+        elif COMPAT.exists():
+            shutil.rmtree(COMPAT)
         ok("Wine prefix reset — rebuilt on next launch.")
 
 

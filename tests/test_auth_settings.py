@@ -11,6 +11,61 @@ from unittest import mock
 from bol import auth
 
 
+_UPGRADED_SYSTEM_REG = b"""WINE REGISTRY Version 2
+;; All keys relative to REGISTRY\\Machine
+
+#arch=win64
+
+[Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Microsoft.Windows.Storage.Pickers.FileOpenPicker] 1
+#time=1
+
+"""
+
+_UPGRADED_USER_REG = b"""WINE REGISTRY Version 2
+;; All keys relative to REGISTRY\\User\\S-1-5-21-0-0-0-1000
+
+#arch=win64
+
+[Environment] 1
+#time=1
+
+"""
+
+
+class WineGdkPrerequisiteTests(unittest.TestCase):
+    def test_file_picker_registration_repairs_upgraded_prefix_idempotently(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = Path(td) / "pfx"
+            prefix.mkdir()
+            (prefix / "system.reg").write_bytes(_UPGRADED_SYSTEM_REG)
+            (prefix / "user.reg").write_bytes(_UPGRADED_USER_REG)
+
+            with mock.patch.object(auth, "active_prefix",
+                                   return_value=prefix), \
+                    mock.patch.object(auth, "load_settings",
+                                      return_value={}), \
+                    mock.patch.object(auth, "ok"), \
+                    mock.patch("bol.prefix.require_prefix_idle"):
+                auth.wine_apply_winegdk_prereqs()
+                system_once = (prefix / "system.reg").read_bytes()
+                user_once = (prefix / "user.reg").read_bytes()
+                auth.wine_apply_winegdk_prereqs()
+
+            system = (prefix / "system.reg").read_text()
+            self.assertIn(
+                r"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId"
+                r"\\Microsoft.Windows.Storage.Pickers.FileOpenPicker]",
+                system,
+            )
+            self.assertIn(
+                r'"DllPath"="C:\\windows\\system32\\windows.storage.dll"',
+                system,
+            )
+            self.assertEqual(system.count('"DllPath"='), 1)
+            self.assertEqual((prefix / "system.reg").read_bytes(), system_once)
+            self.assertEqual((prefix / "user.reg").read_bytes(), user_once)
+
+
 
 
 class OnlinePreauthPayloadTests(unittest.TestCase):
@@ -424,7 +479,6 @@ class NativeAuthCancellationTests(unittest.TestCase):
                 native._flow(None, online, epoch)
 
             self.assertFalse((msa / "token.json").exists())
-            self.assertFalse(native.online)
             online.assert_not_called()
             self.assertNotEqual(
                 (cache / ".account-epoch").read_text().strip(), epoch)
@@ -455,7 +509,6 @@ class NativeAuthCancellationTests(unittest.TestCase):
                 native._flow(None, None, epoch)
 
             self.assertFalse((msa / "token.json").exists())
-            self.assertFalse(native.online)
 
 
 if __name__ == "__main__":

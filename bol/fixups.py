@@ -451,5 +451,5 @@ def hide_signin_button(game_dir):
         if n:
             ss.write_text(new, encoding="utf-8")
             ok("Hid the broken in-game Sign-in button.")
-    except Exception as e:                       # noqa: BLE001 — cosmetic, never fatal
+    except Exception as e:
         warn(f"hide_signin_button: {e}")
