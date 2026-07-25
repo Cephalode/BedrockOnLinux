@@ -148,6 +148,8 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
                       followup_additions)
         self.assertIn("OPENFILENAMEW dialog = {0}", followup_additions)
         self.assertIn("GetOpenFileNameW( &dialog )", followup_additions)
+        self.assertIn("dialog.hwndOwner = operation->hwnd",
+                      followup_additions)
         self.assertIn("OFN_FILEMUSTEXIST", followup_additions)
         self.assertIn("OFN_PATHMUSTEXIST", followup_additions)
         self.assertIn(

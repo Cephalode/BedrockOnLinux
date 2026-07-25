@@ -94,7 +94,7 @@ index 9a06cd68a3e..159d329cf30 100644
 +    if (folder_id) SHGetKnownFolderPath( folder_id, 0, NULL, &initial_dir );
 +
 +    dialog.lStructSize = sizeof(dialog);
-+    dialog.hwndOwner = NULL;
++    dialog.hwndOwner = operation->hwnd;
 +    dialog.lpstrFilter = filter;
 +    dialog.nFilterIndex = 1;
 +    dialog.lpstrFile = path;
