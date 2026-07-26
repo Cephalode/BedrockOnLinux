@@ -123,6 +123,40 @@ def test_profiles_are_listed_from_metadata(tmp_path):
     assert all(Path(item["path"]).is_dir() for item in items)
 
 
+def test_profile_commands_from_managed_profile_use_sibling_root(tmp_path):
+    base = tmp_path / "data"
+    alice = create_profile("Alice", base)
+
+    with mock.patch("bol.profiles.DATA", alice):
+        bob = create_profile("Bob")
+        items = list_profiles()
+
+    assert bob == base / "profiles" / "bob"
+    assert not (alice / "profiles").exists()
+    assert {item["name"] for item in items} == {"Alice", "Bob"}
+
+
+def test_bol_home_data_root_remains_profile_base(tmp_path):
+    data_root = tmp_path / "direct BOL_HOME"
+
+    with mock.patch("bol.profiles.DATA", data_root):
+        profile = create_profile("Alice")
+        items = list_profiles()
+
+    assert profile == data_root / "profiles" / "alice"
+    assert [item["name"] for item in items] == ["Alice"]
+
+
+def test_explicit_profile_base_overrides_managed_profile_data(tmp_path):
+    current = create_profile("Current", tmp_path / "current")
+    explicit = tmp_path / "explicit"
+
+    with mock.patch("bol.profiles.DATA", current):
+        profile = create_profile("Other", explicit)
+
+    assert profile == explicit / "profiles" / "other"
+
+
 def test_shortcut_uses_isolated_bol_home_and_handles_spaces(tmp_path):
     base = tmp_path / "shared data"
     profile = create_profile("Family Two", base)
