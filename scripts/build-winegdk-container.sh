@@ -26,8 +26,12 @@ EXPECTED_SOURCE_MANIFEST_SHA256="$(
 readonly EXPECTED_SOURCE_DATE_EPOCH="1784308597"
 readonly GLIBC_CEILING="2.31"
 readonly VENDORED_FOLLOWUP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0002-windows.storage-use-legacy-single-file-dialog.patch"
-readonly VENDORED_FOLLOWUP_PATCH_SHA256="1efa57958295263754bb5fa1bd59ff90af6f3ff3f52173be6c6c7fa6f3c74f42"
-readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0003-winex11-use-client-surface-origin.patch"
+readonly VENDORED_FOLLOWUP_PATCH_SHA256="68b20aa95afbef46ad9a50d24cadfdd89267e1f4ad341bb25320443b8cac1cae"
+readonly VENDORED_ACHIEVEMENTS_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0003-xgameruntime-use-windows-achievements-token.patch"
+readonly VENDORED_ACHIEVEMENTS_PATCH_SHA256="244101f82f58328b94fce93d02ace47e1c0148cf67b7a32e4b9dd44225e81e00"
+readonly VENDORED_CONTEXT_CALLBACK_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0004-combase-implement-context-callback.patch"
+readonly VENDORED_CONTEXT_CALLBACK_PATCH_SHA256="33afb0b3bcd7678e828a955d639d3384b8b5c656219b05e9c53bb45dd7c34919"
+readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0005-winex11-use-client-surface-origin.patch"
 readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
 # Fixed build paths so Wine's embedded __FILE__ strings are stable run to run.
@@ -72,6 +76,26 @@ echo "== Applying reviewed file-picker follow-up"
 git -C "$SRC" apply --check "$VENDORED_FOLLOWUP_PATCH" \
   || { echo "!! WineGDK file-picker follow-up patch does not apply" >&2; exit 1; }
 git -C "$SRC" apply "$VENDORED_FOLLOWUP_PATCH"
+
+echo "== Applying reviewed Achievements token follow-up"
+[ -f "$VENDORED_ACHIEVEMENTS_PATCH" ] \
+  || { echo "!! missing WineGDK Achievements patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_ACHIEVEMENTS_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_ACHIEVEMENTS_PATCH_SHA256" ] \
+  || { echo "!! WineGDK Achievements patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_ACHIEVEMENTS_PATCH" \
+  || { echo "!! WineGDK Achievements patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_ACHIEVEMENTS_PATCH"
+
+echo "== Applying reviewed COM context-callback backport"
+[ -f "$VENDORED_CONTEXT_CALLBACK_PATCH" ] \
+  || { echo "!! missing WineGDK context-callback patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_CONTEXT_CALLBACK_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_CONTEXT_CALLBACK_PATCH_SHA256" ] \
+  || { echo "!! WineGDK context-callback patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_CONTEXT_CALLBACK_PATCH" \
+  || { echo "!! WineGDK context-callback patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_CONTEXT_CALLBACK_PATCH"
 
 echo "== Applying X11 client-surface geometry backport"
 [ -f "$VENDORED_CLIENT_SURFACE_PATCH" ] \
@@ -139,6 +163,9 @@ done < <(find "$PREFIX" -type f -print0)
   || { echo "!! prefix has no wineserver" >&2; exit 1; }
 [ -n "$(find "$PREFIX" -type f -path '*/x86_64-unix/ntdll.so' -print -quit)" ] \
   || { echo "!! prefix has no x86_64-unix/ntdll.so" >&2; exit 1; }
+[ ! -e "$PREFIX/lib/wine/i386-unix" ] \
+  && [ ! -L "$PREFIX/lib/wine/i386-unix" ] \
+  || { echo "!! prefix unexpectedly contains an i386 Unix runtime" >&2; exit 1; }
 [ "$failures" = 0 ] || { echo "!! $failures ELF file(s) exceed GLIBC_$GLIBC_CEILING" >&2; exit 1; }
 
 echo "== Writing provenance"
