@@ -1448,8 +1448,7 @@ def gui():
             if getattr(acct_btn, "_confirm_out", False):
                 na.stop()
                 try:
-                    with prefix_operation_lock("sign out of Microsoft"):
-                        msa_logout()
+                    msa_logout()
                 except BolError as exc:
                     warn(str(exc))
                     acct_state("in" if msa_signed_in() else "out")
