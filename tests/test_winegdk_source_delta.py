@@ -26,6 +26,9 @@ PATCH = DELTA / "0001-winegdk-native5-Xbox-and-file-picker-runtime.patch"
 FOLLOWUP_PATCH = (
     DELTA / "0002-windows.storage-use-legacy-single-file-dialog.patch"
 )
+CLIENT_SURFACE_PATCH = (
+    DELTA / "0003-winex11-use-client-surface-origin.patch"
+)
 SOURCE_SUMS = DELTA / "SOURCE-SHA256SUMS"
 CHANGED_FILES = {
     "dlls/windows.storage/Makefile.in",
@@ -53,6 +56,7 @@ CHANGED_FILES = {
     "include/xgame.idl",
     "include/xgameerr.h",
 }
+PINNED_SOURCE_FILES = CHANGED_FILES | {"dlls/winex11.drv/init.c"}
 
 
 class WineGdkSourceDeltaTests(unittest.TestCase):
@@ -80,6 +84,10 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             self._constant("VENDORED_FOLLOWUP_PATCH_SHA256"),
         )
         self.assertEqual(
+            hashlib.sha256(CLIENT_SURFACE_PATCH.read_bytes()).hexdigest(),
+            self._constant("VENDORED_CLIENT_SURFACE_PATCH_SHA256"),
+        )
+        self.assertEqual(
             hashlib.sha256(SOURCE_SUMS.read_bytes()).hexdigest(),
             self._constant("SOURCE_SHA256SUMS_SHA256"),
         )
@@ -91,7 +99,7 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             line.split("  ", 1)[1]
             for line in SOURCE_SUMS.read_text().splitlines() if line
         }
-        self.assertEqual(pinned, CHANGED_FILES)
+        self.assertEqual(pinned, PINNED_SOURCE_FILES)
 
     def test_patch_completes_native_context_and_file_picker_without_patcher(self):
         text = PATCH.read_text()
