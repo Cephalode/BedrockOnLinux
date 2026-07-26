@@ -239,6 +239,66 @@ def prefix_ready(prefix: Path):
     return True
 
 
+def seed_managed_bootstrap_cryptbase(prefix: Path):
+    """Install native cryptbase before managed-prefix services start.
+
+    GDK-Proton's advapi32 forwards SystemFunction036 to cryptbase.  With the
+    managed pure-WoW64 engine, forcing only Wine's builtin cryptbase during an
+    engine upgrade can leave that forward unresolved and make every wineboot
+    service repeatedly abort.  Never materialise or modify an explicitly
+    supplied prefix or a prefix used with a custom engine.
+    """
+    if os.environ.get("BOL_WINEPREFIX", "").strip():
+        return False
+    pfx = Path(prefix)
+    engine = proton_path()
+    if engine is None:
+        return False
+    try:
+        if pfx.resolve(strict=False) != PFX.resolve(strict=False) or \
+                Path(engine).resolve(strict=False) != \
+                WINEGDK_OUT.resolve(strict=False):
+            return False
+    except (OSError, RuntimeError):
+        return False
+
+    if pfx.is_symlink():
+        raise BolError(
+            "The managed Wine prefix is an unsafe symbolic link; "
+            "run Install / Update to rebuild its local layout."
+        )
+    try:
+        pfx.mkdir(parents=True, exist_ok=True)
+        resolved_root = pfx.resolve(strict=True)
+        current = pfx
+        for component in ("drive_c", "windows", "system32"):
+            child = current / component
+            if child.is_symlink():
+                raise BolError(
+                    "The managed Wine prefix has an unsafe system32 layout; "
+                    "run Install / Update to rebuild it."
+                )
+            child.mkdir(exist_ok=True)
+            if not child.is_dir():
+                raise BolError(
+                    "The managed Wine prefix has an invalid system32 layout; "
+                    "run Install / Update to rebuild it."
+                )
+            child.resolve(strict=True).relative_to(resolved_root)
+            current = child
+    except BolError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BolError(
+            "The managed Wine prefix has an unsafe system32 layout; "
+            "run Install / Update to rebuild it."
+        ) from exc
+
+    # Import lazily: fixups imports active_prefix from this module.
+    from .fixups import _install_cryptbase_in_prefix
+    return _install_cryptbase_in_prefix(pfx)
+
+
 def boot_prefix(prefix=None):
     """Ensure Wine created system32 and its persistent registry hives."""
     pfx = Path(prefix or active_prefix())
@@ -250,9 +310,10 @@ def boot_prefix(prefix=None):
     from .gpu_safety import require_safe_graphics_session
     require_safe_graphics_session()
     info("Initialising the Wine prefix (first run) …")
+    native_cryptbase = seed_managed_bootstrap_cryptbase(pfx)
     cmd, env = proton_umu_cmd("wineboot", prefix=pfx)
     cmd.append("-u")
-    env = headless_setup_env(env)
+    env = headless_setup_env(env, native_cryptbase=native_cryptbase)
     env.setdefault("WINEDEBUG", "-all")
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / "native-login.log"
@@ -471,7 +532,7 @@ def stop_prefix_procs(prefix: Path, grace=5, kill_grace=2):
     return len(seen), len(forced)
 
 
-def headless_setup_env(env):
+def headless_setup_env(env, native_cryptbase=False):
     """Prevent non-graphical Wine setup helpers from initialising a GPU."""
     result = dict(env)
     result.pop("DISPLAY", None)
@@ -484,9 +545,11 @@ def headless_setup_env(env):
         item for item in result.get("WINEDLLOVERRIDES", "").split(";")
         if item and item.partition("=")[0].strip().lower() not in setup_keys
     ]
-    # wineboot needs Wine's builtin cryptbase for SystemFunction036.  A native
-    # preference here can recurse through advapi32 and leave wineboot spinning.
-    overrides = ["cryptbase=b", "winevulkan=", "dxgi=", "d3d11=", "d3d12="]
+    # Prefer only the verified, self-contained native RNG seeded above. Older
+    # native implementations could recurse through advapi32, so retain the
+    # builtin-only behavior when no safe DLL was staged.
+    cryptbase = "cryptbase=n,b" if native_cryptbase else "cryptbase=b"
+    overrides = [cryptbase, "winevulkan=", "dxgi=", "d3d11=", "d3d12="]
     result["WINEDLLOVERRIDES"] = ";".join(overrides + current)
     return result
 

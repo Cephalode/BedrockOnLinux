@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from bol import gameinput, gamesetup, prefix
+from bol import fixups, gameinput, gamesetup, prefix
 from bol.log import BolError
 
 
@@ -77,6 +77,9 @@ class PrefixShutdownTests(unittest.TestCase):
                         prefix, "proton_umu_cmd",
                         return_value=(["umu", "wineboot"], {})) as umu, \
                     mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
                         prefix.subprocess, "run",
                         side_effect=finish_prefix) as run, \
                     mock.patch.object(prefix, "stop_prefix_procs"):
@@ -111,6 +114,9 @@ class PrefixShutdownTests(unittest.TestCase):
                         prefix, "proton_umu_cmd",
                         return_value=(["umu", "wineboot"], {})), \
                     mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
                         prefix.subprocess, "run",
                         return_value=SimpleNamespace(returncode=42)), \
                     mock.patch.object(prefix, "stop_prefix_procs"), \
@@ -134,6 +140,9 @@ class PrefixShutdownTests(unittest.TestCase):
                         prefix, "proton_umu_cmd",
                         return_value=(["umu", "wineboot"], {})), \
                     mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
                         prefix.subprocess, "run",
                         side_effect=prefix.subprocess.TimeoutExpired(
                             ["umu", "wineboot"], 300)), \
@@ -156,6 +165,9 @@ class PrefixShutdownTests(unittest.TestCase):
                     mock.patch.object(
                         prefix, "proton_umu_cmd",
                         return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
                     mock.patch.object(
                         prefix.subprocess, "run",
                         side_effect=OSError("cannot execute")), \
@@ -262,6 +274,105 @@ class PrefixEnvironmentTests(unittest.TestCase):
         self.assertNotIn("cryptbase=n,b", overrides)
         self.assertNotIn("dxgi=n", overrides)
 
+    def test_headless_setup_prefers_seeded_native_cryptbase(self):
+        result = prefix.headless_setup_env(
+            {"WINEDLLOVERRIDES": "cryptbase=b;foo=n"},
+            native_cryptbase=True,
+        )
+        overrides = result["WINEDLLOVERRIDES"].split(";")
+
+        self.assertEqual(overrides.count("cryptbase=n,b"), 1)
+        self.assertNotIn("cryptbase=b", overrides)
+        self.assertIn("foo=n", overrides)
+
+    def test_bootstrap_cryptbase_is_seeded_into_fresh_managed_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pfx = root / "fresh-prefix"
+            engine = root / "managed-engine"
+            engine.mkdir()
+
+            with mock.patch.dict(prefix.os.environ, {}, clear=True), \
+                    mock.patch.object(prefix, "PFX", pfx), \
+                    mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+                    mock.patch.object(
+                        prefix, "proton_path", return_value=engine), \
+                    mock.patch(
+                        "bol.fixups._install_cryptbase_in_prefix",
+                        return_value=True) as install:
+                self.assertTrue(
+                    prefix.seed_managed_bootstrap_cryptbase(pfx))
+
+            self.assertTrue(
+                (pfx / "drive_c/windows/system32").is_dir())
+            install.assert_called_once_with(pfx)
+
+    def test_bootstrap_cryptbase_never_mutates_explicit_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            managed = root / "managed-prefix"
+            external = root / "external-prefix"
+            engine = root / "managed-engine"
+            with mock.patch.dict(
+                    prefix.os.environ,
+                    {"BOL_WINEPREFIX": str(external)}, clear=True), \
+                    mock.patch.object(prefix, "PFX", managed), \
+                    mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+                    mock.patch.object(
+                        prefix, "proton_path", return_value=engine), \
+                    mock.patch(
+                        "bol.fixups._install_cryptbase_in_prefix") as install:
+                self.assertFalse(
+                    prefix.seed_managed_bootstrap_cryptbase(external))
+
+            self.assertFalse(external.exists())
+            install.assert_not_called()
+
+    def test_bootstrap_cryptbase_never_mutates_custom_engine_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pfx = root / "managed-prefix"
+            managed_engine = root / "managed-engine"
+            custom_engine = root / "custom-engine"
+            with mock.patch.dict(prefix.os.environ, {}, clear=True), \
+                    mock.patch.object(prefix, "PFX", pfx), \
+                    mock.patch.object(
+                        prefix, "WINEGDK_OUT", managed_engine), \
+                    mock.patch.object(
+                        prefix, "proton_path", return_value=custom_engine), \
+                    mock.patch(
+                        "bol.fixups._install_cryptbase_in_prefix") as install:
+                self.assertFalse(
+                    prefix.seed_managed_bootstrap_cryptbase(pfx))
+
+            self.assertFalse(pfx.exists())
+            install.assert_not_called()
+
+    def test_bootstrap_cryptbase_rejects_system32_symlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pfx = root / "managed-prefix"
+            engine = root / "managed-engine"
+            external = root / "external"
+            (pfx / "drive_c/windows").mkdir(parents=True)
+            engine.mkdir()
+            external.mkdir()
+            (pfx / "drive_c/windows/system32").symlink_to(
+                external, target_is_directory=True)
+
+            with mock.patch.dict(prefix.os.environ, {}, clear=True), \
+                    mock.patch.object(prefix, "PFX", pfx), \
+                    mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+                    mock.patch.object(
+                        prefix, "proton_path", return_value=engine), \
+                    mock.patch(
+                        "bol.fixups._install_cryptbase_in_prefix") as install:
+                with self.assertRaisesRegex(BolError, "unsafe system32"):
+                    prefix.seed_managed_bootstrap_cryptbase(pfx)
+
+            self.assertEqual(list(external.iterdir()), [])
+            install.assert_not_called()
+
     def test_proton_umu_uses_neutral_gameid_without_rewriting_steam_identity(
             self):
         cases = [
@@ -325,6 +436,63 @@ class PrefixEnvironmentTests(unittest.TestCase):
                 "Minecraft.Windows.exe", Path("/tmp/prefix"))
 
         self.assertNotIn("PROTON_USE_WOW64", env)
+
+
+class CryptbaseInstallTests(unittest.TestCase):
+    def test_install_is_atomic_and_preserves_existing_file_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source_dir = root / "openssl-set"
+            source_dir.mkdir()
+            (source_dir / "cryptbase.dll").write_bytes(b"verified-rng")
+            pfx = root / "prefix"
+            system32 = pfx / "drive_c/windows/system32"
+            system32.mkdir(parents=True)
+            destination = system32 / "cryptbase.dll"
+            destination.write_bytes(b"old-placeholder")
+
+            with mock.patch.object(
+                    fixups, "OPENSSL_XCURL_SET", source_dir), \
+                    mock.patch.object(fixups, "ok"):
+                self.assertTrue(
+                    fixups._install_cryptbase_in_prefix(pfx))
+                self.assertTrue(
+                    fixups._install_cryptbase_in_prefix(pfx))
+
+            self.assertEqual(destination.read_bytes(), b"verified-rng")
+            self.assertEqual(
+                (system32 / "cryptbase.dll.bol-orig").read_bytes(),
+                b"old-placeholder",
+            )
+            self.assertEqual(
+                list(system32.glob(".cryptbase.dll-*")), [])
+
+    def test_install_replaces_symlink_without_touching_its_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source_dir = root / "openssl-set"
+            source_dir.mkdir()
+            (source_dir / "cryptbase.dll").write_bytes(b"verified-rng")
+            pfx = root / "prefix"
+            system32 = pfx / "drive_c/windows/system32"
+            system32.mkdir(parents=True)
+            external = root / "external-cryptbase.dll"
+            external.write_bytes(b"external")
+            destination = system32 / "cryptbase.dll"
+            destination.symlink_to(external)
+
+            with mock.patch.object(
+                    fixups, "OPENSSL_XCURL_SET", source_dir), \
+                    mock.patch.object(fixups, "ok"):
+                self.assertTrue(
+                    fixups._install_cryptbase_in_prefix(pfx))
+
+            self.assertFalse(destination.is_symlink())
+            self.assertEqual(destination.read_bytes(), b"verified-rng")
+            self.assertEqual(external.read_bytes(), b"external")
+            backup = system32 / "cryptbase.dll.bol-orig"
+            self.assertTrue(backup.is_symlink())
+            self.assertEqual(os.readlink(backup), str(external))
 
 
 class ManagedRuntimeRepairTests(unittest.TestCase):
