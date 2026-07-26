@@ -13,6 +13,9 @@
   top and left borders that could appear when Minecraft entered fullscreen.
 - Make the General, Advanced and Tools settings tabs scroll with an X11
   touchpad or mouse wheel even while the pointer is over a child control.
+- Create and list isolated profiles at the shared installation root when the
+  launcher is opened from a managed profile, while preserving direct
+  `BOL_HOME` data-root overrides.
 - Keep Flatpak's private XDG data directory writable while exposing only the
   pre-XDG data root read-only for automatic migration, fixing the
   `.shared-assets.lock` startup failure reported on Bazzite and CachyOS.

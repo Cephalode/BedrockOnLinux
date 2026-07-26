@@ -82,6 +82,9 @@
           <li>removes thin top and left borders from WineX11 fullscreen
               rendering and restores touchpad or mouse-wheel scrolling
               throughout the settings tabs;</li>
+          <li>keeps newly created isolated profiles beside the active managed
+              profile without changing direct <code>BOL_HOME</code>
+              data-root overrides;</li>
           <li>keeps Flatpak&apos;s private data directory writable while
               migrating the previous data root read-only, fixing startup on
               Bazzite, CachyOS and other Flatpak hosts;</li>
