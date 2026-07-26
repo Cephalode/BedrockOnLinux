@@ -70,11 +70,14 @@ _DIAG_RULES = [
      "The installed engine cannot run Minecraft's ExecuteIndirect menu path "
      "on this Vulkan driver — install the current compatibility engine "
      "('bedrock-on-linux setup --force')."),
-    (r"Unimplemented function combase\.dll\.RoOriginateError|"
-     r"RoOriginateErrorW",
+    (r"Unimplemented function\s+combase\.dll\.RoOriginateErrorW?\b",
      "combase patch missing — re-run 'Install / Update'."),
-    (r"NtQueryWnfStateData|Unimplemented function .*aborting",
+    (r"Unimplemented function\s+ntdll\.dll\.NtQueryWnfStateData\b",
      "ntdll patch missing — re-run 'Install / Update'."),
+    (r"Loading library user32\.dll[^\r\n]*failed \(error c0000020\)",
+     "Wine user32.dll in the prefix could not be loaded (invalid image, "
+     "status c0000020) — Install / Update repairs managed engine and prefix "
+     "files automatically; custom prefixes need a matching Wine runtime."),
     (r"vkGetPhysicalDeviceSurfaceFormatsKHR|Can't open display|x11drv: Can't",
      "Display unavailable (no X/Wayland server)."),
     (r"VK_ERROR_DEVICE_LOST|device removed|DXGI_ERROR|vkd3d.*fatal|"

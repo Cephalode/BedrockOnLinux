@@ -77,11 +77,13 @@ Per <https://docs.flathub.org/docs/for-app-authors/submission>:
   which spawns its sub-sandbox via the Flatpak portal and runs 32-bit Wine
   code; same permission set as Lutris, Bottles and Heroic.
 - `--share=network`: downloads + Microsoft/Xbox sign-in + multiplayer.
-- `--filesystem=xdg-data/bedrock-on-linux:ro`: one-upgrade transition access
-  to the exact old data root. The app atomically copies it to private XDG
-  storage before any command can populate the destination; it cannot continue
-  writing to the host folder. Remove this permission in the following release
-  after the migration window.
+- `--filesystem=~/.local/share/bedrock-on-linux:ro`: one-upgrade transition
+  access to the exact old data root. The explicit home-relative path leaves the
+  private XDG destination writable; the `xdg-data` alias must not be used here
+  because Flatpak maps it onto that destination. The app atomically copies the
+  old tree before any command can populate the destination and cannot continue
+  writing to the host folder. Remove this permission after the migration
+  window.
 
 The game, engine, prefix, account, UMU runtime and empty Proton Steam-compat
 directory all live under Flatpak's private XDG data directory. The narrowly

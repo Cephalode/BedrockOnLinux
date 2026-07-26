@@ -38,11 +38,11 @@ REQUIRED_COMPONENTS = {
     "vkd3d_nv_dgc": VKD3D_NV_DGC_COMPONENT_VERSION,
 }
 
-# native5/native6 keep the reviewed r11/r12 universal graphics payload. Hashing
+# native5 through native12 keep the reviewed r11/r12 universal graphics payload. Hashing
 # whatever an archive declares would only prove internal consistency, so pin
 # the known DLL bytes as an independent trust anchor. Future engine revisions
 # must update the revision pin deliberately.
-REQUIRED_VARIANT_HASHES_BUILD_REV = "wow64-archs-native6"
+REQUIRED_VARIANT_HASHES_BUILD_REV = "wow64-archs-native12"
 REQUIRED_ENGINE_GLIBC_MAX = "2.31"
 REQUIRED_VKD3D_BASE_COMMIT = "3b10bd7a7ec6a7347e616cf8bea59333afec2255"
 REQUIRED_VKD3D_REVERT = "76c11d2e2b90b0a46dc894508e67e2aaacc2c04d"
@@ -80,13 +80,16 @@ REQUIRED_CRITICAL_FILE_PATHS = (
     "files/lib/x86_64-linux-gnu/libunwind.so.8",
     "files/lib/wine/x86_64-windows/ntdll.dll",
     "files/lib/wine/x86_64-windows/combase.dll",
+    "files/lib/wine/x86_64-windows/user32.dll",
     "files/lib/wine/x86_64-windows/xgameruntime.dll",
     "files/lib/wine/x86_64-windows/windows.storage.dll",
+    "files/lib/wine/x86_64-windows/windows.storage.applicationdata.dll",
     XGAMERUNTIME_THREADING_PATH,
     "files/lib/wine/i386-windows/ntdll.dll",
     "files/lib/wine/i386-windows/combase.dll",
     "files/lib/wine/i386-windows/xgameruntime.dll",
     "files/lib/wine/i386-windows/windows.storage.dll",
+    "files/lib/wine/i386-windows/windows.storage.applicationdata.dll",
     "files/lib/wine/x86_64-unix/ntdll.so",
 )
 REQUIRED_EXECUTABLE_FILE_PATHS = (

@@ -31,6 +31,7 @@ def _config_snapshot(tmp_path, extra_env=None):
         "import json; from bol import config; "
         "print(json.dumps({'data': str(config.DATA), "
         "'default': config.default_install_location(), "
+        "'legacy': str(config.LEGACY_DATA), "
         "'pointer': str(config.INSTALL_LOCATION_FILE)}))"
     )
     result = subprocess.run(
@@ -49,6 +50,30 @@ def test_config_uses_xdg_data_and_config_homes(tmp_path):
     assert values["pointer"] == str(
         tmp_path / "xdg-config" / "bedrock-on-linux" / "install_location"
     )
+
+
+def test_flatpak_bazzite_paths_keep_legacy_source_outside_private_xdg(
+        tmp_path):
+    home = Path("/var/home/player")
+    private = (
+        home / ".var" / "app"
+        / "io.github.wyze3306.BedrockOnLinux" / "data"
+    )
+    values = _config_snapshot(tmp_path, {
+        "HOME": str(home),
+        "XDG_DATA_HOME": str(private),
+        "XDG_CONFIG_HOME": str(
+            home / ".var" / "app"
+            / "io.github.wyze3306.BedrockOnLinux" / "config"
+        ),
+        "FLATPAK_ID": "io.github.wyze3306.BedrockOnLinux",
+    })
+
+    assert values["data"] == str(private / "bedrock-on-linux")
+    assert values["legacy"] == str(
+        home / ".local" / "share" / "bedrock-on-linux"
+    )
+    assert values["data"] != values["legacy"]
 
 
 def test_bol_home_keeps_highest_priority_over_xdg(tmp_path):
@@ -401,11 +426,11 @@ def test_cli_migrates_before_first_flatpak_profile_command(tmp_path):
     assert not (new_data / "profiles").exists()
 
 
-def test_flatpak_manifest_only_has_read_only_legacy_transition_mount():
+def test_flatpak_manifest_mounts_exact_legacy_home_path_read_only():
     manifest = (
         ROOT / "flatpak" / "io.github.wyze3306.BedrockOnLinux.yml"
     ).read_text(encoding="utf-8")
-    assert "--filesystem=xdg-data/bedrock-on-linux:ro" in manifest
-    assert "--filesystem=xdg-data/bedrock-on-linux:create" not in manifest
+    assert "--filesystem=~/.local/share/bedrock-on-linux:ro" in manifest
+    assert "--filesystem=xdg-data/bedrock-on-linux" not in manifest
     assert "--filesystem=xdg-data/umu" not in manifest
     assert "--filesystem=~/.steam" not in manifest

@@ -71,8 +71,8 @@ All currently supported builds target x86-64 Linux.
 ### AppImage quick start
 
 ```bash
-chmod +x BedrockOnLinux-2.1.0-x86_64.AppImage
-./BedrockOnLinux-2.1.0-x86_64.AppImage
+chmod +x BedrockOnLinux-2.1.1-x86_64.AppImage
+./BedrockOnLinux-2.1.1-x86_64.AppImage
 ```
 
 The first **PLAY** needs the matching engine archive:
@@ -95,7 +95,7 @@ The fix is therefore distributed to existing users as well as fresh installs.
 If FUSE is unavailable, AppImage can extract itself at runtime:
 
 ```bash
-APPIMAGE_EXTRACT_AND_RUN=1 ./BedrockOnLinux-2.1.0-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./BedrockOnLinux-2.1.1-x86_64.AppImage
 ```
 
 The AppImage bundles Python, Tk, the GUI toolkit, `cryptography` and CA
@@ -116,11 +116,13 @@ folder:
 
 All new writes stay in that private directory. For one upgrade cycle the
 manifest retains read-only access to the exact legacy
-`$XDG_DATA_HOME/bedrock-on-linux` folder, so the launcher can copy it
-atomically before any command creates the new root. The copy re-anchors the
-selected game path and internal `content` link; the host copy remains as a
-recovery backup because the transition mount is not writable. Two populated
-trees are never merged automatically.
+`~/.local/share/bedrock-on-linux` folder, so the launcher can copy it
+atomically before any command creates the new root. The explicit home-relative
+path is required: Flatpak maps the special `xdg-data` alias onto the private
+XDG destination, which would make the destination read-only. The copy
+re-anchors the selected game path and internal `content` link; the host copy
+remains as a recovery backup. Two populated trees are never merged
+automatically.
 
 If a local Flatpak permission override removed that transition access, close
 the app and temporarily restore only the read-only legacy path:
@@ -128,7 +130,7 @@ the app and temporarily restore only the read-only legacy path:
 ```bash
 flatpak kill io.github.wyze3306.BedrockOnLinux
 flatpak override --user \
-  --filesystem=xdg-data/bedrock-on-linux:ro \
+  --filesystem='~/.local/share/bedrock-on-linux:ro' \
   io.github.wyze3306.BedrockOnLinux
 flatpak run io.github.wyze3306.BedrockOnLinux
 ```
@@ -140,7 +142,8 @@ removing the local override. Never merge two non-empty data roots blindly.
 
 - An **x86-64 glibc desktop**. The AppImage and managed engine are audited
   against a glibc 2.31 baseline. ARM and musl-only systems such as stock Alpine
-  are not supported.
+  are not supported. A host i386 userspace is not required; the managed engine
+  uses Wine's pure-WoW64 path.
 - **X11 or XWayland for the launcher GUI.** The game normally uses X11/XWayland.
   Native Wine Wayland can be tried with `BOL_INPUT=wayland`, but remains an
   experimental game backend; it does not remove the launcher’s XWayland
@@ -210,12 +213,13 @@ workflow.
 
 ### Achievements
 
-The native XUser/XSAPI session gives Minecraft the signed-in Xbox identity it
-normally uses for service features, but achievement submission has not been
-validated end to end. BedrockOnLinux does not unlock, emulate or force
-achievements and cannot guarantee that the Xbox service will award one.
-Minecraft/Xbox policy, the world configuration, cheats, Creative mode and some
-add-ons can disable or affect achievement eligibility.
+The launcher prepares a dedicated user-only XSTS token for Minecraft's original
+Windows Achievements request. XUser selects it only for the Achievements
+service, preserving the packaged Windows title, SCID and platform while leaving
+social, Marketplace, PlayFab, multiplayer and Realms authentication unchanged.
+This loads the existing list; it does not unlock, emulate or force
+achievements. Minecraft/Xbox policy, the world configuration, cheats, Creative
+mode and some add-ons can disable or affect achievement eligibility.
 
 Minecraft’s **Import World** and skin-selection actions use the WineGDK native
 file picker. For direct launcher-side content installation while Minecraft is

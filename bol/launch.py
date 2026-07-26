@@ -158,10 +158,25 @@ def _configure_runtime_compat(env, settings, backend, host_wayland,
     if diagnostics:
         env["PROTON_LOG"] = "1"
         env["PROTON_LOG_DIR"] = str(LOGS)
-        env["WINEDEBUG"] = "trace+gdkc,trace+xgameruntime,fixme-all"
+        # These hot polling channels can starve the game with synchronous trace
+        # output; keep their warnings and errors without enabling trace.
+        env["WINEDEBUG"] = (
+            "+gdkc,trace-gdkc,+xgameruntime,"
+            "trace-xgameruntime,fixme-all"
+        )
     else:
         # Avoid Proton's heavyweight debug log during normal play.
         env["WINEDEBUG"] = "-all"
+
+
+def _configure_graphics_cache(env, managed_engine):
+    """Keep managed-engine shader caches across Minecraft version changes."""
+    if not managed_engine:
+        return
+    cache = DATA / "graphics-cache"
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env["VKD3D_SHADER_CACHE_PATH"] = str(cache)
+    env["DXVK_SHADER_CACHE_PATH"] = str(cache)
 
 
 def _clear_previous_proton_logs():
@@ -318,6 +333,7 @@ def _launch_once(lock_fds=()):
     _configure_runtime_compat(
         env, s, backend, bool(wl), diagnostics=diag,
     )
+    _configure_graphics_cache(env, managed_engine=not custom_proton())
     disp = os.environ.get("DISPLAY")
     if backend == "wayland" and wl:
         env["PROTON_ENABLE_WAYLAND"] = "1"

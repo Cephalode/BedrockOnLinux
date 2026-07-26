@@ -315,35 +315,14 @@ def _geometry_position(geometry):
     return coordinate(match.group(1)), coordinate(match.group(2))
 
 
-def _bind_mousewheel_recursive(widget, target_canvas):
-    """Forward touchpad/mouse-wheel scroll events from any descendant widget
-    to the given scrollable canvas.
-
-    CTkScrollableFrame only reacts to wheel/touchpad events that land
-    directly on its own canvas or scrollbar. Since the frame is normally
-    full of child widgets (labels, switches, entries, buttons), the cursor
-    is almost never over that bare canvas, so scrolling appears "broken".
-    This binds the same handler to the frame and every descendant so a
-    scroll anywhere inside it works.
-    """
+def _bind_x11_mousewheel_recursive(widget, target_canvas):
+    """Forward X11 wheel events from descendants to a scrollable canvas."""
     def _on_wheel(event):
-        # X11 sends Button-4/5 for wheel/touchpad; Windows/macOS send
-        # <MouseWheel> with a signed `delta`.
-        num = getattr(event, "num", None)
-        if num == 4:
-            delta = -1
-        elif num == 5:
-            delta = 1
-        else:
-            delta = -1 if event.delta > 0 else 1
-        try:
-            target_canvas.yview_scroll(delta, "units")
-        except Exception:
-            pass
+        delta = -1 if event.num == 4 else 1
+        target_canvas.yview_scroll(delta, "units")
         return "break"
 
     def _bind(w):
-        w.bind("<MouseWheel>", _on_wheel, add="+")
         w.bind("<Button-4>", _on_wheel, add="+")
         w.bind("<Button-5>", _on_wheel, add="+")
         for child in w.winfo_children():
@@ -2458,13 +2437,8 @@ def gui():
         ctk.CTkLabel(tab_tools, textvariable=imp_status, text_color=T.GOLD,
                      font=font(11)).pack(anchor="w", pady=(6, 0), padx=4)
 
-        # Touchpad/mouse-wheel scrolling: CTkScrollableFrame only reacts when
-        # the cursor is directly over its own (mostly-empty) canvas, so
-        # scrolling appeared broken while hovering the switches/entries/
-        # buttons that fill these tabs. Bind wheel events on every widget
-        # in each tab so scrolling works anywhere inside it.
         for _sf in (tab_general, tab_advanced, tab_tools):
-            _bind_mousewheel_recursive(_sf, _sf._parent_canvas)
+            _bind_x11_mousewheel_recursive(_sf, _sf._parent_canvas)
 
     _build_settings()
 

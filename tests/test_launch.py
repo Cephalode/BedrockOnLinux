@@ -14,7 +14,7 @@ from bol import launch
 class GraphicsEngineLaunchTests(unittest.TestCase):
     def _exercise_ready_launch(self, root, popen, arm, disarm,
                                prefix_idle=True, mark=None, preauth=True,
-                               lock_fds=()):
+                               lock_fds=(), managed_engine=True):
         content = root / "content"
         logs = root / "logs"
         data = root / "data"
@@ -31,6 +31,8 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
             mock.patch.object(launch, "load_settings", return_value=settings),
             mock.patch.object(launch, "proton_path",
                               return_value=Path("/tmp/fake-engine")),
+            mock.patch.object(launch, "custom_proton",
+                              return_value=not managed_engine),
             mock.patch.object(launch, "require_safe_graphics_session"),
             mock.patch.object(launch, "retire_idle_current_boot_marker"),
             mock.patch.object(launch, "_prepare_launch_engine"),
@@ -340,7 +342,7 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
         self.assertNotIn("PROTON_LOG_DIR", env)
         self.assertEqual(env["WINEDEBUG"], "-all")
 
-    def test_diagnostics_enable_proton_log_and_focused_wine_channels(self):
+    def test_diagnostics_keep_errors_without_hot_gdk_traces(self):
         env = {"WINEDEBUG": "trace+all"}
         with mock.patch.object(launch, "LOGS", Path("/tmp/bol-logs")):
             launch._configure_runtime_compat(
@@ -350,8 +352,41 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
             )
         self.assertEqual(env["PROTON_LOG"], "1")
         self.assertEqual(env["PROTON_LOG_DIR"], "/tmp/bol-logs")
-        self.assertIn("trace+gdkc", env["WINEDEBUG"])
+        self.assertIn("+gdkc", env["WINEDEBUG"])
+        self.assertIn("trace-gdkc", env["WINEDEBUG"])
+        self.assertIn("+xgameruntime", env["WINEDEBUG"])
+        self.assertIn("trace-xgameruntime", env["WINEDEBUG"])
+        self.assertNotIn("trace+gdkc", env["WINEDEBUG"])
+        self.assertNotIn("trace+xgameruntime", env["WINEDEBUG"])
         self.assertNotIn("trace+all", env["WINEDEBUG"])
+
+    def test_managed_graphics_cache_is_persistent_and_private(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "profile"
+            env = {}
+            with mock.patch.object(launch, "DATA", data):
+                launch._configure_graphics_cache(env, managed_engine=True)
+
+            cache = data / "graphics-cache"
+            self.assertTrue(cache.is_dir())
+            self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(env["VKD3D_SHADER_CACHE_PATH"], str(cache))
+            self.assertEqual(env["DXVK_SHADER_CACHE_PATH"], str(cache))
+
+    def test_custom_engine_keeps_its_own_graphics_cache_settings(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "profile"
+            env = {
+                "VKD3D_SHADER_CACHE_PATH": "/custom/vkd3d",
+                "DXVK_SHADER_CACHE_PATH": "/custom/dxvk",
+            }
+            with mock.patch.object(launch, "DATA", data):
+                launch._configure_graphics_cache(env, managed_engine=False)
+
+            self.assertFalse((data / "graphics-cache").exists())
+            self.assertEqual(
+                env["VKD3D_SHADER_CACHE_PATH"], "/custom/vkd3d")
+            self.assertEqual(env["DXVK_SHADER_CACHE_PATH"], "/custom/dxvk")
 
     def test_inherited_compat_values_cannot_disable_automatic_defaults(self):
         env = {
@@ -415,23 +450,30 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
             self.assertTrue(unrelated.exists())
 
     def test_custom_environment_still_has_final_precedence(self):
-        env = {}
-        launch._configure_runtime_compat(
-            env, {"renderer": "opengl"}, "x11", True, host_env={},
-            steam_deck=True,
-        )
-        launch.apply_custom_env(
-            env,
-            "PROTON_ENABLE_WAYLAND=1 WINE_DISABLE_VULKAN_OPWR=0 "
-            "PROTON_PREFER_SDL=0 PROTON_DISABLE_HIDRAW=0 "
-            "PROTON_NO_WM_DECORATION=0 PROTON_USE_WINED3D=0",
-        )
+        with tempfile.TemporaryDirectory() as td:
+            env = {}
+            launch._configure_runtime_compat(
+                env, {"renderer": "opengl"}, "x11", True, host_env={},
+                steam_deck=True,
+            )
+            with mock.patch.object(launch, "DATA", Path(td)):
+                launch._configure_graphics_cache(env, managed_engine=True)
+            launch.apply_custom_env(
+                env,
+                "PROTON_ENABLE_WAYLAND=1 WINE_DISABLE_VULKAN_OPWR=0 "
+                "PROTON_PREFER_SDL=0 PROTON_DISABLE_HIDRAW=0 "
+                "PROTON_NO_WM_DECORATION=0 PROTON_USE_WINED3D=0 "
+                "VKD3D_SHADER_CACHE_PATH=0 "
+                "DXVK_SHADER_CACHE_PATH=/custom/dxvk",
+            )
         self.assertEqual(env["PROTON_ENABLE_WAYLAND"], "1")
         self.assertEqual(env["WINE_DISABLE_VULKAN_OPWR"], "0")
         self.assertEqual(env["PROTON_PREFER_SDL"], "0")
         self.assertEqual(env["PROTON_DISABLE_HIDRAW"], "0")
         self.assertEqual(env["PROTON_NO_WM_DECORATION"], "0")
         self.assertEqual(env["PROTON_USE_WINED3D"], "0")
+        self.assertEqual(env["VKD3D_SHADER_CACHE_PATH"], "0")
+        self.assertEqual(env["DXVK_SHADER_CACHE_PATH"], "/custom/dxvk")
 
     def test_gpu_safety_failure_allows_engine_update_but_blocks_wine(self):
         with tempfile.TemporaryDirectory() as td:
@@ -513,6 +555,34 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
             )
 
         self.assertEqual(observed["pass_fds"], (71, 72))
+
+    def test_managed_launch_passes_persistent_graphics_cache(self):
+        observed = {}
+
+        class Process:
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        def popen(*_args, **kwargs):
+            observed.update(kwargs)
+            return Process()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._exercise_ready_launch(
+                root,
+                popen,
+                lambda: "owned-token",
+                lambda _token: True,
+            )
+
+            cache = root / "data" / "graphics-cache"
+            self.assertEqual(
+                observed["env"]["VKD3D_SHADER_CACHE_PATH"], str(cache))
+            self.assertEqual(
+                observed["env"]["DXVK_SHADER_CACHE_PATH"], str(cache))
+            self.assertTrue(cache.is_dir())
 
     def test_xbox_preauth_failure_surfaces_sanitized_action_and_stage(self):
         with tempfile.TemporaryDirectory() as td, \

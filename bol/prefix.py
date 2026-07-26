@@ -28,6 +28,7 @@ from .config import (
     UMU_REPO,
     UMU_RUN_SHA256,
     UMU_VERSION,
+    WINEGDK_OUT,
 )
 from .log import BolError, die, info, ok, warn
 from .proton import proton_path
@@ -182,6 +183,17 @@ def steam_compat_dir():
         return fallback
 
 
+def _prepare_managed_prefix_layout(prefix):
+    """Remove the obsolete managed-prefix symlink without following it."""
+    if prefix != PFX:
+        return
+    COMPAT.mkdir(parents=True, exist_ok=True)
+    if PFX.is_symlink():
+        PFX.unlink()
+        for junk in ("pfx.lock", "version", "tracked_files", "config_info"):
+            (COMPAT / junk).unlink(missing_ok=True)
+
+
 def proton_umu_cmd(exe, prefix=None):
     """Launch GDK-Proton through umu-launcher (Steam Linux Runtime). The GDK
     networking the LAN/server join needs only works inside that runtime, not
@@ -189,12 +201,7 @@ def proton_umu_cmd(exe, prefix=None):
     if prefix is None:
         prefix = active_prefix()
     if prefix == PFX:
-        COMPAT.mkdir(parents=True, exist_ok=True)
-        if PFX.is_symlink():               # drop any legacy symlink layout
-            PFX.unlink()
-            for junk in ("pfx.lock", "version", "tracked_files",
-                         "config_info"):
-                (COMPAT / junk).unlink(missing_ok=True)
+        _prepare_managed_prefix_layout(prefix)
     else:
         info(f"Using existing GDK prefix: {prefix}")
     steam_compat = steam_compat_dir()
@@ -205,6 +212,12 @@ def proton_umu_cmd(exe, prefix=None):
                 # UMU appends "umu"; this resolves to the app-owned UMU_DIR.
                 "UMU_FOLDERS_PATH": str(DATA),
                 "UMU_RUNTIME_UPDATE": "0"})
+    try:
+        if Path(env["PROTONPATH"]).resolve(strict=False) == \
+                WINEGDK_OUT.resolve(strict=False):
+            env["PROTON_USE_WOW64"] = "1"
+    except (OSError, RuntimeError):
+        pass
     # GAMEID selects protonfixes, not the inherited Steam session identity.
     game_id = env.get("GAMEID", "").strip()
     env["GAMEID"] = game_id or "umu-default"
@@ -229,7 +242,9 @@ def prefix_ready(prefix: Path):
 def boot_prefix(prefix=None):
     """Ensure Wine created system32 and its persistent registry hives."""
     pfx = Path(prefix or active_prefix())
+    _prepare_managed_prefix_layout(pfx)
     if prefix_ready(pfx):
+        repair_managed_prefix_user32(pfx)
         return True
     # Refuse a known-bad graphics session before Wine can open a device.
     from .gpu_safety import require_safe_graphics_session
@@ -275,6 +290,7 @@ def boot_prefix(prefix=None):
         warn("Wine prefix initialisation finished without valid system.reg, "
              f"user.reg, and system32 state. Details: {log_path}")
         return False
+    repair_managed_prefix_user32(pfx)
     return True
 
 
@@ -307,6 +323,94 @@ def require_prefix_idle(prefix: Path, action="modify the Wine prefix"):
             f"Cannot {action}: {len(live)} Wine/Proton process(es) still use "
             "this prefix. Close Minecraft or use 'Force stop Minecraft' first."
         )
+    return True
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def repair_managed_prefix_user32(prefix=None):
+    """Restore the managed prefix's 64-bit user32 from the verified engine."""
+    if os.environ.get("BOL_WINEPREFIX", "").strip():
+        return False
+    pfx = Path(prefix or PFX)
+    engine = proton_path()
+    if engine is None:
+        return False
+    try:
+        if pfx.resolve(strict=False) != PFX.resolve(strict=False) \
+                or Path(engine).resolve(strict=False) != \
+                WINEGDK_OUT.resolve(strict=False):
+            return False
+    except (OSError, RuntimeError):
+        return False
+
+    source = (Path(engine) / "files/lib/wine/x86_64-windows/user32.dll")
+    target = pfx / "drive_c/windows/system32/user32.dll"
+    if not source.is_file() or source.is_symlink():
+        raise BolError(
+            "The verified managed engine has no usable 64-bit user32.dll; "
+            "run Install / Update again."
+        )
+    if pfx.is_symlink():
+        raise BolError(
+            "The managed Wine prefix is an unsafe symbolic link; "
+            "run Install / Update to rebuild its local layout."
+        )
+    try:
+        resolved_root = pfx.resolve(strict=True)
+        resolved_parent = target.parent.resolve(strict=True)
+        resolved_parent.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BolError(
+            "The managed Wine prefix has an unsafe system32 layout; "
+            "run Install / Update to rebuild it."
+        ) from exc
+    if target.parent.is_symlink():
+        raise BolError(
+            "The managed Wine prefix has an unsafe system32 link; "
+            "run Install / Update to rebuild it."
+        )
+
+    source_hash = _sha256_path(source)
+    if target.is_file() and not target.is_symlink():
+        try:
+            if _sha256_path(target) == source_hash:
+                return False
+        except OSError:
+            pass
+
+    require_prefix_idle(pfx, "repair the managed Wine runtime")
+    backup = target.with_name(target.name + ".bol-managed-backup")
+    if not (backup.exists() or backup.is_symlink()):
+        if target.is_symlink():
+            backup.symlink_to(os.readlink(target))
+        elif target.exists():
+            if not target.is_file():
+                raise BolError(
+                    "The managed prefix user32.dll path is not a regular file."
+                )
+            shutil.copy2(target, backup, follow_symlinks=False)
+
+    fd, staged_name = tempfile.mkstemp(
+        prefix=".user32.dll-", dir=target.parent)
+    os.close(fd)
+    staged = Path(staged_name)
+    try:
+        shutil.copy2(source, staged, follow_symlinks=False)
+        if _sha256_path(staged) != source_hash:
+            raise BolError(
+                "The managed user32.dll repair copy failed integrity checking."
+            )
+        os.replace(staged, target)
+    finally:
+        staged.unlink(missing_ok=True)
+    ok("Managed Wine runtime repaired (user32.dll).")
     return True
 
 

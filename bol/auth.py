@@ -384,6 +384,7 @@ _ONLINE_PREAUTH_REQUIREMENTS = {
 _WINEGDK_EXPIRY_EPOCH_FIELDS = {
     "user_token_expiry": "user_token_expiry_epoch",
     "xbl_token_expiry": "xbl_token_expiry_epoch",
+    "achievements_expiry": "achievements_expiry_epoch",
     "sisu_expiry": "sisu_expiry_epoch",
     "mp_expiry": "mp_expiry_epoch",
     "realms_expiry": "realms_expiry_epoch",
@@ -393,6 +394,16 @@ _WINEGDK_EXPIRY_EPOCH_FIELDS = {
 
 _XBOX_SUBMICROSECOND_FRACTION = re.compile(
     r"(\.\d{6})\d+(?=(?:Z|[+-]\d{2}:\d{2})?$)"
+)
+
+_ACHIEVEMENTS_FIELDS = (
+    "achievements_token",
+    "achievements_uhs",
+    "achievements_expiry",
+)
+_ACHIEVEMENTS_CACHE_FIELDS = (
+    *_ACHIEVEMENTS_FIELDS,
+    "achievements_expiry_epoch",
 )
 
 
@@ -484,6 +495,55 @@ def _xbl_gamertag_claims(claims):
     return result
 
 
+def _validated_achievements_fields(payload, now=None, min_ttl=60):
+    """Return a complete, canonical optional Achievements credential block."""
+    from datetime import timezone
+
+    if not isinstance(payload, dict):
+        return {}
+    token = payload.get("achievements_token")
+    uhs = payload.get("achievements_uhs")
+    expiry = payload.get("achievements_expiry")
+    if not isinstance(token, str) or not token.strip():
+        return {}
+    if (not isinstance(uhs, str)
+            or not re.fullmatch(r"[0-9]+", uhs, re.ASCII)
+            or len(uhs) > 20):
+        return {}
+    uhs_value = int(uhs, 10)
+    if not 1 <= uhs_value <= 0xffffffffffffffff:
+        return {}
+    if not isinstance(expiry, str) or not expiry.strip():
+        return {}
+    try:
+        stamp = _parse_xbox_expiry(expiry)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        current = time.time() if now is None else now
+        if stamp.timestamp() <= current + min_ttl:
+            return {}
+    except (ValueError, OverflowError, OSError):
+        return {}
+    return {
+        "achievements_token": token,
+        "achievements_uhs": str(uhs_value),
+        "achievements_expiry": expiry,
+    }
+
+
+def _sanitize_optional_achievements(payload, now=None, min_ttl=60):
+    """Remove partial or stale Achievements credentials from a payload."""
+    if not isinstance(payload, dict):
+        return payload
+    sanitized = {
+        key: value for key, value in payload.items()
+        if key not in _ACHIEVEMENTS_CACHE_FIELDS
+    }
+    sanitized.update(_validated_achievements_fields(
+        payload, now=now, min_ttl=min_ttl))
+    return sanitized
+
+
 def _with_winegdk_expiry_epochs(payload):
     """Return a copy with WineGDK's decimal epoch expiry fields.
 
@@ -495,7 +555,7 @@ def _with_winegdk_expiry_epochs(payload):
 
     if not isinstance(payload, dict):
         return payload
-    enriched = dict(payload)
+    enriched = _sanitize_optional_achievements(payload)
     for iso_field, epoch_field in _WINEGDK_EXPIRY_EPOCH_FIELDS.items():
         raw = enriched.get(iso_field)
         try:
@@ -921,7 +981,38 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None):
                     warn("xbl_preauth: user.auth returned an invalid "
                          "response.")
 
-    # Pre-mint profile claims because the equivalent Wine call is reset.
+    def _xsts_user(rp, stage):
+        if not user_token:
+            return None
+        try:
+            r = _xbl_post("https://xsts.auth.xboxlive.com/xsts/authorize", {
+                "RelyingParty": rp,
+                "TokenType": "JWT",
+                "Properties": {
+                    "SandboxId": "RETAIL",
+                    "UserTokens": [user_token],
+                },
+            })
+        except Exception:
+            _record_xbl_preauth_diagnostic(stage, "network")
+            warn(f"xbl_preauth: {stage} failed (network error).")
+            return None
+        if r.status_code != 200:
+            category, status, error_code = _xbl_response_error(r)
+            _record_xbl_preauth_diagnostic(
+                stage, category, status, error_code)
+            warn(f"xbl_preauth: {stage} HTTP {r.status_code}")
+            return None
+        try:
+            payload = r.json()
+            if not isinstance(payload, dict):
+                raise ValueError
+            return payload
+        except (TypeError, ValueError):
+            _record_xbl_preauth_diagnostic(stage, "service")
+            warn(f"xbl_preauth: {stage} returned an invalid response.")
+            return None
+
     def _sisu(rp, stage):
         if not msa_access_token: return None
         try:
@@ -956,6 +1047,20 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None):
             _record_xbl_preauth_diagnostic(stage, "service")
             warn(f"xbl_preauth: {stage} returned an invalid response.")
             return None
+
+    achievements_auth = _xsts_user(
+        "http://xboxlive.com", "xsts-achievements") or {}
+    achievements_uhs = None
+    try:
+        achievements_uhs = (
+            achievements_auth["DisplayClaims"]["xui"][0].get("uhs"))
+    except (KeyError, IndexError, TypeError):
+        pass
+    achievements_fields = _validated_achievements_fields({
+        "achievements_token": achievements_auth.get("Token"),
+        "achievements_uhs": achievements_uhs,
+        "achievements_expiry": achievements_auth.get("NotAfter", ""),
+    })
 
     xbl_sisu = _sisu("http://xboxlive.com", "sisu-profile") or {}
     xbl_auth = xbl_sisu.get("AuthorizationToken", {}) if xbl_sisu else {}
@@ -1069,6 +1174,7 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None):
         "lic_expiry": lic_expiry,
         "obtained": int(time.time()),
     }
+    out.update(achievements_fields)
     # Modern gamertag components are optional SISU claims.  Keep them
     # separate because GDK callers provide component-specific buffer sizes;
     # returning the classic tag for ModernSuffix can fail XblContext setup.
@@ -1092,6 +1198,7 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None):
     bits = ["device"]
     if user_token: bits.append("user")
     if xbl_token: bits.append("XBL")
+    if achievements_fields: bits.append("XSTS-achievements")
     if sisu_token: bits.append("SISU-pf")
     if mp_token: bits.append("SISU-mp")
     if realms_token: bits.append("SISU-realms")

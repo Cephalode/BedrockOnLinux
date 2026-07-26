@@ -35,8 +35,9 @@ finish-args:
   - --share=ipc
   # engine/game downloads, Microsoft sign-in, multiplayer
   - --share=network
-  # Read-only access for the one-time migration into private XDG storage.
-  - --filesystem=xdg-data/bedrock-on-linux:ro
+  # Read-only access to the pre-XDG location for one-time migration. Using the
+  # xdg-data alias here would shadow the private XDG destination read-only.
+  - --filesystem=~/.local/share/bedrock-on-linux:ro
   # umu/pressure-vessel spawns its Steam Linux Runtime sub-sandbox through the
   # Flatpak portal; Wine needs ptrace (devel) and 32-bit code (multiarch)
   - --talk-name=org.freedesktop.Flatpak
