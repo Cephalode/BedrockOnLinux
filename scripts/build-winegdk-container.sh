@@ -27,6 +27,8 @@ readonly EXPECTED_SOURCE_DATE_EPOCH="1784308597"
 readonly GLIBC_CEILING="2.31"
 readonly VENDORED_FOLLOWUP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0002-windows.storage-use-legacy-single-file-dialog.patch"
 readonly VENDORED_FOLLOWUP_PATCH_SHA256="31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5"
+readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0003-winex11-use-client-surface-origin.patch"
+readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
 # Fixed build paths so Wine's embedded __FILE__ strings are stable run to run.
 readonly SRC=/winegdk/source
@@ -70,6 +72,16 @@ echo "== Applying reviewed file-picker follow-up"
 git -C "$SRC" apply --check "$VENDORED_FOLLOWUP_PATCH" \
   || { echo "!! WineGDK file-picker follow-up patch does not apply" >&2; exit 1; }
 git -C "$SRC" apply "$VENDORED_FOLLOWUP_PATCH"
+
+echo "== Applying X11 client-surface geometry backport"
+[ -f "$VENDORED_CLIENT_SURFACE_PATCH" ] \
+  || { echo "!! missing X11 client-surface patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_CLIENT_SURFACE_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_CLIENT_SURFACE_PATCH_SHA256" ] \
+  || { echo "!! X11 client-surface patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_CLIENT_SURFACE_PATCH" \
+  || { echo "!! X11 client-surface patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_CLIENT_SURFACE_PATCH"
 
 echo "== Verifying reviewed source hashes"
 [ -f "$SOURCE_SHA256SUMS" ] || { echo "!! missing SOURCE-SHA256SUMS" >&2; exit 1; }

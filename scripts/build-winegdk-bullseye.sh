@@ -27,8 +27,10 @@ readonly VENDORED_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0001-winegdk-
 readonly VENDORED_PATCH_SHA256="d5630af845064b50780665e8ba335d4484a4c0b68eb396f195f840f0d2689a8b"
 readonly VENDORED_FOLLOWUP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0002-windows.storage-use-legacy-single-file-dialog.patch"
 readonly VENDORED_FOLLOWUP_PATCH_SHA256="31a8bc62202c3a5eb279bcfec5b37ed8e9568d33e0b0847e23d5480ee943b7b5"
+readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0003-winex11-use-client-surface-origin.patch"
+readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
-readonly SOURCE_SHA256SUMS_SHA256="4fdedc09d56a2832fb5eb57d55572bec39622ffcf2fb374baa9cc3fd61ef0852"
+readonly SOURCE_SHA256SUMS_SHA256="5908e91c436c905595b6c4f4339c927d806421e1621fafc6b899bd8166ae4ec6"
 readonly GLIBC_CEILING="2.31"
 readonly DEBIAN_SUITE="bullseye"
 readonly DEBIAN_MIRROR="https://deb.debian.org/debian"
@@ -436,6 +438,11 @@ fi
 [[ "$(sha256sum "$VENDORED_FOLLOWUP_PATCH" | cut -d' ' -f1)" == \
     "$VENDORED_FOLLOWUP_PATCH_SHA256" ]] ||
   die "vendored WineGDK file-picker follow-up patch SHA-256 mismatch"
+[[ -f "$VENDORED_CLIENT_SURFACE_PATCH" ]] ||
+  die "vendored X11 client-surface patch is missing"
+[[ "$(sha256sum "$VENDORED_CLIENT_SURFACE_PATCH" | cut -d' ' -f1)" == \
+    "$VENDORED_CLIENT_SURFACE_PATCH_SHA256" ]] ||
+  die "vendored X11 client-surface patch SHA-256 mismatch"
 [[ "$SOURCE_DATE_EPOCH" == "$EXPECTED_SOURCE_DATE_EPOCH" ]] ||
   die "WineGDK source timestamp changed: $SOURCE_DATE_EPOCH"
 
@@ -517,6 +524,11 @@ git -C "$WORK_ROOT/source" apply --check "$VENDORED_FOLLOWUP_PATCH" ||
   die "vendored WineGDK file-picker follow-up patch does not apply"
 git -C "$WORK_ROOT/source" apply "$VENDORED_FOLLOWUP_PATCH" ||
   die "could not apply vendored WineGDK file-picker follow-up patch"
+printf '==> Applying X11 client-surface geometry backport\n'
+git -C "$WORK_ROOT/source" apply --check "$VENDORED_CLIENT_SURFACE_PATCH" ||
+  die "vendored X11 client-surface patch does not apply"
+git -C "$WORK_ROOT/source" apply "$VENDORED_CLIENT_SURFACE_PATCH" ||
+  die "could not apply vendored X11 client-surface patch"
 [[ -f "$SOURCE_SHA256SUMS" ]] || die "WineGDK source hash manifest is missing"
 [[ "$(sha256sum "$SOURCE_SHA256SUMS" | cut -d' ' -f1)" == \
     "$SOURCE_SHA256SUMS_SHA256" ]] ||

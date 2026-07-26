@@ -23,6 +23,13 @@ initialization inside Minecraft; the legacy dialog avoids that failing path
 without changing the WinRT async result ABI. Multiple-file selection remains
 on `IFileOpenDialog`.
 
+The `0003` patch keeps the X11 client surface in client coordinates instead
+of offsetting it by the Win32 visible-window frame. This prevents fullscreen
+render surfaces from being placed inside their X11 parent, which otherwise
+exposes the parent background along the top and left edges. It is a narrow
+semantic backport of the client-surface geometry behavior introduced by
+upstream Wine commit `b868cd31d6b`.
+
 The former Minecraft process-memory patcher remains removed. Online state
 comes from XGame, XUser and XSAPI, while world and skin imports use the native
 WinRT picker rather than a package-identity shim.
