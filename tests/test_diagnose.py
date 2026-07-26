@@ -65,6 +65,47 @@ class OnlineDiagnosisTests(unittest.TestCase):
         )
         self.assertFalse(any("no WineGDK XUser" in hit for hit in hits))
 
+    def test_exact_ntquerywnf_abort_reports_missing_ntdll_patch(self):
+        hits = self._diagnose(
+            "wine: Call from 00000001 to unimplemented function "
+            "ntdll.dll.NtQueryWnfStateData, aborting\n",
+            {},
+        )
+        self.assertTrue(any("ntdll patch missing" in hit for hit in hits))
+
+    def test_healthy_patch_messages_do_not_report_missing_patches(self):
+        hits = self._diagnose(
+            "info ntdll.NtQueryWnfStateData: already returns "
+            "STATUS_NOT_IMPLEMENTED\n"
+            "info combase.RoOriginateErrorW: already patched\n",
+            {},
+        )
+        self.assertFalse(any("patch missing" in hit for hit in hits))
+
+    def test_issue_97_user32_failure_is_not_reported_as_ntdll(self):
+        hits = self._diagnose(
+            "err:module:import_dll Loading library user32.dll (which is needed "
+            "by L\"C:\\\\windows\\\\system32\\\\plugplay.exe\") failed "
+            "(error c0000020).\n"
+            "wine: Call from 00000001 to unimplemented function "
+            "user32.dll.BroadcastSystemMessageW, aborting\n"
+            "wine: Call from 00000002 to unimplemented function "
+            "shell32.dll.SHGetFolderPathW, aborting\n",
+            {},
+        )
+        hit = next(hit for hit in hits if "user32.dll" in hit)
+        self.assertIn("Install / Update", hit)
+        self.assertNotIn("use Repair", hit)
+        self.assertFalse(any("ntdll patch missing" in hit for hit in hits))
+
+    def test_exact_combase_abort_still_reports_missing_patch(self):
+        hits = self._diagnose(
+            "wine: Unimplemented function "
+            "combase.dll.RoOriginateErrorW called at address 00000001\n",
+            {},
+        )
+        self.assertTrue(any("combase patch missing" in hit for hit in hits))
+
     def test_xuser_stub_still_reports_missing_runtime(self):
         hits = self._diagnose(
             "00e0:fixme:xgameruntime:XUserAddAsync stub!\n",

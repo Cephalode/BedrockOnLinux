@@ -334,10 +334,14 @@ class ManifestValidationTests(EngineFixture, unittest.TestCase):
                 BolError, "missing or escapes the engine"):
             vkd3d.validate_engine_manifest(root, self.BUILD_REV)
 
-    def test_file_picker_runtime_is_mandatory_for_both_architectures(self):
+    def test_file_picker_runtimes_are_mandatory_for_both_architectures(self):
         paths = (
             "files/lib/wine/x86_64-windows/windows.storage.dll",
             "files/lib/wine/i386-windows/windows.storage.dll",
+            ("files/lib/wine/x86_64-windows/"
+             "windows.storage.applicationdata.dll"),
+            ("files/lib/wine/i386-windows/"
+             "windows.storage.applicationdata.dll"),
         )
         for relative in paths:
             with self.subTest(relative=relative):
@@ -346,8 +350,17 @@ class ManifestValidationTests(EngineFixture, unittest.TestCase):
                 root.joinpath(*Path(relative).parts).unlink()
                 with self.assertRaisesRegex(
                         BolError,
-                        r"missing or escapes.*windows[.]storage[.]dll"):
+                        r"missing or escapes.*windows[.]storage"):
                     vkd3d.validate_engine_manifest(root, self.BUILD_REV)
+
+    def test_managed_user32_source_is_mandatory(self):
+        relative = "files/lib/wine/x86_64-windows/user32.dll"
+        self.assertIn(relative, vkd3d.REQUIRED_CRITICAL_FILE_PATHS)
+        root = self.make_engine()
+        root.joinpath(*Path(relative).parts).unlink()
+        with self.assertRaisesRegex(
+                BolError, r"missing or escapes.*user32[.]dll"):
+            vkd3d.validate_engine_manifest(root, self.BUILD_REV)
 
     def test_pinned_revision_rejects_unreviewed_native_threading(self):
         root = self.make_engine()
