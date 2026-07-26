@@ -142,7 +142,8 @@ removing the local override. Never merge two non-empty data roots blindly.
 
 - An **x86-64 glibc desktop**. The AppImage and managed engine are audited
   against a glibc 2.31 baseline. ARM and musl-only systems such as stock Alpine
-  are not supported.
+  are not supported. A host i386 userspace is not required; the managed engine
+  uses Wine's pure-WoW64 path.
 - **X11 or XWayland for the launcher GUI.** The game normally uses X11/XWayland.
   Native Wine Wayland can be tried with `BOL_INPUT=wayland`, but remains an
   experimental game backend; it does not remove the launcher’s XWayland
@@ -212,12 +213,13 @@ workflow.
 
 ### Achievements
 
-The native XUser/XSAPI session gives Minecraft the signed-in Xbox identity it
-normally uses for service features, but achievement submission has not been
-validated end to end. BedrockOnLinux does not unlock, emulate or force
-achievements and cannot guarantee that the Xbox service will award one.
-Minecraft/Xbox policy, the world configuration, cheats, Creative mode and some
-add-ons can disable or affect achievement eligibility.
+The launcher prepares a dedicated user-only XSTS token for Minecraft's original
+Windows Achievements request. XUser selects it only for the Achievements
+service, preserving the packaged Windows title, SCID and platform while leaving
+social, Marketplace, PlayFab, multiplayer and Realms authentication unchanged.
+This loads the existing list; it does not unlock, emulate or force
+achievements. Minecraft/Xbox policy, the world configuration, cheats, Creative
+mode and some add-ons can disable or affect achievement eligibility.
 
 Minecraft’s **Import World** and skin-selection actions use the WineGDK native
 file picker. For direct launcher-side content installation while Minecraft is

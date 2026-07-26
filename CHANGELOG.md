@@ -1,18 +1,31 @@
 # Changelog
 
-## 2.1.1 — 2026-07-25
+## 2.1.1 — 2026-07-26
 
 ### Fixed
 
-- Complete the in-game single-file picker on Minecraft's calling COM apartment,
-  preventing the `RoFailFastWithErrorContext` crash triggered after choosing a
-  custom skin.
+- Complete the in-game single-file picker on Minecraft's calling apartment,
+  preventing the cross-apartment `RoFailFastWithErrorContext` crash triggered
+  after choosing a custom skin.
 - Keep the native picker owned by the game window so it remains visible in
   fullscreen and Gamescope sessions.
+- Keep the WineX11 rendering surface at the client origin, removing the thin
+  top and left borders that could appear when Minecraft entered fullscreen.
+- Make the General, Advanced and Tools settings tabs scroll with an X11
+  touchpad or mouse wheel even while the pointer is over a child control.
 - Keep Flatpak's private XDG data directory writable while exposing only the
   pre-XDG data root read-only for automatic migration, fixing the
   `.shared-assets.lock` startup failure reported on Bazzite and CachyOS.
-- Ship the fix in the reproducible, attested `wow64-archs-native7` managed
+- Load Minecraft's Windows Achievements catalog with a dedicated user-only
+  XSTS token while preserving the packaged Windows title, SCID and platform.
+- Repair an invalid managed-prefix `user32.dll` atomically from the verified
+  engine before Wine starts, and diagnose its `c0000020` load failure instead
+  of incorrectly reporting a missing `ntdll` patch.
+- Remove the inherited Wine 10 i386 Unix runtime and force the managed engine's
+  pure-WoW64 path, avoiding host i386 dependencies on minimal distributions.
+- Keep graphics caches across Minecraft version changes and prevent Advanced
+  diagnostics from tracing hot GDK polling channels that can starve the game.
+- Ship the fixes in the reproducible, attested `wow64-archs-native12` managed
   engine.
 
 ## 2.1.0 — 2026-07-25
@@ -41,8 +54,8 @@
 - Add an explicit opt-in WineD3D compatibility renderer for systems limited to
   Vulkan 1.2.
 - Repair WinRT activation and open the native file chooser for world imports
-  and skin-file selection. Applying a custom skin is still a known issue; see
-  #39 below.
+  and skin-file selection. Applying a custom skin remained a known issue in
+  2.1.0 and is fixed in 2.1.1.
 - Add direct `.mcskin` package import while Minecraft is stopped.
 - Detect Minecraft archives replaced under the same tag, verify their identity
   and digest, and activate or restore them transactionally.
@@ -118,14 +131,13 @@
 
 Known limitations:
 
-- #39: the skin selection dialog works and the game records the choice, but
-  applying the selected custom skin can still terminate the game with
-  `RoFailFastWithErrorContext`.
 - #48/#61: the launcher diagnoses known “world full” causes but cannot alter a
   remote Windows host.
 - #15: Xodus is not included in this release.
 - #55: Xbox achievement submission has not been validated end to end.
-- #63: RX 9060 XT-specific stutter remains under investigation.
+- #63: launcher-induced repeated shader compilation and debug-I/O stutter are
+  fixed, but initial RX 9060 XT chunk generation still needs reporter
+  validation.
 - #90: Borion and other version-specific third-party DLLs are not guaranteed
   and may crash Minecraft.
 - WineD3D is a degraded compatibility mode; performance and rendering are not
