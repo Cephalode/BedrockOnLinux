@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .config import APP, DATA, PRETTY, XDG_DATA_HOME
+from .config import APP, main_data_root, PRETTY, XDG_DATA_HOME
 from .log import BolError
 
 
@@ -32,7 +32,7 @@ def profile_slug(name):
 
 
 def profiles_root(base_data=None):
-    return Path(base_data or DATA) / "profiles"
+    return Path(base_data or main_data_root()) / "profiles"
 
 
 def _metadata_path(profile_dir):
@@ -67,7 +67,7 @@ def create_profile(name, base_data=None):
     """Create an account/prefix-isolated profile while sharing large assets."""
     display = str(name).strip()
     slug = profile_slug(display)
-    base = Path(base_data or DATA).expanduser().resolve()
+    base = Path(base_data or main_data_root()).expanduser().resolve()
     root = profiles_root(base)
     profile_dir = root / slug
     root.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ def create_profile(name, base_data=None):
 
 
 def list_profiles(base_data=None):
-    root = profiles_root(base_data)
+    root = profiles_root(base_data or main_data_root())
     if not root.is_dir():
         return []
     found = []
