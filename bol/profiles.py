@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .config import APP, main_data_root, PRETTY, XDG_DATA_HOME
+from .config import APP, DATA, PRETTY, XDG_DATA_HOME
 from .log import BolError
 
 
@@ -31,12 +31,25 @@ def profile_slug(name):
     return slug
 
 
-def profiles_root(base_data=None):
-    return Path(base_data or main_data_root()) / "profiles"
-
-
 def _metadata_path(profile_dir):
     return Path(profile_dir) / "profile.json"
+
+
+def _profile_base(base_data=None):
+    base = Path(DATA if base_data is None else base_data).expanduser().resolve()
+    if base_data is not None or base.parent.name != "profiles":
+        return base
+    try:
+        metadata = json.loads(_metadata_path(base).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return base
+    if metadata.get("name") and metadata.get("slug") == base.name:
+        return base.parent.parent
+    return base
+
+
+def profiles_root(base_data=None):
+    return _profile_base(base_data) / "profiles"
 
 
 def _ensure_shared_link(profile_dir, base_data, name):
@@ -67,7 +80,7 @@ def create_profile(name, base_data=None):
     """Create an account/prefix-isolated profile while sharing large assets."""
     display = str(name).strip()
     slug = profile_slug(display)
-    base = Path(base_data or main_data_root()).expanduser().resolve()
+    base = _profile_base(base_data)
     root = profiles_root(base)
     profile_dir = root / slug
     root.mkdir(parents=True, exist_ok=True)
@@ -124,7 +137,7 @@ def create_profile(name, base_data=None):
 
 
 def list_profiles(base_data=None):
-    root = profiles_root(base_data or main_data_root())
+    root = profiles_root(base_data)
     if not root.is_dir():
         return []
     found = []

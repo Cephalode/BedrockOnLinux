@@ -103,32 +103,6 @@ def _legacy_install_location_file() -> Path:
     return HOME / ".config" / APP / "install_location"
 
 
-def main_data_root() -> Path:
-    """Return the top-level installation root where profiles/ lives.
-
-    When BOL_HOME points at a sub-profile this ignores it and resolves the
-    installation root from the persistent pointer or DEFAULT_DATA.  When
-    BOL_HOME is not set, returns the same value as DATA.
-    """
-    if os.environ.get("BOL_HOME", "").strip():
-        _data_path = str(DEFAULT_DATA)
-        _pointer_candidates = (INSTALL_LOCATION_FILE,)
-        if LEGACY_INSTALL_LOCATION_FILE != INSTALL_LOCATION_FILE:
-            _pointer_candidates += (LEGACY_INSTALL_LOCATION_FILE,)
-        for _pointer in _pointer_candidates:
-            try:
-                if not _pointer.is_file():
-                    continue
-                _custom_home = _pointer.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if _custom_home:
-                _data_path = _custom_home
-                break
-        return Path(_data_path).expanduser().resolve()
-    return DATA
-
-
 def get_install_location() -> str:
     """Where the app's data directory currently resolves to."""
     return str(DATA)
