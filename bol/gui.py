@@ -1066,9 +1066,13 @@ def gui():
         labels = ui.get("labels") or []
         if not labels:
             return
-        x = ver_field.winfo_rootx() - root.winfo_rootx()
-        y = ver_field.winfo_rooty() - root.winfo_rooty()
-        w = ver_field.winfo_width()
+        # winfo_* returns physical (already-scaled) screen pixels, but CTk
+        # widget constructors and .place() multiply whatever we pass them by
+        # the current widget scaling again — dividing here avoids the popup
+        # being double-scaled (wrong size/position) at 150%/200% UI scale.
+        x = (ver_field.winfo_rootx() - root.winfo_rootx()) / _ui_scale
+        y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
+        w = ver_field.winfo_width() / _ui_scale
         
         s = load_settings()
         saved_h = s.get("picker_height")
@@ -1084,16 +1088,16 @@ def gui():
         win.lift()
         
         def drag_resize(event):
-            cur_y = ver_field.winfo_rooty() - root.winfo_rooty()
-            mouse_y = event.y_root - root.winfo_rooty()
+            cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
+            mouse_y = (event.y_root - root.winfo_rooty()) / _ui_scale
             mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
             new_h = cur_y - 4 - mouse_y
             win.configure(height=new_h)
             win.place(y=mouse_y)
             
         def end_drag(event):
-            cur_y = ver_field.winfo_rooty() - root.winfo_rooty()
-            mouse_y = event.y_root - root.winfo_rooty()
+            cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
+            mouse_y = (event.y_root - root.winfo_rooty()) / _ui_scale
             mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
             new_h = cur_y - 4 - mouse_y
             s2 = load_settings()
@@ -1103,8 +1107,8 @@ def gui():
         def update_position(_event=None):
             if _pick["win"] != win: return
             try:
-                cur_x = ver_field.winfo_rootx() - root.winfo_rootx()
-                cur_y = ver_field.winfo_rooty() - root.winfo_rooty()
+                cur_x = (ver_field.winfo_rootx() - root.winfo_rootx()) / _ui_scale
+                cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
                 cur_h = win.cget("height")
                 win.place(x=cur_x, y=cur_y - int(cur_h) - 4)
             except Exception:
