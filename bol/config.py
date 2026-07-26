@@ -92,7 +92,7 @@ WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
 WINEGDK_SOURCE_MANIFEST_SHA256 = "2dc69fe66823ab29cc3fd54b92605d9f9149eb8006486c0e7450192b2857cbb6"
 WINEGDK_BUILD_REV = "wow64-archs-native12"
-WINEGDK_ARCHIVE_SHA256 = "0d1c0c3549a85dba99e4c0ee5f0ea671453a785c0c0a4f8c61ceaa8513dfedfa"
+WINEGDK_ARCHIVE_SHA256 = "481738ec668377d68207d8fdcc7b59db6d3178a0c23bf17dca5981f3f6d351cf"
 # Build workflows verify this deterministic intermediate before reusing it.
 WINEGDK_PREFIX_SHA256 = "bcb5f9a2974c6159dca8006ffc158cfa183d43aadf079a90eac21124804c5da2"
 
