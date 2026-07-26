@@ -98,10 +98,10 @@ class PreauthFailureDiagnosticTests(unittest.TestCase):
         diagnostic = self.run_failure([
             _Response(200, {"Token": "device", "NotAfter": expiry}),
             _Response(200, {"Token": "user", "NotAfter": expiry}),
-            *[_Response(403, failure) for _ in range(5)],
+            *[_Response(403, failure) for _ in range(6)],
         ])
 
-        self.assertEqual(diagnostic["stage"], "sisu-profile")
+        self.assertEqual(diagnostic["stage"], "xsts-achievements")
         self.assertEqual(diagnostic["category"], "age")
         self.assertEqual(diagnostic["http_status"], 403)
         self.assertEqual(diagnostic["error_code"], 2148916238)
