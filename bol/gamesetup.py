@@ -117,7 +117,7 @@ _DIAG_RULES = [
      r"forward 'cryptbase\.SystemFunction036'|"
      r"module not found for forward 'cryptbase",
      "Wine RNG unresolved (cryptbase.SystemFunction036) — re-run "
-     "'Install / Update'; the builtin-cryptbase fallback fixes this on relaunch."),
+     "'Install / Update'; setup seeds the verified native RNG before wineboot."),
     (r"nodrv_CreateWindow|no driver could be loaded|"
      r"explorer process failed to start",
      "Wine prefix broken (Wine couldn't open a window)."),

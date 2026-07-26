@@ -22,9 +22,7 @@ from .engine_lock import managed_engine_lock
 from .log import die, info, ok, warn
 from .proton import patch_proton
 from .util import (
-    asset_url,
     download,
-    gh_releases,
     load_settings,
     save_settings,
 )
@@ -264,10 +262,11 @@ def _install_prebuilt_winegdk(progress=None, force=False):
 
 def _install_prebuilt_winegdk_locked(progress=None, force=False):
     """Fetch + unpack a prebuilt GDK-Proton-xuser engine so end users never
-    compile a full Wine. Looks for an asset named for the current build rev on
-    the app's own releases, or use BOL_ENGINE_ARCHIVE for an explicit local
-    archive.  The candidate is validated and transactionally activated.  False
-    means no safe replacement was installed; callers may keep the current one."""
+    compile a full Wine. Downloads the asset from the deterministic release tag
+    used by the engine publication workflow, or uses BOL_ENGINE_ARCHIVE for an
+    explicit local archive.  The candidate is validated and transactionally
+    activated.  False means no safe replacement was installed; callers may keep
+    the current one."""
     asset = f"GDK-Proton-xuser-{WINEGDK_BUILD_REV}.tar.gz"
     override = os.environ.get("BOL_ENGINE_ARCHIVE", "").strip()
     if not override:
@@ -295,19 +294,14 @@ def _install_prebuilt_winegdk_locked(progress=None, force=False):
             return False
         info(f"Using local game engine archive: {archive}")
     else:
-        try:
-            rels = gh_releases(WINEGDK_PREBUILT_REPO, 30)
-        except Exception as e:
-            warn(f"Prebuilt engine lookup failed ({e}).")
-            return False
-        url = name = None
-        for rel in rels or []:
-            url, name, _ = asset_url(rel, lambda n: n == asset)
-            if url:
-                break
-        if not url:
-            return False
-        archive = CACHE / name
+        # Engine releases have a stable tag/asset contract.  Addressing that
+        # contract directly avoids the generic release-list cache hiding an
+        # engine published shortly after the launcher metadata was cached.
+        url = (
+            f"https://github.com/{WINEGDK_PREBUILT_REPO}/releases/download/"
+            f"engine-{WINEGDK_BUILD_REV}/{asset}"
+        )
+        archive = CACHE / asset
         if force:
             # A release asset may have been corrected under the same filename;
             # --force must not silently reinstall the stale cached bytes.
@@ -392,10 +386,14 @@ def ensure_winegdk(force=False, progress=None):
     if installed:
         die("Required game engine %s could not be installed. The previous "
             "engine was preserved but is incompatible with this launcher. "
-            "Keep %s beside the AppImage/zipapp and retry." %
+            "Check network access and retry. AppImage/zipapp users can also "
+            "keep %s beside the launcher; Flatpak and packaged-app users "
+            "should retry Install / Update after connectivity is restored." %
             (WINEGDK_BUILD_REV,
              f"GDK-Proton-xuser-{WINEGDK_BUILD_REV}.tar.gz"))
     die("No verified game-engine archive is available for %s. Connect to the "
-        "network and retry, or place %s beside the AppImage/zipapp." %
+        "network and retry. AppImage/zipapp users can also place %s beside "
+        "the launcher; Flatpak and packaged-app users should retry Install / "
+        "Update after connectivity is restored." %
         (WINEGDK_BUILD_REV,
          f"GDK-Proton-xuser-{WINEGDK_BUILD_REV}.tar.gz"))
