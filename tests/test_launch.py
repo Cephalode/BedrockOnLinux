@@ -14,7 +14,8 @@ from bol import launch
 class GraphicsEngineLaunchTests(unittest.TestCase):
     def _exercise_ready_launch(self, root, popen, arm, disarm,
                                prefix_idle=True, mark=None, preauth=True,
-                               lock_fds=(), managed_engine=True):
+                               lock_fds=(), managed_engine=True,
+                               umu_env=None):
         content = root / "content"
         logs = root / "logs"
         data = root / "data"
@@ -54,7 +55,7 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
             mock.patch.object(launch, "xbl_preauth", return_value=preauth),
             mock.patch.object(launch, "bump_stack_reserve"),
             mock.patch.object(launch, "proton_umu_cmd",
-                              return_value=(["fake-umu"], {})),
+                              return_value=(["fake-umu"], dict(umu_env or {}))),
             mock.patch.object(launch, "patch_options"),
             mock.patch.object(launch, "diagnose", return_value=[]),
             mock.patch.object(launch, "_prefix_stably_idle_after_wrapper",
@@ -474,6 +475,42 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
         self.assertEqual(env["PROTON_USE_WINED3D"], "0")
         self.assertEqual(env["VKD3D_SHADER_CACHE_PATH"], "0")
         self.assertEqual(env["DXVK_SHADER_CACHE_PATH"], "/custom/dxvk")
+
+    def test_gnutls_priority_override_is_never_exported(self):
+        """Regression for issue #48: exporting GNUTLS_SYSTEM_PRIORITY_FILE
+        makes Wine's secur32 abandon its version-capped GnuTLS priority and
+        negotiate TLS 1.3, which this Wine's schannel does not support. Every
+        in-game WinHTTP TLS connection (including the XSAPI RTA WebSocket that
+        MPSD session writes depend on) then dies post-handshake, and Friends
+        worlds fail with "world is full". The launch environment must not
+        carry the variable, even when it is inherited."""
+        observed = {}
+
+        class Process:
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        def popen(*_args, **kwargs):
+            observed.update(kwargs)
+            return Process()
+
+        with tempfile.TemporaryDirectory() as td:
+            self._exercise_ready_launch(
+                Path(td),
+                popen,
+                lambda: "owned-token",
+                lambda _token: True,
+                umu_env={
+                    "GNUTLS_SYSTEM_PRIORITY_FILE": "/stale/gnutls.cfg",
+                    "GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID": "0",
+                },
+            )
+
+        self.assertIn("env", observed)
+        self.assertNotIn("GNUTLS_SYSTEM_PRIORITY_FILE", observed["env"])
+        self.assertNotIn("GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID",
+                         observed["env"])
 
     def test_gpu_safety_failure_allows_engine_update_but_blocks_wine(self):
         with tempfile.TemporaryDirectory() as td:

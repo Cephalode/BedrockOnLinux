@@ -298,13 +298,24 @@ def _launch_once(lock_fds=()):
     env["MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_SHOWUI"] = "0"
     env["MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_FAILFAST"] = "0"
     env["MICROSOFT_WINDOWSAPPRUNTIME_DEPLOYMENT_INITIALIZE_ONERRORSHOWUI"] = "0"
-    # Azure rejects Wine's TLS 1.3 ClientHello; force TLS 1.2 for this process.
-    prio = DATA / "etc" / "gnutls-no-tls13.cfg"
-    if not prio.exists():
-        prio.parent.mkdir(parents=True, exist_ok=True)
-        prio.write_text("[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT\n")
-    env["GNUTLS_SYSTEM_PRIORITY_FILE"] = str(prio)
-    env["GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID"] = "0"
+    # Do NOT set GNUTLS_SYSTEM_PRIORITY_FILE. A previous workaround pointed it
+    # at a "[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT" file to force
+    # TLS 1.2, but inside the Flatpak it does the opposite: the runtime's
+    # GnuTLS default priority is not "@SYSTEM", so the file's SYSTEM override
+    # never applies, while the mere presence of the variable makes Wine's
+    # secur32 (set_priority in schannel_gnutls.c) skip its own version-capped
+    # priority string and use raw GnuTLS defaults — negotiating TLS 1.3, which
+    # this Wine's schannel does not support. Result: every in-game WinHTTP TLS
+    # connection to Xbox/Azure edges died post-handshake (0x2746 resets /
+    # 0x80090304 fatal alerts), the XSAPI RTA WebSocket could never connect,
+    # MPSD session writes lacked the required "connection" member, and Friends
+    # worlds failed with the misleading "world is full" error (issue #48).
+    # Wine's own schannel priority already caps at TLS 1.2, achieving what the
+    # workaround intended. Verified with tools/winhttp-rta-probe.c: with the
+    # variable set, 58/66 probes fail (rta.xboxlive.com 100%); without it,
+    # 66/66 succeed.
+    env.pop("GNUTLS_SYSTEM_PRIORITY_FILE", None)
+    env.pop("GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID", None)
     preauth = DATA / "winegdk-preauth" / "device.json"
     if preauth.exists():
         env["WINEGDK_PREAUTH_DEVICE"] = "Z:" + str(preauth).replace("/", "\\")
