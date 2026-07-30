@@ -21,6 +21,7 @@ from .auth import (
 )
 from .config import CONTENT, DATA, HOME, LOGS, WINEGDK_BUILD_REV
 from .deps import ensure_login_deps
+from .dgc import dgc_warning_message, intel_dgpus_on_legacy_driver
 from .fixups import _install_cryptbase_in_prefix, bump_stack_reserve
 from .gameinput import install_gameinput
 from .gamesetup import diagnose
@@ -104,6 +105,21 @@ def _is_steam_deck(environ=None, product_name_path=None):
         }
     except OSError:
         return False
+
+
+def _warn_if_dgc_unavailable(environ=None):
+    """Pre-launch heads-up for Intel dGPUs that cannot expose DGC under i915.
+
+    GPU-free (sysfs only), and managed-engine only: a custom Proton may not
+    use the DGC-only vkd3d this advisory is about. Advisory, not a block;
+    BOL_SKIP_DGC_CHECK=1 silences it.
+    """
+    source = os.environ if environ is None else environ
+    if custom_proton() or source.get("BOL_SKIP_DGC_CHECK") == "1":
+        return
+    cards = intel_dgpus_on_legacy_driver()
+    if cards:
+        warn(dgc_warning_message(cards))
 
 
 def _configure_runtime_compat(env, settings, backend, host_wayland,
@@ -234,6 +250,9 @@ def _launch_once(lock_fds=()):
         die("GDK-Proton missing — run Install / Update.")
     # Engine preparation is GPU-free and may repair state from an older build.
     _prepare_launch_engine()
+    # GPU-free advisory: an Intel dGPU on i915 cannot expose the DGC the
+    # menu needs; warn before the cryptic page fault instead of after it.
+    _warn_if_dgc_unavailable()
     # Only completed, idle wrappers can retire a current-boot marker.
     retire_idle_current_boot_marker()
     require_safe_graphics_session()

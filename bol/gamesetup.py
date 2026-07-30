@@ -67,9 +67,13 @@ _DIAG_RULES = [
      r"Cannot implement command signature|"
      r"d3d12_command_signature_create: Device generated commands is not "
      r"supported by implementation",
-     "The installed engine cannot run Minecraft's ExecuteIndirect menu path "
-     "on this Vulkan driver — install the current compatibility engine "
-     "('bedrock-on-linux setup --force')."),
+     "Minecraft's menu needs Vulkan Device Generated Commands (DGC), which "
+     "this GPU/driver did not provide. This is usually a driver setup "
+     "issue, not the engine: on Intel, bind the GPU to the 'xe' kernel "
+     "driver instead of 'i915' (then reboot); otherwise update your Vulkan "
+     "driver or use a DGC-capable GPU. If your GPU does support DGC, the "
+     "engine install may instead be corrupt — reinstall it with "
+     "'bedrock-on-linux setup --force'."),
     (r"Unimplemented function\s+combase\.dll\.RoOriginateErrorW?\b",
      "combase patch missing — re-run 'Install / Update'."),
     (r"Unimplemented function\s+ntdll\.dll\.NtQueryWnfStateData\b",
