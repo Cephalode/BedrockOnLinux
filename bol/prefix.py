@@ -335,13 +335,19 @@ def _log_size(path: Path):
 
 
 def _wineboot_hit_rng_abort(log_path: Path, offset=0):
-    """Whether this attempt's own log section shows the cryptbase RNG abort."""
+    """Whether this attempt's own log section shows the cryptbase RNG abort.
+
+    An aborting prefix repeats the same lines for its whole timeout, so only
+    the beginning of this attempt's section is needed to recognise it.
+    """
     try:
-        with log_path.open("r", encoding="utf-8", errors="replace") as log:
+        with log_path.open("rb") as log:
             log.seek(max(0, offset))
-            return bool(_RNG_ABORT_SIGNATURE.search(log.read()))
+            section = log.read(4 << 20)
     except OSError:
         return False
+    return bool(_RNG_ABORT_SIGNATURE.search(
+        section.decode("utf-8", "replace")))
 
 
 def _run_wineboot(pfx: Path, log_path: Path, native_cryptbase):
