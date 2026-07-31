@@ -21,8 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional
 
-from .config import APP, GAMES, WINEGDK_BUILD_REV
+from .config import GAMES, WINEGDK_BUILD_REV
 from .log import BolError, die, warn
+from .util import launcher_command
 
 
 try:
@@ -48,6 +49,11 @@ class GpuSafetyAcknowledgementStatus:
     message: str
     marker_present: bool = False
     previous_boot_fault: bool = False
+
+
+def acknowledge_gpu_crash_command() -> str:
+    """The acknowledgement command line for the running installation."""
+    return launcher_command("doctor", "--acknowledge-gpu-crash")
 
 
 def _truthy(value: Optional[str]) -> bool:
@@ -186,7 +192,7 @@ def interrupted_launch_problem(path: Optional[Path] = None) -> Optional[str]:
     """
 
     marker = Path(path) if path is not None else GPU_LAUNCH_MARKER
-    command = f"{APP} doctor --acknowledge-gpu-crash"
+    command = acknowledge_gpu_crash_command()
     try:
         marker.lstat()
     except FileNotFoundError:
@@ -263,7 +269,7 @@ def arm_gpu_launch(path: Optional[Path] = None) -> str:
         raise BolError(
             "A previous Minecraft GPU launch is still marked interrupted. "
             "After inspecting the interrupted session and rebooting, run "
-            f"'{APP} doctor --acknowledge-gpu-crash' if no current graphics "
+            f"'{acknowledge_gpu_crash_command()}' if no current graphics "
             "fault remains."
         ) from exc
     try:
@@ -651,7 +657,7 @@ def graphics_safety_problem(
         return (
             "the graphics driver reported a fatal kernel fault before the last "
             "reboot; after repairing/updating the driver, acknowledge it with "
-            f"'{APP} doctor --acknowledge-gpu-crash'"
+            f"'{acknowledge_gpu_crash_command()}'"
         )
     if _x11_session(env):
         providers = _xrandr_provider_count(env, xrandr_runner)

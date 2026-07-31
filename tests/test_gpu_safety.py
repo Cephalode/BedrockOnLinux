@@ -652,5 +652,58 @@ class GraphicsSafetyTests(unittest.TestCase):
                 gpu_safety.require_safe_graphics_session({})
 
 
+class AcknowledgementGuidanceTests(unittest.TestCase):
+    """The blocking message must name a command this installation can run."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.root = Path(self.tempdir.name)
+        self.marker = self.root / "gpu-launch.json"
+        self.marker.write_text(json.dumps({
+            "version": gpu_safety._STATE_VERSION,
+            "engine_rev": "wow64-archs-native12",
+            "token": "1" * 32,
+            "boot_id": "boot-before-power-loss",
+            "launcher_pid": 424242,
+            "created": 1,
+        }))
+
+    def problem(self, packaged_command):
+        calls = []
+
+        def fake_launcher_command(*arguments):
+            calls.append(arguments)
+            return packaged_command + " " + " ".join(arguments)
+
+        with mock.patch.object(gpu_safety, "GPU_LAUNCH_MARKER", self.marker), \
+                mock.patch.object(gpu_safety, "_boot_id",
+                                  return_value="boot-now"), \
+                mock.patch.object(gpu_safety, "launcher_command",
+                                  fake_launcher_command):
+            return gpu_safety.interrupted_launch_problem(), calls
+
+    def test_guidance_uses_the_packaging_aware_invocation(self):
+        problem, calls = self.problem(
+            "/home/p/BedrockOnLinux-2.1.1-x86_64.AppImage")
+        self.assertIn(
+            "/home/p/BedrockOnLinux-2.1.1-x86_64.AppImage doctor "
+            "--acknowledge-gpu-crash",
+            problem,
+        )
+        self.assertNotIn("'bedrock-on-linux doctor", problem)
+        self.assertEqual(
+            calls, [("doctor", "--acknowledge-gpu-crash")])
+
+    def test_flatpak_guidance_is_runnable(self):
+        problem, _calls = self.problem(
+            "flatpak run io.github.wyze3306.BedrockOnLinux")
+        self.assertIn(
+            "flatpak run io.github.wyze3306.BedrockOnLinux doctor "
+            "--acknowledge-gpu-crash",
+            problem,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

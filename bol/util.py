@@ -6,8 +6,10 @@ import fcntl
 import json
 import os
 import shlex
+import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -19,6 +21,7 @@ from .config import (
     APP,
     CACHE,
     DATA,
+    FLATPAK_APP_ID,
     GAMES,
     LOGS,
     PROTON_DIR,
@@ -123,6 +126,48 @@ def apply_custom_env(env, custom_env):
         key = key.strip()
         if key:
             env[key] = value
+
+
+def launcher_command(*arguments, environ=None, argv=None,
+                     info_path=Path("/.flatpak-info"), which=None):
+    """Return a command line the user can actually run for this installation.
+
+    ``bedrock-on-linux`` only exists on PATH for the distribution packages. An
+    AppImage, a portable zipapp and the Flatpak all have to be invoked through
+    their own entry point, so printing the bare program name told those users
+    to run a command their shell cannot find (issue #136).
+    """
+    source = os.environ if environ is None else environ
+    args = " ".join(shlex.quote(str(item)) for item in arguments)
+
+    def command(*parts):
+        line = " ".join(parts)
+        return f"{line} {args}".rstrip()
+
+    if source.get("FLATPAK_ID") or Path(info_path).is_file():
+        app_id = str(source.get("FLATPAK_ID") or "").strip() or FLATPAK_APP_ID
+        return command("flatpak", "run", shlex.quote(app_id))
+
+    # AppImage mounts itself at a temporary path; APPIMAGE is the real file.
+    appimage = str(source.get("APPIMAGE") or "").strip()
+    if appimage:
+        candidate = Path(appimage).expanduser()
+        if candidate.is_file():
+            return command(shlex.quote(str(candidate)))
+
+    installed = (which or shutil.which)(APP)
+    if installed:
+        return command(APP)
+
+    # Portable zipapps and an uninstalled checkout run from an explicit path.
+    entry = ((argv if argv is not None else sys.argv) or [""])[0]
+    try:
+        launcher = Path(entry).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return command(APP)
+    if entry and launcher.is_file() and launcher.suffix != ".py":
+        return command(shlex.quote(str(launcher)))
+    return command(APP)
 
 
 def http_json(url, timeout=10):

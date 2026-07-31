@@ -25,6 +25,7 @@ from .fixups import _install_cryptbase_in_prefix, bump_stack_reserve
 from .gameinput import install_gameinput
 from .gamesetup import diagnose
 from .gpu_safety import (
+    acknowledge_gpu_crash_command,
     arm_gpu_launch,
     disarm_gpu_launch,
     mark_gpu_wrapper_returned,
@@ -444,8 +445,8 @@ def _launch_once(lock_fds=()):
                      "driver before acknowledging the incident.")
             elif not disarm_gpu_launch(gpu_marker_token):
                 warn("Minecraft returned, but its GPU safety marker could not "
-                     "be cleared. Run 'bedrock-on-linux doctor "
-                     "--acknowledge-gpu-crash' after checking the driver.")
+                     f"be cleared. Run '{acknowledge_gpu_crash_command()}' "
+                     "after checking the driver.")
         glog.close()
         patch_options()
         logs = sorted(LOGS.glob("steam-*.log"),
