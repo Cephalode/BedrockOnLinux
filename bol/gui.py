@@ -331,6 +331,22 @@ def _bind_x11_mousewheel_recursive(widget, target_canvas):
     _bind(widget)
 
 
+def _enable_scrollable_frame_wheel(scrollable_frame, container=None):
+    """Give one CustomTkinter scrollable area a working X11 wheel.
+
+    CustomTkinter removes its own wheel bindings as soon as the pointer enters
+    a child widget, so any list built from controls — the Settings tabs, the
+    version picker — only scrolled by dragging its scrollbar. Forward the
+    events from every descendant of ``container`` to the frame's canvas.
+    """
+    canvas = getattr(scrollable_frame, "_parent_canvas", None)
+    if canvas is None:
+        return False
+    _bind_x11_mousewheel_recursive(
+        scrollable_frame if container is None else container, canvas)
+    return True
+
+
 class _ThemedMessageBox:
     def __init__(
             self, ctk, tk, root, theme, font, mkbtn, dialog,
@@ -1192,6 +1208,9 @@ def gui():
         search.bind("<Escape>", lambda _event: close_picker())
         
         rebuild()
+        # Bind after every row exists so the wheel scrolls the list from
+        # anywhere in the popup, including over a version button.
+        _enable_scrollable_frame_wheel(sf, win)
         win.bind("<Escape>", lambda _event: close_picker())
         
     def global_click(event):
@@ -2441,7 +2460,7 @@ def gui():
                      font=font(11)).pack(anchor="w", pady=(6, 0), padx=4)
 
         for _sf in (tab_general, tab_advanced, tab_tools):
-            _bind_x11_mousewheel_recursive(_sf, _sf._parent_canvas)
+            _enable_scrollable_frame_wheel(_sf)
 
     _build_settings()
 
