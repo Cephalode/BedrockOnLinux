@@ -88,6 +88,17 @@ _DIAG_RULES = [
     (r"wineserver.*version mismatch|wineserver binary was not upgraded",
      "Broken WineGDK packaging (wine vs wineserver mismatch) — rebuild the "
      "engine: 'bedrock-on-linux setup --force'."),
+    # Wine only prints these when it is about to hand the process to the crash
+    # debugger, so they are the game's own fatal fault rather than a first-
+    # chance exception. Without this rule the launcher reported "No known
+    # cause" for a reproducible crash (issues #115, #116, #129, #132).
+    (r"wine: Unhandled page fault on \w+ access to [0-9A-Fa-f]+ at address|"
+     r"wine: Unhandled exception 0xc0000005",
+     "Minecraft itself crashed with a memory access violation (unhandled page "
+     "fault) — the launcher, the Wine prefix and the GPU driver are not the "
+     "failing component, so repairing the prefix does not change it. Note the "
+     "faulting address and the engine revision from proton.log, try another "
+     "Minecraft version, and attach both to a bug report."),
     (r"Authentication failed|invalid_grant|login.*failed",
      "Microsoft sign-in failed in-game — sign in again "
      "(open the link, enter the code)."),

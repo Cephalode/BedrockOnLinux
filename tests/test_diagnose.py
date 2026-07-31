@@ -28,6 +28,44 @@ class FreezeDiagnosisTests(unittest.TestCase):
         self.assertIn("current compatibility engine", hits[0])
 
 
+class GameCrashDiagnosisTests(unittest.TestCase):
+    def _diagnose(self, log):
+        with tempfile.TemporaryDirectory() as td:
+            logs = Path(td)
+            (logs / "proton.log").write_text(log, encoding="utf-8")
+            with mock.patch.object(gamesetup, "LOGS", logs), \
+                    mock.patch.object(gamesetup, "msa_signed_in",
+                                      return_value=True), \
+                    mock.patch.object(gamesetup, "warn"), \
+                    mock.patch.object(gamesetup, "info"):
+                return gamesetup.diagnose()
+
+    def test_unhandled_page_fault_is_reported_instead_of_no_known_cause(self):
+        hits = self._diagnose(
+            "info:  Game: Minecraft.Windows.exe\n"
+            "wine: Unhandled page fault on read access to 0000000000000008 "
+            "at address 0000000140427AB5 (thread 0118), starting debugger...\n"
+        )
+        self.assertTrue(
+            any("memory access violation" in hit for hit in hits), hits)
+        self.assertFalse(
+            any("prefix broken" in hit.lower() for hit in hits), hits)
+
+    def test_access_violation_exception_is_recognised(self):
+        hits = self._diagnose(
+            "wine: Unhandled exception 0xc0000005 in thread 118\n")
+        self.assertTrue(
+            any("memory access violation" in hit for hit in hits), hits)
+
+    def test_ordinary_log_traffic_is_not_a_crash(self):
+        hits = self._diagnose(
+            "fixme:seh:page fault handling discussed in a fixme\n"
+            "info:  DXVK: v3.0.1\n"
+        )
+        self.assertFalse(
+            any("memory access violation" in hit for hit in hits), hits)
+
+
 class OnlineDiagnosisTests(unittest.TestCase):
     def _diagnose(self, log, settings):
         with tempfile.TemporaryDirectory() as td:
