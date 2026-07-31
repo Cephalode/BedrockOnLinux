@@ -238,12 +238,20 @@ def interrupted_launch_problem(path: Optional[Path] = None) -> Optional[str]:
             "a Minecraft GPU session is still marked active in this launcher; "
             "close or force-stop it instead of starting a second session"
         )
-    when = "during this boot" if same_boot else "before the last reboot/power loss"
+    if same_boot:
+        # The acknowledgement is deliberately refused for a marker created
+        # during this boot, so do not advertise it as the immediate next step.
+        return (
+            "the previous Minecraft GPU session did not return cleanly during "
+            "this boot; inspect why the session or machine stopped, then "
+            "reboot — an interrupted launch from the running boot cannot be "
+            f"acknowledged, and '{command}' only clears it after that reboot"
+        )
     return (
-        f"the previous Minecraft GPU session did not return cleanly {when}; "
-        "inspect why the session or machine stopped and reboot before retrying; "
-        f"if no current graphics fault remains, run '{command}' to acknowledge "
-        "the interrupted launch"
+        "the previous Minecraft GPU session did not return cleanly before the "
+        "last reboot/power loss; inspect why the session or machine stopped "
+        f"and reboot before retrying; if no current graphics fault remains, run "
+        f"'{command}' to acknowledge the interrupted launch"
     )
 
 

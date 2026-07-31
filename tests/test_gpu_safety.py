@@ -364,6 +364,30 @@ class GraphicsSafetyTests(unittest.TestCase):
         self.assertIn("did not return cleanly", problem)
         self.assertIn("--acknowledge-gpu-crash", problem)
 
+    def test_same_boot_marker_does_not_advertise_an_impossible_action(self):
+        """A current-boot marker is refused, so the block must say 'reboot'."""
+        self.marker.write_text(json.dumps({
+            "version": gpu_safety._STATE_VERSION,
+            "engine_rev": "wow64-archs-native12",
+            "phase": "running",
+            "token": "1" * 32,
+            "boot_id": "boot-now",
+            "launcher_pid": 424242,
+            "created": 1,
+        }))
+
+        problem = gpu_safety.graphics_safety_problem(
+            {"XDG_SESSION_TYPE": "wayland"},
+            journal_runner=self.clean_journal,
+        )
+        status = gpu_safety.gpu_safety_acknowledgement_status(
+            journal_runner=self.clean_journal)
+
+        self.assertFalse(status.can_acknowledge)
+        self.assertIn("during this boot", problem)
+        self.assertIn("cannot be acknowledged", problem)
+        self.assertIn("only clears it after that reboot", problem)
+
     def test_torn_hard_reboot_marker_is_still_blocking(self):
         self.marker.write_text("{torn")
         problem = gpu_safety.graphics_safety_problem(
