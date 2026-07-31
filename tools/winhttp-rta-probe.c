@@ -25,6 +25,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define PROBE_BANNER "winhttp-rta-probe-v1"
 

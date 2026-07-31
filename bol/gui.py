@@ -1452,8 +1452,10 @@ def gui():
             if getattr(acct_btn, "_confirm_out", False):
                 na.stop()
                 try:
-                    with prefix_operation_lock("sign out of Microsoft"):
-                        msa_logout()
+                    # msa_logout() takes the prefix lock itself; wrapping the
+                    # call here would nest two flock() acquisitions on the same
+                    # file from separate descriptors and always be refused.
+                    msa_logout()
                 except BolError as exc:
                     warn(str(exc))
                     acct_state("in" if msa_signed_in() else "out")
@@ -2928,17 +2930,13 @@ def gui():
         mkbtn(ui["changelog_head"], "← Back", toggle_changelog, kind="flat", width=76,
               height=28, font=font(12)).pack(side="right")
 
-        ui["last_tab"] = "Game"
-        def on_tab_change():
-            ui["last_tab"] = tabs.get()
-
         tabs = ctk.CTkTabview(
             outer, fg_color=T.CARD_2,
             segmented_button_fg_color=T.CARD_2,
             segmented_button_selected_color=T.THEME_ACCENT,
             segmented_button_selected_hover_color=T.THEME_HOV,
             segmented_button_unselected_color=T.CARD_2,
-            text_color=T.FG, corner_radius=12, command=on_tab_change)
+            text_color=T.FG, corner_radius=12)
         tabs.pack(fill="both", expand=True)
         tab_game = tabs.add("Game")
         tab_launcher = tabs.add("Launcher")

@@ -1,6 +1,7 @@
 """Regression tests for prefix shutdown and operation serialization."""
 # SPDX-License-Identifier: MIT
 
+import ast
 import os
 import tempfile
 import subprocess
@@ -11,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from bol import fixups, gameinput, gamesetup, prefix
+from bol import auth, fixups, gameinput, gamesetup, prefix
 from bol.log import BolError
 
 
@@ -744,6 +745,45 @@ class PrefixOperationLockTests(unittest.TestCase):
 
         stop.assert_not_called()
         rmtree.assert_not_called()
+
+    def test_logout_is_refused_while_the_common_lock_is_held(self):
+        """msa_logout() takes the prefix lock itself, so no caller may take it
+        on its behalf. flock() is per open file description, so a second
+        acquisition from the same process is refused just like one from
+        another process: wrapping the call (as the GUI's sign-out button once
+        did) makes sign-out fail every time, with the misleading "already in
+        progress" message."""
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(prefix, "DATA", Path(td)), \
+                mock.patch.object(auth, "wine_reg_remove_refresh_token") as rm:
+            with prefix.prefix_operation_lock("test operation"):
+                with self.assertRaisesRegex(BolError, "another BedrockOnLinux"):
+                    auth.msa_logout()
+
+        rm.assert_not_called()
+
+    def test_gui_sign_out_does_not_nest_the_prefix_lock(self):
+        """Guards the call site, which no GUI test can reach: a branch cut
+        before the lock moved into msa_logout() reintroduced a
+        `with prefix_operation_lock(...)` wrapper around the sign-out button's
+        call. That nesting is always refused (see the test above), so sign-out
+        failed for every user while the whole suite stayed green."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "bol" / "gui.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.With):
+                continue
+            if not any(isinstance(item.context_expr, ast.Call)
+                       and getattr(item.context_expr.func, "id", None)
+                       == "prefix_operation_lock"
+                       for item in node.items):
+                continue
+            for inner in ast.walk(node):
+                self.assertNotEqual(
+                    getattr(getattr(inner, "func", None), "id", None),
+                    "msa_logout",
+                    "msa_logout() takes the prefix lock itself; nesting it "
+                    "inside prefix_operation_lock() always fails")
 
     def test_setup_holds_the_same_operation_lock(self):
         events = []
