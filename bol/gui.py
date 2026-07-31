@@ -1452,7 +1452,8 @@ def gui():
             if getattr(acct_btn, "_confirm_out", False):
                 na.stop()
                 try:
-                    msa_logout()
+                    with prefix_operation_lock("sign out of Microsoft"):
+                        msa_logout()
                 except BolError as exc:
                     warn(str(exc))
                     acct_state("in" if msa_signed_in() else "out")
@@ -2941,26 +2942,6 @@ def gui():
         tabs.pack(fill="both", expand=True)
         tab_game = tabs.add("Game")
         tab_launcher = tabs.add("Launcher")
-        
-        def _force_refresh(tab_name):
-            if ui.get("last_tab") != tab_name:
-                return
-            from .util import mc_releases, gh_releases
-            from .config import SELF_REPO
-            if tab_name == "Game":
-                load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False, ignore_cache=True), render_game_changelog)
-            elif tab_name == "Launcher":
-                load_tab_changelog(tab_launcher, lambda: gh_releases(SELF_REPO, ignore_cache=True), render_launcher_changelog)
-                
-        try:
-            for btn in tabs._segmented_button._buttons_dict.values():
-                btn.bind(
-                    "<Button-1>",
-                    lambda _event, b=btn: _force_refresh(b.cget("text")),
-                    add="+",
-                )
-        except Exception:
-            pass
 
     _build_changelog_view()
 
