@@ -197,7 +197,7 @@ if command -v flatpak-builder >/dev/null \
     || { command -v flatpak >/dev/null \
          && flatpak info org.flatpak.Builder >/dev/null 2>&1; }; then
   FLATPAK_LOG="$OUT/flatpak-build.log"
-  if bash "$SRC/scripts/build-flatpak.sh" >"$FLATPAK_LOG" 2>&1 \
+  if bash "$SRC/scripts/build-flatpak.sh" --release >"$FLATPAK_LOG" 2>&1 \
       && [[ -s "$FLATPAK" ]]; then
     echo "  ✓ dist/$(basename "$FLATPAK")"
     built_artifacts+=("$FLATPAK")
