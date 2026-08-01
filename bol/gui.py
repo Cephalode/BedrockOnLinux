@@ -1578,10 +1578,10 @@ def gui():
                         if qr.get_module(x, y):
                             pixels[x + border, y + border] = 0
                 img = img.resize((150, 150), Image.Resampling.NEAREST).convert("RGB")
-                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(150, 150))
                 def _apply_qr():
                     if not qr_frame.winfo_exists():
                         return
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(150, 150))
                     qr_lbl._is_loaded = True
                     qr_lbl.destroy()
                     ctk.CTkLabel(qr_frame, text="", image=ctk_img).pack(expand=True, fill="both")
