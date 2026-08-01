@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Recover automatically from an interrupted first-run data migration instead
+  of refusing to start forever with `stale migration staging path exists`,
+  which kept the Flatpak from opening at all on affected systems
+  ([#124](https://github.com/Wyze3306/BedrockOnLinux/issues/124)).
+- Retry the Wine prefix once with a reinstalled RNG component when `wineboot`
+  aborts on the unresolved `advapi32.SystemFunction036` forward, instead of
+  waiting out the 300-second timeout and reporting a broken prefix
+  ([#138](https://github.com/Wyze3306/BedrockOnLinux/issues/138)).
+- Print an acknowledgement command the running installation can actually run
+  (`flatpak run …`, the AppImage or zipapp path) rather than a program name
+  that only exists for the distribution packages
+  ([#136](https://github.com/Wyze3306/BedrockOnLinux/issues/136)).
+- Stop offering the GPU acknowledgement for an interrupted launch from the
+  running boot, which is always refused until the machine is rebooted.
+- Report a fatal in-game page fault as the game process crashing instead of
+  answering `No known cause`
+  ([#132](https://github.com/Wyze3306/BedrockOnLinux/issues/132)).
+- Scroll the version picker with a mouse wheel or touchpad, including while
+  the pointer is over a version row
+  ([#112](https://github.com/Wyze3306/BedrockOnLinux/issues/112)).
+
 ## 2.1.1 — 2026-07-26
 
 ### Fixed

@@ -285,6 +285,13 @@ bedrock-on-linux doctor
 bedrock-on-linux doctor --acknowledge-gpu-crash
 ```
 
+`bedrock-on-linux` is on `PATH` only for the `.deb` and native packages. The
+AppImage, portable `.pyz` and Flatpak are invoked through their own entry
+point, so run `./BedrockOnLinux-*.AppImage doctor …`,
+`./bedrock-on-linux-*.pyz doctor …` or
+`flatpak run io.github.wyze3306.BedrockOnLinux doctor …` instead. Launcher
+messages print the exact command for the installation in use.
+
 Acknowledgement is revalidated while the launch lock is held and clears only
 an old interrupted-session block or records a previous-boot driver incident.
 It is refused when there is no eligible incident, Wine/UMU is still running,

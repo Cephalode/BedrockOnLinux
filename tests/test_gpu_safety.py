@@ -364,6 +364,30 @@ class GraphicsSafetyTests(unittest.TestCase):
         self.assertIn("did not return cleanly", problem)
         self.assertIn("--acknowledge-gpu-crash", problem)
 
+    def test_same_boot_marker_does_not_advertise_an_impossible_action(self):
+        """A current-boot marker is refused, so the block must say 'reboot'."""
+        self.marker.write_text(json.dumps({
+            "version": gpu_safety._STATE_VERSION,
+            "engine_rev": "wow64-archs-native12",
+            "phase": "running",
+            "token": "1" * 32,
+            "boot_id": "boot-now",
+            "launcher_pid": 424242,
+            "created": 1,
+        }))
+
+        problem = gpu_safety.graphics_safety_problem(
+            {"XDG_SESSION_TYPE": "wayland"},
+            journal_runner=self.clean_journal,
+        )
+        status = gpu_safety.gpu_safety_acknowledgement_status(
+            journal_runner=self.clean_journal)
+
+        self.assertFalse(status.can_acknowledge)
+        self.assertIn("during this boot", problem)
+        self.assertIn("cannot be acknowledged", problem)
+        self.assertIn("only clears it after that reboot", problem)
+
     def test_torn_hard_reboot_marker_is_still_blocking(self):
         self.marker.write_text("{torn")
         problem = gpu_safety.graphics_safety_problem(
@@ -650,6 +674,59 @@ class GraphicsSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(gpu_safety.BolError,
                                         "did not start Wine"):
                 gpu_safety.require_safe_graphics_session({})
+
+
+class AcknowledgementGuidanceTests(unittest.TestCase):
+    """The blocking message must name a command this installation can run."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.root = Path(self.tempdir.name)
+        self.marker = self.root / "gpu-launch.json"
+        self.marker.write_text(json.dumps({
+            "version": gpu_safety._STATE_VERSION,
+            "engine_rev": "wow64-archs-native12",
+            "token": "1" * 32,
+            "boot_id": "boot-before-power-loss",
+            "launcher_pid": 424242,
+            "created": 1,
+        }))
+
+    def problem(self, packaged_command):
+        calls = []
+
+        def fake_launcher_command(*arguments):
+            calls.append(arguments)
+            return packaged_command + " " + " ".join(arguments)
+
+        with mock.patch.object(gpu_safety, "GPU_LAUNCH_MARKER", self.marker), \
+                mock.patch.object(gpu_safety, "_boot_id",
+                                  return_value="boot-now"), \
+                mock.patch.object(gpu_safety, "launcher_command",
+                                  fake_launcher_command):
+            return gpu_safety.interrupted_launch_problem(), calls
+
+    def test_guidance_uses_the_packaging_aware_invocation(self):
+        problem, calls = self.problem(
+            "/home/p/BedrockOnLinux-2.1.1-x86_64.AppImage")
+        self.assertIn(
+            "/home/p/BedrockOnLinux-2.1.1-x86_64.AppImage doctor "
+            "--acknowledge-gpu-crash",
+            problem,
+        )
+        self.assertNotIn("'bedrock-on-linux doctor", problem)
+        self.assertEqual(
+            calls, [("doctor", "--acknowledge-gpu-crash")])
+
+    def test_flatpak_guidance_is_runnable(self):
+        problem, _calls = self.problem(
+            "flatpak run io.github.wyze3306.BedrockOnLinux")
+        self.assertIn(
+            "flatpak run io.github.wyze3306.BedrockOnLinux doctor "
+            "--acknowledge-gpu-crash",
+            problem,
+        )
 
 
 if __name__ == "__main__":

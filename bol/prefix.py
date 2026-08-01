@@ -4,6 +4,7 @@
 import hashlib
 import fcntl
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -299,24 +300,62 @@ def seed_managed_bootstrap_cryptbase(prefix: Path):
     return _install_cryptbase_in_prefix(pfx)
 
 
-def boot_prefix(prefix=None):
-    """Ensure Wine created system32 and its persistent registry hives."""
-    pfx = Path(prefix or active_prefix())
-    _prepare_managed_prefix_layout(pfx)
-    if prefix_ready(pfx):
-        repair_managed_prefix_user32(pfx)
-        return True
-    # Refuse a known-bad graphics session before Wine can open a device.
-    from .gpu_safety import require_safe_graphics_session
-    require_safe_graphics_session()
-    info("Initialising the Wine prefix (first run) …")
-    native_cryptbase = seed_managed_bootstrap_cryptbase(pfx)
+def repair_bootstrap_cryptbase(prefix: Path):
+    """Fetch the verified RNG payload when missing, then seed it again.
+
+    Only used to recover a wineboot which already aborted on the unresolved
+    ``advapi32.SystemFunction036`` forward: without a usable cryptbase.dll,
+    every Wine service dies on its first RtlGenRandom call and the prefix can
+    never complete.
+    """
+    from .fixups import ensure_openssl_xcurl_set
+    try:
+        ensure_openssl_xcurl_set()
+    except Exception as exc:  # network/IO problems must not mask the retry
+        warn(f"Could not refresh the verified RNG components ({exc}).")
+    return seed_managed_bootstrap_cryptbase(prefix)
+
+
+# Wine resolves advapi32.SystemFunction036 (RtlGenRandom) through cryptbase.
+# Both spellings below mean the same thing: no usable cryptbase.dll, so every
+# wineboot service aborts and the prefix initialisation can only time out.
+_RNG_ABORT_SIGNATURE = re.compile(
+    r"unimplemented function advapi32\.dll\.SystemFunction036|"
+    r"(?:module|function) not found for forward "
+    r"'cryptbase\.SystemFunction036'",
+    re.IGNORECASE,
+)
+
+
+def _log_size(path: Path):
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _wineboot_hit_rng_abort(log_path: Path, offset=0):
+    """Whether this attempt's own log section shows the cryptbase RNG abort.
+
+    An aborting prefix repeats the same lines for its whole timeout, so only
+    the beginning of this attempt's section is needed to recognise it.
+    """
+    try:
+        with log_path.open("rb") as log:
+            log.seek(max(0, offset))
+            section = log.read(4 << 20)
+    except OSError:
+        return False
+    return bool(_RNG_ABORT_SIGNATURE.search(
+        section.decode("utf-8", "replace")))
+
+
+def _run_wineboot(pfx: Path, log_path: Path, native_cryptbase):
+    """Run one ``wineboot -u``; return None, or why it did not complete."""
     cmd, env = proton_umu_cmd("wineboot", prefix=pfx)
     cmd.append("-u")
     env = headless_setup_env(env, native_cryptbase=native_cryptbase)
     env.setdefault("WINEDEBUG", "-all")
-    LOGS.mkdir(parents=True, exist_ok=True)
-    log_path = LOGS / "native-login.log"
     failure = None
     try:
         with log_path.open("a") as log:
@@ -340,19 +379,56 @@ def boot_prefix(prefix=None):
     finally:
         # Offline registry updates require wineboot services to be gone.
         stop_prefix_procs(pfx, grace=5)
+    return failure
+
+
+def boot_prefix(prefix=None):
+    """Ensure Wine created system32 and its persistent registry hives."""
+    pfx = Path(prefix or active_prefix())
+    _prepare_managed_prefix_layout(pfx)
+    if prefix_ready(pfx):
+        repair_managed_prefix_user32(pfx)
+        return True
+    # Refuse a known-bad graphics session before Wine can open a device.
+    from .gpu_safety import require_safe_graphics_session
+    require_safe_graphics_session()
+    info("Initialising the Wine prefix (first run) …")
+    native_cryptbase = seed_managed_bootstrap_cryptbase(pfx)
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS / "native-login.log"
+    retried = False
+    while True:
+        attempt_offset = _log_size(log_path)
+        failure = _run_wineboot(pfx, log_path, native_cryptbase)
+        if not failure:
+            end = time.time() + 30
+            while time.time() < end and not prefix_ready(pfx):
+                time.sleep(1)
+            if prefix_ready(pfx):
+                repair_managed_prefix_user32(pfx)
+                return True
+        if retried or not _wineboot_hit_rng_abort(log_path, attempt_offset):
+            break
+        retried = True
+        # The engine's first run creates the prefix from Proton's template and
+        # can replace a file seeded before it existed, so re-seed and retry
+        # once instead of leaving a prefix that can only time out.
+        warn("Wine could not resolve its random-number generator "
+             "(advapi32.SystemFunction036 → cryptbase). Reinstalling the "
+             "verified RNG component and retrying the prefix once.")
+        native_cryptbase = repair_bootstrap_cryptbase(pfx)
+        if not native_cryptbase:
+            warn("No verified cryptbase.dll is available for this prefix. "
+                 "Connect to the network and re-run 'Install / Update' so the "
+                 "online-login components can be downloaded.")
+            break
     if failure:
         warn(f"Wine prefix initialisation failed: wineboot {failure}. "
              f"Details: {log_path}")
         return False
-    end = time.time() + 30
-    while time.time() < end and not prefix_ready(pfx):
-        time.sleep(1)
-    if not prefix_ready(pfx):
-        warn("Wine prefix initialisation finished without valid system.reg, "
-             f"user.reg, and system32 state. Details: {log_path}")
-        return False
-    repair_managed_prefix_user32(pfx)
-    return True
+    warn("Wine prefix initialisation finished without valid system.reg, "
+         f"user.reg, and system32 state. Details: {log_path}")
+    return False
 
 
 def _environ_uses_prefix(environ, prefix):

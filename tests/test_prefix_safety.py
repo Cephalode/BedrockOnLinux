@@ -209,6 +209,166 @@ class PrefixShutdownTests(unittest.TestCase):
         self.assertIn(mock.call(10, 15), kill.call_args_list)
         self.assertIn(mock.call(10, 9), kill.call_args_list)
 
+    def _rng_abort_writer(self, attempts, finish_on=None, pfx=None):
+        """Fake wineboot which reproduces the unresolved-RtlGenRandom abort."""
+
+        def fake_run(_cmd, **kwargs):
+            attempts.append(dict(kwargs.get("env") or {}))
+            log = kwargs["stdout"]
+            index = len(attempts)
+            if finish_on is not None and index >= finish_on:
+                log.write("wineboot: prefix updated\n")
+                _make_ready_prefix(pfx)
+                return SimpleNamespace(returncode=0)
+            log.write(
+                "wine: Call from 00006FFFFFC59E08 to unimplemented function "
+                "advapi32.dll.SystemFunction036, aborting\n"
+                "err:module:find_forwarded_export module not found for "
+                "forward 'cryptbase.SystemFunction036' used by "
+                'L"C:\\\\windows\\\\system32\\\\advapi32.dll"\n'
+                "err:winediag:nodrv_CreateWindow Application tried to create "
+                "a window, but no driver could be loaded.\n"
+            )
+            raise prefix.subprocess.TimeoutExpired(["umu", "wineboot"], 300)
+
+        return fake_run
+
+    def test_rng_abort_reseeds_cryptbase_and_completes_the_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            pfx = Path(td) / "pfx"
+            attempts = []
+            with mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
+                        prefix, "repair_bootstrap_cryptbase",
+                        return_value=True) as repair, \
+                    mock.patch.object(
+                        prefix, "repair_managed_prefix_user32"), \
+                    mock.patch.object(
+                        prefix.subprocess, "run",
+                        side_effect=self._rng_abort_writer(
+                            attempts, finish_on=2, pfx=pfx)), \
+                    mock.patch.object(prefix, "stop_prefix_procs"):
+                self.assertTrue(prefix.boot_prefix(pfx))
+
+            repair.assert_called_once_with(pfx)
+            self.assertEqual(len(attempts), 2)
+            self.assertIn("cryptbase=b", attempts[0]["WINEDLLOVERRIDES"])
+            self.assertIn("cryptbase=n,b", attempts[1]["WINEDLLOVERRIDES"])
+
+    def test_rng_abort_is_retried_only_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            pfx = Path(td) / "pfx"
+            logs = Path(td) / "logs"
+            attempts = []
+            with mock.patch.object(prefix, "LOGS", logs), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=True), \
+                    mock.patch.object(
+                        prefix, "repair_bootstrap_cryptbase",
+                        return_value=True), \
+                    mock.patch.object(
+                        prefix.subprocess, "run",
+                        side_effect=self._rng_abort_writer(attempts)), \
+                    mock.patch.object(prefix, "stop_prefix_procs"), \
+                    mock.patch.object(prefix, "warn") as warn:
+                self.assertFalse(prefix.boot_prefix(pfx))
+
+            self.assertEqual(len(attempts), 2)
+            self.assertIn("timed out", warn.call_args.args[0])
+            self.assertIn(
+                str(logs / "native-login.log"), warn.call_args.args[0])
+
+    def test_rng_abort_without_a_verified_component_is_reported(self):
+        with tempfile.TemporaryDirectory() as td:
+            pfx = Path(td) / "pfx"
+            attempts = []
+            with mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
+                        prefix, "repair_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
+                        prefix.subprocess, "run",
+                        side_effect=self._rng_abort_writer(attempts)), \
+                    mock.patch.object(prefix, "stop_prefix_procs"), \
+                    mock.patch.object(prefix, "warn") as warn:
+                self.assertFalse(prefix.boot_prefix(pfx))
+
+            # Without a usable RNG component another attempt cannot help.
+            self.assertEqual(len(attempts), 1)
+            messages = " ".join(call.args[0] for call in warn.call_args_list)
+            self.assertIn("No verified cryptbase.dll", messages)
+            self.assertIn("Install / Update", messages)
+
+    def test_only_this_attempt_s_log_section_triggers_the_retry(self):
+        with tempfile.TemporaryDirectory() as td:
+            logs = Path(td) / "logs"
+            logs.mkdir()
+            log_path = logs / "native-login.log"
+            log_path.write_text(
+                "wine: Call from 0000 to unimplemented function "
+                "advapi32.dll.SystemFunction036, aborting\n",
+                encoding="utf-8",
+            )
+            stale = log_path.stat().st_size
+            log_path.write_text(
+                log_path.read_text(encoding="utf-8")
+                + "wineboot: prefix updated\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(prefix._wineboot_hit_rng_abort(log_path))
+            self.assertFalse(prefix._wineboot_hit_rng_abort(log_path, stale))
+
+    def test_unrelated_wineboot_failure_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as td:
+            attempts = []
+
+            def fake_run(_cmd, **kwargs):
+                attempts.append(True)
+                kwargs["stdout"].write("err:winediag:something else\n")
+                return SimpleNamespace(returncode=42)
+
+            with mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=True), \
+                    mock.patch.object(
+                        prefix, "repair_bootstrap_cryptbase") as repair, \
+                    mock.patch.object(
+                        prefix.subprocess, "run", side_effect=fake_run), \
+                    mock.patch.object(prefix, "stop_prefix_procs"):
+                self.assertFalse(prefix.boot_prefix(Path(td) / "pfx"))
+
+            self.assertEqual(len(attempts), 1)
+            repair.assert_not_called()
+
     def test_wineboot_propagates_shutdown_failure(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
@@ -437,6 +597,33 @@ class PrefixEnvironmentTests(unittest.TestCase):
                 "Minecraft.Windows.exe", Path("/tmp/prefix"))
 
         self.assertNotIn("PROTON_USE_WOW64", env)
+
+
+class CryptbaseRepairTests(unittest.TestCase):
+    def test_repair_refetches_the_payload_before_seeding_again(self):
+        order = []
+        with mock.patch.object(
+                fixups, "ensure_openssl_xcurl_set",
+                side_effect=lambda: order.append("fetch")), \
+                mock.patch.object(
+                    prefix, "seed_managed_bootstrap_cryptbase",
+                    side_effect=lambda _p: order.append("seed") or True):
+            self.assertTrue(
+                prefix.repair_bootstrap_cryptbase(Path("/tmp/bol-pfx")))
+        self.assertEqual(order, ["fetch", "seed"])
+
+    def test_repair_still_seeds_when_the_download_fails(self):
+        with mock.patch.object(
+                fixups, "ensure_openssl_xcurl_set",
+                side_effect=OSError("offline")), \
+                mock.patch.object(
+                    prefix, "seed_managed_bootstrap_cryptbase",
+                    return_value=False) as seed, \
+                mock.patch.object(prefix, "warn") as warn:
+            self.assertFalse(
+                prefix.repair_bootstrap_cryptbase(Path("/tmp/bol-pfx")))
+        seed.assert_called_once_with(Path("/tmp/bol-pfx"))
+        self.assertIn("offline", warn.call_args.args[0])
 
 
 class CryptbaseInstallTests(unittest.TestCase):
