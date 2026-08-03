@@ -10,7 +10,7 @@ from bol import gamesetup
 
 
 class FreezeDiagnosisTests(unittest.TestCase):
-    def test_unsupported_dgc_signature_reports_compatibility_engine(self):
+    def test_unsupported_dgc_signature_reports_driver_guidance(self):
         with tempfile.TemporaryDirectory() as td:
             logs = Path(td)
             (logs / "proton.log").write_text(
@@ -25,7 +25,9 @@ class FreezeDiagnosisTests(unittest.TestCase):
                     mock.patch.object(gamesetup, "info"):
                 hits = gamesetup.diagnose()
         self.assertEqual(len(hits), 1)
-        self.assertIn("current compatibility engine", hits[0])
+        self.assertIn("Device Generated Commands", hits[0])
+        self.assertIn("xe", hits[0])
+        self.assertIn("setup --force", hits[0])
 
 
 class GameCrashDiagnosisTests(unittest.TestCase):
@@ -161,7 +163,7 @@ class OnlineDiagnosisTests(unittest.TestCase):
         hits = self._diagnose(log, {})
         self.assertFalse(any("no WineGDK XUser" in hit for hit in hits))
 
-    def test_nv_dgc_raw_va_error_reports_compatibility_engine(self):
+    def test_nv_dgc_raw_va_error_reports_driver_guidance(self):
         with tempfile.TemporaryDirectory() as td:
             logs = Path(td)
             (logs / "proton.log").write_text(
@@ -177,7 +179,9 @@ class OnlineDiagnosisTests(unittest.TestCase):
                     mock.patch.object(gamesetup, "info"):
                 hits = gamesetup.diagnose()
         self.assertEqual(len(hits), 1)
-        self.assertIn("current compatibility engine", hits[0])
+        self.assertIn("Device Generated Commands", hits[0])
+        self.assertIn("xe", hits[0])
+        self.assertIn("setup --force", hits[0])
 
     def test_initial_connection_13_reports_host_firewall_and_profile(self):
         hits = self._diagnose(
