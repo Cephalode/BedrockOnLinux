@@ -79,8 +79,18 @@ class DgcWarningMessageTests(unittest.TestCase):
         self.assertIn("card2", msg)
         self.assertIn("xe", msg)
         self.assertIn("DGC", msg)
-        self.assertIn("will not help", msg)
         self.assertIn("BOL_SKIP_DGC_CHECK=1", msg)
+
+    def test_message_is_conditional_and_warns_about_the_display(self):
+        # The launcher cannot tell which GPU renders (it sets no DRI_PRIME /
+        # VK_ICD), and an affected card may be a secondary GPU the game never
+        # touches — so the advice must stay conditional rather than predict a
+        # crash. Rebinding the GPU that drives the panel can leave the user
+        # without a display, so that caveat has to travel with the advice.
+        msg = dgc.dgc_warning_message(["card2"])
+        self.assertIn("only matters if Minecraft renders on that GPU", msg)
+        self.assertIn("without a display", msg)
+        self.assertNotIn("the menu will crash", msg)
 
 
 class LaunchDgcAdvisoryTests(unittest.TestCase):

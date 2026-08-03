@@ -68,12 +68,12 @@ _DIAG_RULES = [
      r"d3d12_command_signature_create: Device generated commands is not "
      r"supported by implementation",
      "Minecraft's menu needs Vulkan Device Generated Commands (DGC), which "
-     "this GPU/driver did not provide. This is usually a driver setup "
-     "issue, not the engine: on Intel, bind the GPU to the 'xe' kernel "
-     "driver instead of 'i915' (then reboot); otherwise update your Vulkan "
-     "driver or use a DGC-capable GPU. If your GPU does support DGC, the "
-     "engine install may instead be corrupt — reinstall it with "
-     "'bedrock-on-linux setup --force'."),
+     "this GPU/driver did not provide. Reinstall the engine first — it is "
+     "the common cause and the safe fix ('bedrock-on-linux setup --force'). "
+     "If that changes nothing, the GPU/driver itself cannot provide DGC: on "
+     "an Intel discrete GPU it is exposed only under the 'xe' kernel driver, "
+     "not 'i915'; otherwise update your Vulkan driver or use a DGC-capable "
+     "GPU."),
     (r"Unimplemented function\s+combase\.dll\.RoOriginateErrorW?\b",
      "combase patch missing — re-run 'Install / Update'."),
     (r"Unimplemented function\s+ntdll\.dll\.NtQueryWnfStateData\b",

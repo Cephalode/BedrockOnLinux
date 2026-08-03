@@ -59,10 +59,12 @@ def intel_dgpus_on_legacy_driver(drm_root=None):
 def dgc_warning_message(cards):
     """Actionable guidance for Intel dGPUs that lack DGC under i915."""
     return (
-        "Minecraft's menu needs Vulkan Device Generated Commands (DGC), but "
         "Intel GPU %s is bound to the legacy 'i915' driver, which cannot "
-        "expose DGC — the menu will crash. Bind the GPU to the 'xe' kernel "
-        "driver (xe.force_probe=<device-id>, keep i915 off it, then reboot). "
-        "This is a driver setup issue, not the engine; 'setup --force' will "
-        "not help. Launch anyway with BOL_SKIP_DGC_CHECK=1."
+        "expose the Vulkan Device Generated Commands (DGC) that Minecraft's "
+        "menu needs. This only matters if Minecraft renders on that GPU: if "
+        "it does and the menu crashes, binding the GPU to the 'xe' kernel "
+        "driver (xe.force_probe=<device-id>, keep i915 off it, then reboot) "
+        "should fix it. Check first that your display is not driven by that "
+        "GPU — rebinding the GPU your screen hangs off can leave you without "
+        "a display. Silence this notice with BOL_SKIP_DGC_CHECK=1."
         % ", ".join(cards))
