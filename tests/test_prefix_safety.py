@@ -809,6 +809,204 @@ class ManagedRuntimeRepairTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"corrupt-user32")
 
 
+class ManagedRuntimeRefreshTests(unittest.TestCase):
+    """Engine upgrades must refresh the prefix's cached Windows system DLLs.
+
+    Swapping the WineGDK engine while reusing a prefix built by the previous
+    engine leaves stale system32/syswow64 DLLs that fault Minecraft's
+    account/menu path under the pure-WoW64 runtime (issue #135)."""
+
+    def _runtime_paths(self, root, marker_rev="__absent__"):
+        engine = root / "engine"
+        pfx = root / "prefix"
+        e64 = engine / "files/lib/wine/x86_64-windows"
+        e32 = engine / "files/lib/wine/i386-windows"
+        e64.mkdir(parents=True)
+        e32.mkdir(parents=True)
+        (e64 / "user32.dll").write_bytes(b"new-user32-64")
+        (e64 / "ntdll.dll").write_bytes(b"new-ntdll-64")
+        (e32 / "user32.dll").write_bytes(b"new-user32-32")
+        _make_ready_prefix(pfx)
+        sys32 = pfx / "drive_c/windows/system32"
+        wow = pfx / "drive_c/windows/syswow64"
+        wow.mkdir(parents=True, exist_ok=True)
+        (sys32 / "user32.dll").write_bytes(b"old-user32-64")
+        (sys32 / "ntdll.dll").write_bytes(b"old-ntdll-64")
+        (wow / "user32.dll").write_bytes(b"old-user32-32")
+        users = (pfx / "drive_c/users/steamuser/AppData/Roaming/"
+                 "Minecraft Bedrock")
+        users.mkdir(parents=True)
+        (users / "worlds.mcworld").write_bytes(b"precious-world")
+        if marker_rev != "__absent__":
+            (pfx / prefix.ENGINE_REV_MARKER).write_text(marker_rev + "\n")
+        return engine, pfx
+
+    def _managed(self, engine, pfx):
+        return mock.patch.dict(prefix.os.environ, {}, clear=True), \
+            mock.patch.object(prefix, "PFX", pfx), \
+            mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+            mock.patch.object(prefix, "proton_path", return_value=engine)
+
+    def test_engine_upgrade_refreshes_stale_system_dlls(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(Path(td))
+            m = self._managed(engine, pfx)
+            with m[0], m[1], m[2], m[3], \
+                    mock.patch.object(prefix, "require_prefix_idle") as idle, \
+                    mock.patch.object(prefix, "ok"):
+                changed = prefix.refresh_managed_prefix_runtime(pfx)
+
+            self.assertTrue(changed)
+            sys32 = pfx / "drive_c/windows/system32"
+            wow = pfx / "drive_c/windows/syswow64"
+            self.assertEqual((sys32 / "user32.dll").read_bytes(),
+                             b"new-user32-64")
+            self.assertEqual((sys32 / "ntdll.dll").read_bytes(),
+                             b"new-ntdll-64")
+            self.assertEqual((wow / "user32.dll").read_bytes(),
+                             b"new-user32-32")
+            self.assertEqual(
+                (sys32 / "user32.dll.bol-runtime-backup").read_bytes(),
+                b"old-user32-64")
+            idle.assert_called_once_with(
+                pfx, "refresh the managed Wine runtime")
+            self.assertEqual(list(sys32.glob(".bol-runtime-*")), [])
+            # The user profile (worlds, settings, login) is preserved.
+            self.assertEqual(
+                (pfx / "drive_c/users/steamuser/AppData/Roaming/"
+                 "Minecraft Bedrock/worlds.mcworld").read_bytes(),
+                b"precious-world")
+
+    def test_matching_runtime_is_untouched(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(Path(td))
+            sys32 = pfx / "drive_c/windows/system32"
+            wow = pfx / "drive_c/windows/syswow64"
+            (sys32 / "user32.dll").write_bytes(b"new-user32-64")
+            (sys32 / "ntdll.dll").write_bytes(b"new-ntdll-64")
+            (wow / "user32.dll").write_bytes(b"new-user32-32")
+            m = self._managed(engine, pfx)
+            with m[0], m[1], m[2], m[3], \
+                    mock.patch.object(prefix, "require_prefix_idle") as idle:
+                changed = prefix.refresh_managed_prefix_runtime(pfx)
+
+            self.assertFalse(changed)
+            idle.assert_not_called()
+            self.assertFalse(
+                (sys32 / "user32.dll.bol-runtime-backup").exists())
+
+    def test_custom_engine_and_external_prefix_are_never_refreshed(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(Path(td))
+            custom = Path(td) / "custom-engine"
+            external = Path(td) / "external-prefix"
+            with mock.patch.dict(prefix.os.environ, {}, clear=True), \
+                    mock.patch.object(prefix, "PFX", pfx), \
+                    mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+                    mock.patch.object(prefix, "proton_path",
+                                      return_value=custom):
+                self.assertFalse(prefix.refresh_managed_prefix_runtime(pfx))
+            with mock.patch.dict(prefix.os.environ, {}, clear=True), \
+                    mock.patch.object(prefix, "PFX", pfx), \
+                    mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+                    mock.patch.object(prefix, "proton_path",
+                                      return_value=engine):
+                self.assertFalse(
+                    prefix.refresh_managed_prefix_runtime(external))
+            with mock.patch.dict(prefix.os.environ,
+                                 {"BOL_WINEPREFIX": str(external)},
+                                 clear=True), \
+                    mock.patch.object(prefix, "PFX", pfx), \
+                    mock.patch.object(prefix, "WINEGDK_OUT", engine), \
+                    mock.patch.object(prefix, "proton_path",
+                                      return_value=engine):
+                self.assertFalse(prefix.refresh_managed_prefix_runtime(pfx))
+
+            self.assertEqual(
+                (pfx / "drive_c/windows/system32/user32.dll").read_bytes(),
+                b"old-user32-64")
+
+    def test_managed_prefix_engine_is_stale(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(Path(td))
+            m = self._managed(engine, pfx)
+            with m[0], m[1], m[2], m[3]:
+                # Missing marker (in-place upgrade) counts as stale.
+                self.assertTrue(prefix.managed_prefix_engine_is_stale(pfx))
+                (pfx / prefix.ENGINE_REV_MARKER).write_text(
+                    "wow64-archs-native6\n")
+                self.assertTrue(prefix.managed_prefix_engine_is_stale(pfx))
+                (pfx / prefix.ENGINE_REV_MARKER).write_text(
+                    prefix.WINEGDK_BUILD_REV + "\n")
+                self.assertFalse(prefix.managed_prefix_engine_is_stale(pfx))
+
+    def test_boot_prefix_refreshes_and_records_marker_on_engine_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(Path(td))
+            compat = Path(td) / "compatdata"
+            m = self._managed(engine, pfx)
+            with m[0], m[1], m[2], m[3], \
+                    mock.patch.object(prefix, "COMPAT", compat), \
+                    mock.patch.object(prefix, "require_prefix_idle"), \
+                    mock.patch.object(
+                        prefix, "repair_managed_prefix_user32") as repair, \
+                    mock.patch.object(prefix, "ok"):
+                self.assertTrue(prefix.boot_prefix(pfx))
+
+            self.assertEqual(
+                (pfx / "drive_c/windows/system32/ntdll.dll").read_bytes(),
+                b"new-ntdll-64")
+            self.assertEqual(prefix.read_managed_engine_rev(pfx),
+                             prefix.WINEGDK_BUILD_REV)
+            repair.assert_called_once_with(pfx)
+
+    def test_boot_prefix_skips_refresh_when_engine_matches(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(
+                Path(td), marker_rev=prefix.WINEGDK_BUILD_REV)
+            compat = Path(td) / "compatdata"
+            m = self._managed(engine, pfx)
+            with m[0], m[1], m[2], m[3], \
+                    mock.patch.object(prefix, "COMPAT", compat), \
+                    mock.patch.object(prefix, "require_prefix_idle") as idle, \
+                    mock.patch.object(
+                        prefix, "repair_managed_prefix_user32"), \
+                    mock.patch.object(prefix, "ok"):
+                self.assertTrue(prefix.boot_prefix(pfx))
+
+            idle.assert_not_called()
+            self.assertEqual(
+                (pfx / "drive_c/windows/system32/user32.dll").read_bytes(),
+                b"old-user32-64")
+
+    def test_engine_only_dlls_are_not_injected_into_prefix(self):
+        # A DLL the engine ships but the prefix lacks is deliberately NOT
+        # copied in: a prefix's system dir is the subset wineboot installed
+        # and Wine loads the rest from the engine dir. Only the prefix's
+        # existing DLLs are refreshed (issue #135).
+        with tempfile.TemporaryDirectory() as td:
+            engine, pfx = self._runtime_paths(Path(td))
+            e64 = engine / "files/lib/wine/x86_64-windows"
+            (e64 / "xinput.dll").write_bytes(b"engine-only-xinput")
+            m = self._managed(engine, pfx)
+            with m[0], m[1], m[2], m[3], \
+                    mock.patch.object(prefix, "require_prefix_idle") as idle, \
+                    mock.patch.object(prefix, "ok"):
+                changed = prefix.refresh_managed_prefix_runtime(pfx)
+
+            sys32 = pfx / "drive_c/windows/system32"
+            self.assertTrue(changed)
+            self.assertEqual((sys32 / "user32.dll").read_bytes(),
+                             b"new-user32-64")
+            self.assertEqual((sys32 / "ntdll.dll").read_bytes(),
+                             b"new-ntdll-64")
+            self.assertFalse((sys32 / "xinput.dll").exists())
+            self.assertFalse(
+                (sys32 / "xinput.dll.bol-runtime-backup").exists())
+            idle.assert_called_once_with(
+                pfx, "refresh the managed Wine runtime")
+
+
 class PrefixSetupTests(unittest.TestCase):
     def test_setup_stops_before_gameinput_when_prefix_boot_fails(self):
         with tempfile.TemporaryDirectory() as td:
