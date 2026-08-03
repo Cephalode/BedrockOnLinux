@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 2.1.2 — 2026-08-03
+
+### Friends, Realms and Xbox Live
+
+- Stop exporting `GNUTLS_SYSTEM_PRIORITY_FILE`, which restores Friends worlds
+  over the internet. The variable was meant to force TLS 1.2 for Azure-fronted
+  hosts, but inside the Flatpak it did the opposite: its mere presence made
+  Wine's `secur32` abandon its own version-capped priority and negotiate
+  TLS 1.3, which Wine 11.1 schannel does not support, so every in-game WinHTTP
+  TLS connection died just after the handshake. The XSAPI realtime-activity
+  WebSocket could then never connect, the session write went out without a
+  connection id, and Minecraft reported the misleading `world is full` — or
+  published a hosted world as LAN-only. Wine's own schannel priority already
+  caps at TLS 1.2, so removing the workaround achieves what it intended
+  ([#48](https://github.com/Wyze3306/BedrockOnLinux/issues/48),
+  [#145](https://github.com/Wyze3306/BedrockOnLinux/issues/145),
+  [#125](https://github.com/Wyze3306/BedrockOnLinux/issues/125),
+  [#133](https://github.com/Wyze3306/BedrockOnLinux/issues/133)).
+- Name an unsynchronized system clock when Xbox Live rejects the account. A
+  drifted clock puts the signed XSTS request outside its validity window and is
+  refused exactly like an unusable profile, so the generic advice sent people
+  to xbox.com to fix an account that was fine
+  ([#119](https://github.com/Wyze3306/BedrockOnLinux/issues/119)).
+- Remove WineGDK's durable refresh token from the Wine prefix on sign-out, so
+  no reusable credential survives in the prefix registry
+  ([#120](https://github.com/Wyze3306/BedrockOnLinux/pull/120)).
+- Restore the Microsoft sign-out button, which failed with a misleading
+  "another setup, repair, or game session is already in progress" on every
+  attempt: a re-introduced lock wrapper deadlocked against the one that now
+  lives inside the sign-out itself.
+
 ### Fixed
 
 - Recover automatically from an interrupted first-run data migration instead
@@ -24,6 +55,35 @@
 - Scroll the version picker with a mouse wheel or touchpad, including while
   the pointer is over a version row
   ([#112](https://github.com/Wyze3306/BedrockOnLinux/issues/112)).
+- Place the version picker correctly at 150% and 200% UI scaling
+  ([#117](https://github.com/Wyze3306/BedrockOnLinux/pull/117)).
+- Stop re-downloading the changelog every time the Game/Launcher tabs are
+  switched ([#131](https://github.com/Wyze3306/BedrockOnLinux/pull/131)).
+- Seed the `cryptbase` RNG component before the managed `wineboot` rather than
+  after it, so the first prefix creation cannot race the missing forward.
+- Refresh managed-engine release metadata instead of reusing a stale cached
+  response, which could pin setup to an engine asset that no longer matches
+  ([#110](https://github.com/Wyze3306/BedrockOnLinux/pull/110)).
+- Survive a malformed or truncated PE header when raising the game's stack
+  reserve, instead of failing the launch with an unhandled `struct` error
+  ([#140](https://github.com/Wyze3306/BedrockOnLinux/pull/140)).
+- Build the QR code image on the main thread, removing a CustomTkinter
+  threading hazard during device-code sign-in
+  ([#140](https://github.com/Wyze3306/BedrockOnLinux/pull/140)).
+
+### Security
+
+- Reject archive members whose path escapes the destination directory when
+  importing `.mcpack`/`.mcaddon`/`.mcworld`/`.mctemplate` content, closing a
+  Zip Slip path-traversal write outside the content directory
+  ([#140](https://github.com/Wyze3306/BedrockOnLinux/pull/140)).
+
+### Packaging
+
+- Build the Flatpak with `--release` so bundles keep their AppStream metadata
+  ([#141](https://github.com/Wyze3306/BedrockOnLinux/pull/141)).
+- Pin the Flatpak manifest to the released tag
+  ([#142](https://github.com/Wyze3306/BedrockOnLinux/pull/142)).
 
 ## 2.1.1 — 2026-07-26
 

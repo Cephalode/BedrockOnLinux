@@ -116,5 +116,47 @@ class PreauthFailureDiagnosticTests(unittest.TestCase):
             auth.xbl_preauth_diagnostic()["message"], self.response_secret)
 
 
+class ClockSkewGuidanceTests(unittest.TestCase):
+    """A drifted clock is rejected exactly like an unusable Xbox account."""
+
+    def setUp(self):
+        auth._clear_xbl_preauth_diagnostic()
+        self.addCleanup(auth._clear_xbl_preauth_diagnostic)
+
+    @staticmethod
+    def _message(category, unsynchronized):
+        auth._record_xbl_preauth_diagnostic("user-auth", category)
+        with mock.patch("bol.network.clock_is_unsynchronized",
+                        return_value=unsynchronized):
+            return auth.xbl_preauth_error_message()
+
+    def test_account_rejection_names_the_clock_when_it_is_adrift(self):
+        message = self._message("account", True)
+
+        self.assertIn("Xbox profile", message)
+        self.assertIn("clock", message)
+        self.assertIn("timedatectl set-ntp true", message)
+
+    def test_no_clock_advice_when_the_clock_is_fine(self):
+        message = self._message("account", False)
+
+        self.assertIn("Xbox profile", message)
+        self.assertNotIn("clock", message)
+
+    def test_network_failures_keep_their_own_advice(self):
+        """A dead network is not a clock problem, however adrift the clock."""
+
+        message = self._message("network", True)
+
+        self.assertIn("DNS", message)
+        self.assertNotIn("clock", message)
+
+    def test_a_failing_clock_probe_never_breaks_the_message(self):
+        auth._record_xbl_preauth_diagnostic("user-auth", "account")
+        with mock.patch("bol.network.clock_is_unsynchronized",
+                        side_effect=OSError("no timedatectl")):
+            self.assertIn("Xbox profile", auth.xbl_preauth_error_message())
+
+
 if __name__ == "__main__":
     unittest.main()

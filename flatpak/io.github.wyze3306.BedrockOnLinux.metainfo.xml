@@ -70,6 +70,28 @@
   </content_rating>
 
   <releases>
+    <release version="2.1.2" date="2026-08-03">
+      <description>
+        <p>Restores Friends worlds over the internet and fixes Microsoft
+           sign-out, the version picker and content importing.</p>
+        <ul>
+          <li>stops forcing a GnuTLS priority file that made Wine negotiate an
+              unsupported TLS 1.3, which broke every in-game connection and
+              left Friends worlds reporting <code>world is full</code> or
+              publishing as LAN-only;</li>
+          <li>names an unsynchronized system clock when Xbox Live rejects the
+              account, instead of blaming the Xbox profile;</li>
+          <li>removes the durable Microsoft refresh token from the Wine prefix
+              on sign-out, and repairs the sign-out button itself;</li>
+          <li>scrolls the version picker with the wheel and places it correctly
+              at 150% and 200% UI scaling;</li>
+          <li>rejects archive members escaping the destination directory when
+              importing add-ons, worlds and templates;</li>
+          <li>recovers an interrupted first-run data migration and a
+              <code>wineboot</code> that cannot resolve the RNG forward.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.1.1" date="2026-07-26">
       <description>
         <p>Fixes custom-skin selection, the in-game Achievements catalog and

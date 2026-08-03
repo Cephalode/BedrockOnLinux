@@ -777,8 +777,10 @@ class NativeAuthCancellationTests(unittest.TestCase):
             root = Path(td)
             cache = root / "winegdk-preauth"
             msa = root / "msa"
+            prefix = root / "pfx"
             cache.mkdir()
             msa.mkdir()
+            prefix.mkdir()
             epoch = "a" * 32
             (cache / ".account-epoch").write_text(epoch + "\n")
             native = auth.NativeAuth()
@@ -791,8 +793,14 @@ class NativeAuthCancellationTests(unittest.TestCase):
                 auth.msa_logout()
                 return {"refresh_token": "must-not-survive"}
 
+            # Without an active_prefix() override msa_logout() reaches the
+            # machine's real prefix: it would attempt a registry write on it,
+            # and the failure that follows makes the sign-out fail closed
+            # before it can rotate the generation this test asserts on.
             with mock.patch.object(auth, "DATA", root), \
                     mock.patch.object(auth, "MSA_DIR", msa), \
+                    mock.patch.object(auth, "active_prefix",
+                                      return_value=prefix), \
                     mock.patch.object(auth, "prefix_operation_lock"), \
                     mock.patch.object(auth, "http_post_form",
                                       side_effect=post), \

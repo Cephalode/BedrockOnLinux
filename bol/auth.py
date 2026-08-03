@@ -332,13 +332,33 @@ def xbl_preauth_diagnostic():
         return dict(_XBL_PREAUTH_DIAGNOSTIC)
 
 
+# A drifted host clock puts the signed XSTS request outside its validity
+# window, and Xbox Live answers exactly like a genuinely unusable account. The
+# generic advice then sends people to xbox.com to fix a profile that is fine.
+_XBL_CLOCK_CATEGORIES = frozenset({"account", "age", "session", "service"})
+
+_XBL_CLOCK_HINT = (
+    " The system clock is also not synchronized, which by itself makes Xbox "
+    "Live reject the sign-in: correct the host date/time first (for example "
+    "`sudo timedatectl set-ntp true`), then try again."
+)
+
+
 def xbl_preauth_error_message():
     """Return an actionable, credential-free message for the last failure."""
 
     diagnostic = xbl_preauth_diagnostic()
     if diagnostic is None:
         return None
-    return diagnostic["message"]
+    message = diagnostic["message"]
+    if diagnostic.get("category") in _XBL_CLOCK_CATEGORIES:
+        try:
+            from .network import clock_is_unsynchronized
+            if clock_is_unsynchronized():
+                message += _XBL_CLOCK_HINT
+        except Exception:
+            pass
+    return message
 
 
 def _xbl_response_error(response):
