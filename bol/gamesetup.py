@@ -19,7 +19,7 @@ from .prefix import (
     shared_assets_lock,
 )
 from .proton import ensure_proton
-from .util import load_settings, mkdirs
+from .util import launcher_owned_overrides, load_settings, mkdirs
 from .winegdk import ensure_winegdk
 
 def do_setup(game_dir=None, mc_ver=None, proton_tag=None, force=False,
@@ -216,6 +216,17 @@ def diagnose():
                     "Legacy compatibility renderer (WineD3D/DXVK fallback; "
                     "renderer=opengl) in Settings for GPUs whose Vulkan "
                     "driver cannot provide Vulkan 1.3.")
+    # Check the field itself, not the log: an override that breaks the launch
+    # can leave nothing in the log to match on, which is how issue #134 ended
+    # in three full reinstalls.
+    overrides = launcher_owned_overrides(load_settings().get("custom_env"))
+    if overrides:
+        hits.append("Custom environment variables override launcher "
+                    "settings: %s. Clear the Advanced custom-environment "
+                    "field and launch again before reinstalling anything — "
+                    "PROTON_USE_WINED3D forces the legacy renderer, which "
+                    "Minecraft's menu can crash on. Use the Renderer setting "
+                    "instead." % ", ".join(overrides))
     if not msa_signed_in():
         hits.append("No Microsoft account linked — click 'Sign in' "
                     "before PLAY.")

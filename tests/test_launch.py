@@ -476,6 +476,40 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
         self.assertEqual(env["VKD3D_SHADER_CACHE_PATH"], "0")
         self.assertEqual(env["DXVK_SHADER_CACHE_PATH"], "/custom/dxvk")
 
+    def test_launcher_owned_override_is_warned_about_but_still_applied(self):
+        # The Advanced field keeps the final word by design; the warning only
+        # makes the override visible so a crash is traceable to it (#134).
+        env = {}
+        with mock.patch.object(launch, "warn") as warn:
+            launch.apply_custom_env(env, "PROTON_USE_WINED3D=1")
+            launch._warn_custom_env_overrides("PROTON_USE_WINED3D=1")
+        self.assertEqual(env["PROTON_USE_WINED3D"], "1")
+        warn.assert_called_once()
+        message = warn.call_args[0][0]
+        self.assertIn("PROTON_USE_WINED3D", message)
+        self.assertIn("Legacy compatibility renderer", message)
+
+    def test_unowned_custom_variables_are_not_warned_about(self):
+        with mock.patch.object(launch, "warn") as warn:
+            launch._warn_custom_env_overrides("MANGOHUD=1 DXVK_HUD=fps")
+        warn.assert_not_called()
+
+    def test_each_overridden_variable_is_named_once(self):
+        with mock.patch.object(launch, "warn") as warn:
+            launch._warn_custom_env_overrides(
+                "PROTON_LOG=1 MANGOHUD=1 PROTON_LOG=0 PROTON_PREFER_SDL=0")
+        self.assertEqual(warn.call_count, 2)
+        named = " ".join(call[0][0] for call in warn.call_args_list)
+        self.assertIn("PROTON_LOG", named)
+        self.assertIn("PROTON_PREFER_SDL", named)
+
+    def test_override_warning_survives_an_unparsable_field(self):
+        # custom_env_keys must stay silent on bad syntax: apply_custom_env
+        # already reports it, and warning twice for one typo is noise.
+        with mock.patch.object(launch, "warn") as warn:
+            launch._warn_custom_env_overrides('PROTON_LOG="1')
+        warn.assert_not_called()
+
     def test_gnutls_priority_override_is_never_exported(self):
         """Regression for issue #48: exporting GNUTLS_SYSTEM_PRIORITY_FILE
         makes Wine's secur32 abandon its version-capped GnuTLS priority and

@@ -21,6 +21,8 @@ class FreezeDiagnosisTests(unittest.TestCase):
             with mock.patch.object(gamesetup, "LOGS", logs), \
                     mock.patch.object(gamesetup, "msa_signed_in",
                                       return_value=True), \
+                    mock.patch.object(gamesetup, "load_settings",
+                                      return_value={}), \
                     mock.patch.object(gamesetup, "warn"), \
                     mock.patch.object(gamesetup, "info"):
                 hits = gamesetup.diagnose()
@@ -38,6 +40,8 @@ class GameCrashDiagnosisTests(unittest.TestCase):
             with mock.patch.object(gamesetup, "LOGS", logs), \
                     mock.patch.object(gamesetup, "msa_signed_in",
                                       return_value=True), \
+                    mock.patch.object(gamesetup, "load_settings",
+                                      return_value={}), \
                     mock.patch.object(gamesetup, "warn"), \
                     mock.patch.object(gamesetup, "info"):
                 return gamesetup.diagnose()
@@ -175,6 +179,8 @@ class OnlineDiagnosisTests(unittest.TestCase):
             with mock.patch.object(gamesetup, "LOGS", logs), \
                     mock.patch.object(gamesetup, "msa_signed_in",
                                       return_value=True), \
+                    mock.patch.object(gamesetup, "load_settings",
+                                      return_value={}), \
                     mock.patch.object(gamesetup, "warn"), \
                     mock.patch.object(gamesetup, "info"):
                 hits = gamesetup.diagnose()
@@ -255,6 +261,28 @@ class OnlineDiagnosisTests(unittest.TestCase):
             {},
         )
         self.assertFalse(any("renderer=opengl" in hit for hit in hits))
+
+    def test_launcher_owned_custom_env_override_is_surfaced(self):
+        # An override that breaks the launch can leave nothing matchable in
+        # the log, so this hit comes from the field itself. Issue #134 ended
+        # in three full reinstalls because nothing ever named the field.
+        hits = self._diagnose(
+            "info:  Game: Minecraft.Windows.exe\n",
+            {"custom_env": "PROTON_USE_WINED3D=1 MANGOHUD=1"},
+        )
+        self.assertTrue(any("PROTON_USE_WINED3D" in hit for hit in hits), hits)
+        self.assertTrue(
+            any("Advanced custom-environment" in hit for hit in hits), hits)
+        # Only launcher-owned variables are second-guessed.
+        self.assertFalse(any("MANGOHUD" in hit for hit in hits), hits)
+
+    def test_custom_env_without_launcher_variables_is_not_flagged(self):
+        hits = self._diagnose(
+            "info:  Game: Minecraft.Windows.exe\n",
+            {"custom_env": "MANGOHUD=1 DXVK_HUD=fps"},
+        )
+        self.assertFalse(
+            any("custom-environment" in hit for hit in hits), hits)
 
 
 if __name__ == "__main__":

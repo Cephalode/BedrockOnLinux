@@ -43,7 +43,14 @@ from .prefix import (
     proton_umu_cmd,
 )
 from .proton import custom_proton, patch_proton, proton_path
-from .util import _screen_wh, apply_custom_env, load_settings
+from .util import (
+    _screen_wh,
+    apply_custom_env,
+    LAUNCHER_OWNED_ENV,
+    LAUNCHER_OWNED_ENV_ALTERNATIVE,
+    launcher_owned_overrides,
+    load_settings,
+)
 from .vkd3d import prepare_universal_vkd3d
 from .winegdk import ensure_winegdk
 
@@ -107,6 +114,26 @@ def _is_steam_deck(environ=None, product_name_path=None):
         return False
 
 
+def _warn_custom_env_overrides(custom_env):
+    """Name the launcher settings the Advanced field is overriding.
+
+    That field is applied last and keeps the final word by design, so this
+    never blocks or rewrites it. It only makes the override visible: an
+    unsupported value there crashes the game at every launch with nothing
+    pointing at the field, and the reporter of issue #134 wiped their whole
+    installation three times before connecting the two.
+    """
+    for key in launcher_owned_overrides(custom_env):
+        alternative = LAUNCHER_OWNED_ENV_ALTERNATIVE.get(key)
+        warn("Custom environment variable %s overrides what Settings "
+             "configures%s. If the game crashes or misbehaves, clear it from "
+             "the Advanced custom-environment field before reinstalling "
+             "anything."
+             % (key,
+                "; the supported control is " + alternative
+                if alternative else ""))
+
+
 def _warn_if_dgc_unavailable(environ=None):
     """Pre-launch heads-up for Intel dGPUs that cannot expose DGC under i915.
 
@@ -133,17 +160,7 @@ def _configure_runtime_compat(env, settings, backend, host_wayland,
     source = os.environ if host_env is None else host_env
     # Drop inherited compatibility flags; Advanced custom values are applied
     # last and remain the supported override.
-    for name in (
-        "PROTON_ENABLE_WAYLAND",
-        "WINE_DISABLE_VULKAN_OPWR",
-        "PROTON_PREFER_SDL",
-        "PROTON_DISABLE_HIDRAW",
-        "PROTON_NO_STEAMINPUT",
-        "PROTON_NO_WM_DECORATION",
-        "PROTON_USE_WINED3D",
-        "PROTON_LOG",
-        "PROTON_LOG_DIR",
-    ):
+    for name in LAUNCHER_OWNED_ENV:
         env.pop(name, None)
 
     if backend == "x11":
@@ -408,6 +425,7 @@ def _launch_once(lock_fds=()):
         die("The Microsoft account changed before the game process started. "
             "Minecraft was not started; click PLAY again.")
     apply_custom_env(env, s.get("custom_env") or "")
+    _warn_custom_env_overrides(s.get("custom_env") or "")
     # Prevent diagnosis from attributing stale Proton logs to this launch.
     _clear_previous_proton_logs()
     info("Starting Minecraft … sign in with Microsoft in-game, then "
