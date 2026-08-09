@@ -44,6 +44,24 @@
   longer serialise every worker thread behind the wineserver. The Advanced
   custom-environment field remains the supported way to turn the fast path off.
 
+### Fixed
+
+- Play without a working Xbox Live session. PLAY refused to start the game at
+  all when no Microsoft account was linked (`No Microsoft account linked —
+  click 'Sign in' first.`) or when the Xbox Live chain could not be completed,
+  so a machine with no Internet connection could not reach even a single-player
+  world: the offline token refresh failed, the pre-auth was reported as
+  `Xbox Live rejected this Microsoft account`, and signing out replaced that
+  error with the other one. Minecraft now starts in offline mode instead —
+  single-player worlds and LAN play work, while Realms, servers, the
+  Marketplace and Xbox friends stay unavailable until sign-in succeeds, which
+  the launcher says before the game window appears. An unreachable Microsoft
+  token endpoint is also reported as a connection failure rather than as a
+  rejected account, and credentials the launcher could not validate are no
+  longer handed to the engine, so it settles into offline mode instead of
+  chasing a sign-in that cannot complete
+  ([#160](https://github.com/Wyze3306/BedrockOnLinux/issues/160)).
+
 ### Packaging
 
 - Publish nightly builds again. Every nightly since 2.1.2 failed: the candidate

@@ -107,6 +107,34 @@ class PreauthFailureDiagnosticTests(unittest.TestCase):
         self.assertEqual(diagnostic["error_code"], 2148916238)
         self.assertIn("family", auth.xbl_preauth_error_message())
 
+    def test_unreachable_token_refresh_is_reported_as_a_network_failure(self):
+        """Being offline must not read as 'Xbox Live rejected this account'."""
+
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(auth, "DATA", Path(td)), \
+                    mock.patch.object(auth, "warn"), \
+                    mock.patch.object(auth, "info"), \
+                    mock.patch.object(auth, "ok"):
+                self.assertFalse(
+                    auth.xbl_preauth("", refresh_unreachable=True))
+
+        diagnostic = auth.xbl_preauth_diagnostic()
+        self.assertEqual(diagnostic["stage"], "microsoft-token")
+        self.assertEqual(diagnostic["category"], "network")
+        self.assertIn("Internet connection", auth.xbl_preauth_error_message())
+
+    def test_a_rejected_token_still_points_at_the_account(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(auth, "DATA", Path(td)), \
+                    mock.patch.object(auth, "warn"), \
+                    mock.patch.object(auth, "info"), \
+                    mock.patch.object(auth, "ok"):
+                self.assertFalse(auth.xbl_preauth(""))
+
+        diagnostic = auth.xbl_preauth_diagnostic()
+        self.assertEqual(diagnostic["stage"], "microsoft-token")
+        self.assertEqual(diagnostic["category"], "account")
+
     def test_accessor_returns_a_copy(self):
         self.run_failure(OSError("offline"))
         diagnostic = auth.xbl_preauth_diagnostic()

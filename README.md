@@ -162,10 +162,11 @@ removing the local override. Never merge two non-empty data roots blindly.
 - Enough free storage for the game, compressed engine and temporary
   extraction. A `No space left on device` error is non-destructive: free space
   and retry **PLAY**.
-- A Microsoft account entitled to Minecraft. Friends, multiplayer and Realms
-  also depend on the account’s privacy settings, any required Realms
-  subscription or invitation, and the availability of Microsoft/Xbox/Minecraft
-  services.
+- A Microsoft account entitled to Minecraft, for everything online. Friends,
+  multiplayer and Realms also depend on the account’s privacy settings, any
+  required Realms subscription or invitation, and the availability of
+  Microsoft/Xbox/Minecraft services. Single-player worlds and LAN play need
+  none of it and run offline.
 
 The launcher is an independent compatibility project and is not affiliated
 with or supported by Mojang or Microsoft. Minecraft updates can change private
@@ -176,7 +177,10 @@ new version regresses.
 
 1. Open **BedrockOnLinux**.
 2. Select **Sign in**, open the Microsoft device-code page shown by the
-   launcher and enter its code.
+   launcher and enter its code. This is optional: without a linked account, or
+   without a usable connection to Xbox Live, the game starts in offline mode —
+   single-player worlds and LAN play work, and only Realms, servers, the
+   Marketplace and Xbox friends stay unavailable.
 3. Select a Minecraft version, then choose **▶ PLAY**.
 4. Use Minecraft’s **Friends**, **Servers** and **Realms** tabs normally.
 

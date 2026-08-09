@@ -796,7 +796,8 @@ def _store_online_preauth(path, payload, expected_epoch=None):
     return True
 
 
-def xbl_preauth(msa_access_token, expected_account_epoch=None):
+def xbl_preauth(msa_access_token, expected_account_epoch=None,
+                refresh_unreachable=False):
     """Run the whole Xbox Live auth chain (device + user + SISU tokens) from
     the host's OpenSSL stack and persist it as winegdk-preauth/device.json,
     where xgameruntime.dll short-circuits its own HTTP calls.
@@ -807,6 +808,10 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None):
     payload (including the multiplayer and Realms XSTS tokens) is available.
     A failed refresh never overwrites a previously valid payload with
     device-only data.
+
+    ``refresh_unreachable`` tells the caller's Microsoft token refresh failed
+    on transport rather than being rejected, so a missing access token is
+    reported as an unreachable service instead of a bad account.
     """
     import base64, uuid as _uuid
     _clear_xbl_preauth_diagnostic()
@@ -875,7 +880,8 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None):
     if not msa_access_token:
         return _fallback("xbl_preauth: no fresh Microsoft access token; cannot "
                          "refresh the Xbox multiplayer chain.",
-                         "microsoft-token", "account")
+                         "microsoft-token",
+                         "network" if refresh_unreachable else "account")
     try:
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives import hashes, serialization

@@ -232,8 +232,10 @@ def diagnose():
                     "Minecraft's menu can crash on. Use the Renderer setting "
                     "instead." % ", ".join(overrides))
     if not msa_signed_in():
-        hits.append("No Microsoft account linked — click 'Sign in' "
-                    "before PLAY.")
+        hits.append("No Microsoft account linked — the game runs, but in "
+                    "offline mode: single-player worlds and LAN play only. "
+                    "Click 'Sign in' before PLAY for Realms, servers, the "
+                    "Marketplace and Xbox friends.")
     if hits:
         warn("Likely cause:")
         for h in dict.fromkeys(hits):

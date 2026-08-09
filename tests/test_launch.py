@@ -15,13 +15,13 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
     def _exercise_ready_launch(self, root, popen, arm, disarm,
                                prefix_idle=True, mark=None, preauth=True,
                                lock_fds=(), managed_engine=True,
-                               umu_env=None):
+                               umu_env=None, account=None):
         content = root / "content"
         logs = root / "logs"
         data = root / "data"
-        content.mkdir()
-        logs.mkdir()
-        data.mkdir()
+        content.mkdir(exist_ok=True)
+        logs.mkdir(exist_ok=True)
+        data.mkdir(exist_ok=True)
         (content / "Minecraft.Windows.exe").write_bytes(b"MZ")
         settings = {"game_dir": str(content)}
         patches = (
@@ -39,7 +39,10 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
             mock.patch.object(launch, "_prepare_launch_engine"),
             mock.patch.object(
                 launch, "msa_session_snapshot",
-                return_value=({"refresh_token": "refresh"}, "a" * 32)),
+                return_value=(
+                    {"refresh_token": "refresh"} if account is None
+                    else account,
+                    "a" * 32)),
             mock.patch.object(launch, "msa_refresh", return_value=None),
             mock.patch.object(launch, "msa_save_for_account_epoch",
                               return_value=True),
@@ -73,7 +76,19 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
         with ExitStack() as stack:
             for patcher in patches:
                 stack.enter_context(patcher)
+            # Keep the active mocks reachable: the offline-mode tests assert on
+            # what the auth steps were told, not only on the launch result.
+            self.launch_mocks = {
+                name: getattr(launch, name)
+                for name in ("warn", "wine_reg_set_refresh_token",
+                             "ensure_login_deps", "xbl_preauth")
+            }
             return launch._launch_once(lock_fds=lock_fds)
+
+    def _warnings(self):
+        return [str(call.args[0])
+                for call in self.launch_mocks["warn"].call_args_list
+                if call.args]
 
     def test_managed_install_finishes_before_graphics_validation(self):
         calls = []
@@ -655,7 +670,22 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
                 observed["env"]["DXVK_SHADER_CACHE_PATH"], str(cache))
             self.assertTrue(cache.is_dir())
 
-    def test_xbox_preauth_failure_surfaces_sanitized_action_and_stage(self):
+    @staticmethod
+    def _successful_popen(observed):
+        class Process:
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        def popen(*_args, **kwargs):
+            observed.update(kwargs)
+            return Process()
+
+        return popen
+
+    def test_xbox_preauth_failure_starts_offline_with_stage_and_action(self):
+        """Unusable Xbox Live must not block single-player play (#160)."""
+        observed = {}
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(
                     launch, "xbl_preauth_error_message",
@@ -664,13 +694,60 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
                     launch, "xbl_preauth_diagnostic",
                     return_value={"stage": "sisu-multiplayer",
                                   "category": "age"}):
-            with self.assertRaisesRegex(
-                    launch.BolError,
-                    "stage: sisu-multiplayer.*Verify the account age"):
+            self.assertEqual(
                 self._exercise_ready_launch(
-                    Path(td), mock.Mock(), mock.Mock(), mock.Mock(),
+                    Path(td), self._successful_popen(observed),
+                    lambda: "owned-token", lambda _token: True,
                     preauth=False,
+                ),
+                0,
+            )
+
+        notice = "\n".join(self._warnings())
+        self.assertIn("stage: sisu-multiplayer", notice)
+        self.assertIn("Verify the account age", notice)
+        self.assertIn("offline mode", notice)
+        # The account is linked, so the token still reaches the prefix: the
+        # game may complete the sign-in itself once Xbox Live answers again.
+        token_write = self.launch_mocks["wine_reg_set_refresh_token"]
+        token_write.assert_called_once_with("refresh")
+
+    def test_launch_without_a_microsoft_account_runs_offline(self):
+        observed = {}
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(
+                self._exercise_ready_launch(
+                    Path(td), self._successful_popen(observed),
+                    lambda: "owned-token", lambda _token: True,
+                    account={},
+                ),
+                0,
+            )
+
+        self.assertIn("offline mode", "\n".join(self._warnings()))
+        # Nothing to sign in with, so no token write and no Xbox Live round
+        # trip: neither may stand between the player and their local worlds.
+        self.launch_mocks["wine_reg_set_refresh_token"].assert_not_called()
+        self.launch_mocks["xbl_preauth"].assert_not_called()
+        self.launch_mocks["ensure_login_deps"].assert_not_called()
+        self.assertNotIn("WINEGDK_PREAUTH_DEVICE", observed["env"])
+
+    def test_unusable_preauth_payload_is_withheld_from_the_engine(self):
+        for preauth, expected in ((True, True), (False, False)):
+            observed = {}
+            with self.subTest(preauth=preauth), \
+                    tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                cache = root / "data" / "winegdk-preauth"
+                cache.mkdir(parents=True)
+                (cache / "device.json").write_text("{}")
+                self._exercise_ready_launch(
+                    root, self._successful_popen(observed),
+                    lambda: "owned-token", lambda _token: True,
+                    preauth=preauth,
                 )
+                self.assertEqual(
+                    "WINEGDK_PREAUTH_DEVICE" in observed["env"], expected)
 
     def test_gpu_marker_is_cleared_when_process_spawn_fails(self):
         calls = []

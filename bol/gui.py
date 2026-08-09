@@ -1397,6 +1397,10 @@ def gui():
         if "minecraft is running" in low:
             return ("Minecraft is running — close the game to come back here.",
                     True)
+        # Keep the launch visibly on track: an unusable Xbox Live session no
+        # longer stops it, so say what the game is starting as.
+        if "offline mode" in low:
+            return "Starting Minecraft in offline mode…"
         if "starting minecraft" in low or "launching minecraft" in low:
             return "Starting Minecraft…"
         if "game closed" in low:

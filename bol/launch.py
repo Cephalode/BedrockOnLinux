@@ -57,6 +57,14 @@ from .vkd3d import prepare_universal_vkd3d
 from .winegdk import ensure_winegdk
 
 
+# Completes both "Minecraft starts in …" sentences below. Keep the wording in
+# one place: it is the answer to "why can I not play without signing in?".
+_OFFLINE_MODE_NOTICE = (
+    "offline mode — single-player worlds and LAN play work, while Realms, "
+    "servers, the Marketplace and Xbox friends stay unavailable until "
+    "Xbox Live sign-in succeeds."
+)
+
 _SONY_STEAM_INPUT_HIDRAW_IDS = ",".join((
     "0x054C/0x05C4",  # DualShock 4
     "0x054C/0x09CC",  # DualShock 4 v2
@@ -305,20 +313,22 @@ def _launch_once(lock_fds=()):
 
     account, account_epoch = msa_session_snapshot()
     tok = account.get("refresh_token")
-    if not tok:
-        die("No Microsoft account linked — click 'Sign in' first.")
-    try:
-        fresh = msa_refresh(tok)
-    except Exception as e:
-        fresh = None
-        warn(f"Token refresh skipped ({e}) — using cached token.")
-    if fresh:
-        if not msa_save_for_account_epoch(
-                {"refresh_token": fresh["refresh_token"],
-                 "obtained": int(time.time())}, account_epoch):
-            die("The Microsoft account changed during launch; no stale token "
-                "was stored. Click PLAY again after signing in.")
-        tok = fresh["refresh_token"]
+    fresh = None
+    # A transport failure here is the offline case, not a rejected account.
+    refresh_unreachable = False
+    if tok:
+        try:
+            fresh = msa_refresh(tok)
+        except Exception as e:
+            refresh_unreachable = True
+            warn(f"Token refresh skipped ({e}) — using cached token.")
+        if fresh:
+            if not msa_save_for_account_epoch(
+                    {"refresh_token": fresh["refresh_token"],
+                     "obtained": int(time.time())}, account_epoch):
+                die("The Microsoft account changed during launch; no stale "
+                    "token was stored. Click PLAY again after signing in.")
+            tok = fresh["refresh_token"]
     if not boot_prefix():
         die("Could not initialise the managed Wine prefix safely.")
     wine_apply_winegdk_prereqs()
@@ -327,23 +337,35 @@ def _launch_once(lock_fds=()):
         install_gameinput(active_prefix(), Path(gd))
     except Exception as e:
         warn(f"GameInput check failed ({e}) — continuing.")
-    if not wine_reg_set_refresh_token(tok):
-        die("Could not write the Microsoft login token into the Wine prefix. "
-            "The offline registry was left unchanged; use Repair and try "
-            "again.")
-    access = (fresh or {}).get("access_token")
-    ensure_login_deps()
-    if not xbl_preauth(access or "", account_epoch):
-        detail = xbl_preauth_error_message()
-        diagnostic = xbl_preauth_diagnostic() or {}
-        stage = diagnostic.get("stage")
-        suffix = f" (stage: {stage})" if stage else ""
-        die(
-            "Could not prepare a complete Xbox Live multiplayer session"
-            + suffix + ". "
-            + (detail or
-               "Check the Microsoft account/network connection and try again.")
-        )
+    # Xbox Live is required for Realms, servers, the Marketplace and Friends —
+    # never for the game itself. Neither a missing account nor an unreachable
+    # Xbox Live may keep single-player and LAN worlds from starting (#160).
+    online = False
+    if not tok:
+        warn("No Microsoft account is linked, so Minecraft starts in "
+             + _OFFLINE_MODE_NOTICE + " Use 'Sign in' to add one.")
+    else:
+        if not wine_reg_set_refresh_token(tok):
+            die("Could not write the Microsoft login token into the Wine "
+                "prefix. The offline registry was left unchanged; use Repair "
+                "and try again.")
+        ensure_login_deps()
+        online = xbl_preauth((fresh or {}).get("access_token") or "",
+                             account_epoch,
+                             refresh_unreachable=refresh_unreachable)
+        if not online:
+            detail = xbl_preauth_error_message()
+            diagnostic = xbl_preauth_diagnostic() or {}
+            stage = diagnostic.get("stage")
+            suffix = f" (stage: {stage})" if stage else ""
+            warn(
+                "Could not prepare a complete Xbox Live multiplayer session"
+                + suffix + ". "
+                + (detail or
+                   "Check the Microsoft account/network connection and try "
+                   "again.")
+                + " Minecraft starts in " + _OFFLINE_MODE_NOTICE
+            )
     exe = str(CONTENT / "Minecraft.Windows.exe")
     bump_stack_reserve(Path(exe))
     cmd, env = proton_umu_cmd(exe)
@@ -383,7 +405,10 @@ def _launch_once(lock_fds=()):
     env.pop("GNUTLS_SYSTEM_PRIORITY_FILE", None)
     env.pop("GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID", None)
     preauth = DATA / "winegdk-preauth" / "device.json"
-    if preauth.exists():
+    # Only a payload pre-auth just vouched for is handed to the engine: an
+    # expired or account-mismatched one would send it chasing a sign-in that
+    # cannot complete instead of settling into offline mode.
+    if online and preauth.exists():
         env["WINEGDK_PREAUTH_DEVICE"] = "Z:" + str(preauth).replace("/", "\\")
     rp = s.get("xsts_rp")
     if rp:
