@@ -7,7 +7,7 @@ rebuild it and get identical bytes, and every published artifact carries a
 
 ```
 OpenSSL-XCurl (from source) ┐
-vkd3d-proton ────────────────┼─▶ managed engine ─▶ app {.deb, .pyz, AppImage, Flatpak}
+vkd3d-proton ────────────────┼─▶ managed engine ─▶ app {.deb, .rpm, .pyz, AppImage, Flatpak}
 WineGDK + public GDK base ───┘
 ```
 

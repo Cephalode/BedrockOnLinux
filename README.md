@@ -65,6 +65,7 @@ All currently supported builds target x86-64 Linux.
 |---|---|---|
 | AppImage | Most glibc-based desktop distributions | `./BedrockOnLinux-*-x86_64.AppImage` |
 | `.deb` | Debian, Ubuntu, Mint and LMDE | `sudo apt install ./bedrock-on-linux_*_amd64.deb` |
+| `.rpm` | Fedora, Nobara and Bazzite | `sudo dnf install ./bedrock-on-linux-*.x86_64.rpm` |
 | Portable `.pyz` | A host with Python 3.9+ and Tk | `./bedrock-on-linux-*.pyz gui` |
 | Flatpak bundle | Sandboxed local installation, when provided | `flatpak install --user ./BedrockOnLinux-*-x86_64.flatpak` |
 
@@ -100,7 +101,8 @@ APPIMAGE_EXTRACT_AND_RUN=1 ./BedrockOnLinux-2.1.1-x86_64.AppImage
 
 The AppImage bundles Python, Tk, the GUI toolkit, `cryptography` and CA
 certificates. It still uses the host graphics driver and common X11, Xft and
-fontconfig libraries. The `.deb` declares its host dependencies; the portable
+fontconfig libraries. The `.deb` and `.rpm` declare their host dependencies and
+bundle the same pinned GUI toolkit; the portable
 `.pyz` uses the host Python environment and can install its pinned Python GUI
 and sign-in dependencies on first use.
 
@@ -256,8 +258,8 @@ a false success.
 BedrockOnLinux does not ship or endorse client DLLs. Their Wine compatibility,
 dependencies, safety, update compatibility and compliance with server rules
 remain the user’s responsibility. The injector is supported by the native,
-AppImage and `.deb` layouts, not by the Flatpak sandbox; a successful injection
-cannot be promised for a specific third-party client.
+AppImage, `.deb` and `.rpm` layouts, not by the Flatpak sandbox; a successful
+injection cannot be promised for a specific third-party client.
 
 ## GPU safety
 
@@ -413,7 +415,7 @@ scripts/package-engine.sh \
   /path/to/GDK-Proton10-32.tar.gz \
   /path/to/empty-workdir/prefix
 
-# Build and verify .deb, AppImage, portable .pyz and local/dev Flatpak candidates.
+# Build and verify .deb, .rpm, AppImage, portable .pyz and Flatpak candidates.
 scripts/build-release.sh
 scripts/verify-release-candidate.sh
 

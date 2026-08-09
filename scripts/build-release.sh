@@ -42,6 +42,7 @@ cleanup_build_trees() {
   # dist/.cache; current builds use XDG_CACHE_HOME, so remove that legacy tree
   # as well. Do not touch config.txt, engine candidates, or XCurl assets.
   rm -rf "$OUT/appimagetool" "$OUT/BedrockOnLinux.AppDir" "$OUT/deb" \
+         "$OUT/rpm" "$OUT/rpmbuild" \
          "$OUT/portable" "$OUT/pyz-stage" "$OUT/flatpak-build" "$OUT/.cache"
   rm -f "$OUT"/BedrockOnLinux-*-SHA256SUMS.tmp.* \
         "$OUT/appimage-build.log" "$OUT/flatpak-build.log"
@@ -55,6 +56,7 @@ cleanup_build_trees
 shopt -s nullglob
 old_application_artifacts=(
   "$OUT"/bedrock-on-linux_*.deb
+  "$OUT"/bedrock-on-linux-*.rpm
   "$OUT"/bedrock-on-linux-*.pyz
   "$OUT"/BedrockOnLinux-x86_64.AppImage
   "$OUT"/BedrockOnLinux-*-x86_64.AppImage
@@ -133,6 +135,23 @@ if command -v dpkg-deb >/dev/null; then
 else
   echo "  !! .deb build unavailable (dpkg-deb absent)"
   required_failures+=(".deb")
+fi
+
+RPM="$OUT/bedrock-on-linux-${VER}-1.x86_64.rpm"
+if command -v rpmbuild >/dev/null; then
+  rm -f -- "$RPM"
+  if bash "$SRC/scripts/build-rpm.sh" >/dev/null && [[ -s "$RPM" ]]; then
+    echo "  ✓ dist/$(basename "$RPM")"
+    built_artifacts+=("$RPM")
+    verified_artifacts+=("$RPM")
+  else
+    rm -f -- "$RPM"
+    echo "  !! .rpm build failed — run scripts/build-rpm.sh to see why"
+    required_failures+=(".rpm")
+  fi
+else
+  echo "  !! .rpm build unavailable (rpmbuild absent)"
+  required_failures+=(".rpm")
 fi
 
 # The zipapp needs host Python 3 and tkinter; login dependencies can be

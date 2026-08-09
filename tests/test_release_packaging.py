@@ -198,6 +198,66 @@ class CandidateMetadataTests(unittest.TestCase):
         )
         return package
 
+    def _rpm(self, architecture="x86_64", version=VERSION,
+             rev=WINEGDK_BUILD_REV, requires=()):
+        if shutil.which("rpmbuild") is None or shutil.which("rpm") is None \
+                or shutil.which("rpm2cpio") is None \
+                or shutil.which("cpio") is None:
+            self.skipTest("rpm tooling not installed")
+        root = self.base / ("rpm-root-" + architecture)
+        top = self.base / ("rpm-top-" + architecture)
+        bol_root = root / "usr/lib/bedrock-on-linux/bol"
+        _copy_bol_payload(bol_root)
+        config = bol_root / "config.py"
+        license_file = root / "usr/share/licenses/bedrock-on-linux/LICENSE"
+        license_file.parent.mkdir(parents=True)
+        desktop = root / "usr/share/applications/bedrock-on-linux.desktop"
+        desktop.parent.mkdir(parents=True)
+        icon = root / "usr/share/icons/hicolor/256x256/apps/bedrock-on-linux.png"
+        icon.parent.mkdir(parents=True)
+        launcher = root / "usr/lib/bedrock-on-linux/bedrock-on-linux"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        if version != VERSION or rev != WINEGDK_BUILD_REV:
+            config.write_text(_config(version, rev), encoding="utf-8")
+        shutil.copy2(ROOT / "LICENSE", license_file)
+        shutil.copy2(ROOT / "data/bedrock-on-linux.desktop", desktop)
+        shutil.copy2(ROOT / "data/icon.png", icon)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        spec = top / "SPECS/candidate.spec"
+        spec.parent.mkdir(parents=True)
+        (top / "BUILD").mkdir(parents=True)
+        spec.write_text(
+            "%global debug_package %{nil}\n"
+            "%global __os_install_post %{nil}\n"
+            "Name: bedrock-on-linux-test\n"
+            f"Version: {version}\n"
+            "Release: 1\n"
+            "Summary: packaging verifier fixture\n"
+            "License: MIT\n"
+            "AutoReqProv: no\n"
+            + "".join(f"Requires: {item}\n" for item in requires) +
+            "%description\nfixture\n%files\n"
+            "/usr/lib/bedrock-on-linux\n"
+            "/usr/share/applications/bedrock-on-linux.desktop\n"
+            "/usr/share/icons/hicolor/256x256/apps/bedrock-on-linux.png\n"
+            "%dir /usr/share/licenses/bedrock-on-linux\n"
+            "/usr/share/licenses/bedrock-on-linux/LICENSE\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["rpmbuild", "-bb", "--target", architecture,
+             "--define", f"_topdir {top}", "--buildroot", str(root),
+             str(spec)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        built = next((top / "RPMS").rglob("*.rpm"))
+        package = self.base / f"candidate-{architecture}.rpm"
+        shutil.move(str(built), package)
+        return package
+
     def test_accepts_matching_pyz_deb_and_appimage(self):
         result = self._run(self._pyz(), self._deb(), self._appimage())
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -218,6 +278,33 @@ class CandidateMetadataTests(unittest.TestCase):
         result = self._run(self._deb(architecture="all"))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Architecture=all, expected amd64", result.stderr)
+
+    def test_accepts_matching_rpm(self):
+        result = self._run(self._rpm())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Candidate metadata verified", result.stdout)
+
+    def test_rejects_noarch_rpm(self):
+        # The launcher only makes sense where the managed engine and the game
+        # exist, so the package must stay x86_64 like the .deb is amd64.
+        result = self._run(self._rpm(architecture="noarch"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Arch=noarch, expected x86_64", result.stderr)
+
+    def test_rejects_rpm_with_generated_python_dependencies(self):
+        # The bundled wheels ship .dist-info; if a build host's Python
+        # generator turned those into requires, the package would be
+        # uninstallable on the distributions it targets.
+        result = self._run(self._rpm(requires=("python3dist(customtkinter)",)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("generated python3dist() dependencies", result.stderr)
+
+    def test_rejects_stale_bol_payload_inside_rpm(self):
+        artifact = self._rpm(rev="wow64-archs-stale")
+        result = self._run(artifact)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("embeds WINEGDK_BUILD_REV=wow64-archs-stale",
+                      result.stderr)
 
     def test_rejects_missing_bol_payload_file(self):
         result = self._run(self._pyz(missing={"bol/gpu_safety.py"}))
@@ -308,7 +395,7 @@ class BuildReleaseHygieneTests(unittest.TestCase):
 
             # Avoid network and heavyweight package construction.  These
             # failures must be handled as optional formats by build-release.sh.
-            for name in ("build-deb.sh", "build-appimage.sh",
+            for name in ("build-deb.sh", "build-rpm.sh", "build-appimage.sh",
                          "build-flatpak.sh"):
                 (scripts / name).write_text(
                     "#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
@@ -319,6 +406,7 @@ class BuildReleaseHygieneTests(unittest.TestCase):
                 dist / "BedrockOnLinux-1.2.9-x86_64.AppImage",
                 dist / "bedrock-on-linux-1.2.9.pyz",
                 dist / "bedrock-on-linux_1.2.9_all.deb",
+                dist / "bedrock-on-linux-1.2.9-1.x86_64.rpm",
                 dist / "BedrockOnLinux-1.2.9-SHA256SUMS",
                 dist / "BedrockOnLinux-1.2.9-portable.tar.gz",
             )

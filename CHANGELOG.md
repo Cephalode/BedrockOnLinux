@@ -64,6 +64,14 @@
 
 ### Packaging
 
+- Ship an `.rpm`, so the Fedora-based gaming distributions install the launcher
+  like any other application instead of falling back to the AppImage
+  ([#156](https://github.com/Wyze3306/BedrockOnLinux/issues/156)). It carries
+  the same hash-pinned GUI stack as the `.deb`, declares its dependencies with
+  Fedora's package names, is built reproducibly from `SOURCE_DATE_EPOCH`, and
+  goes through the same payload verification and build attestation as every
+  other artifact. `scripts/build-release.sh` builds it beside the others, and
+  `sudo dnf install ./bedrock-on-linux-*.x86_64.rpm` installs it.
 - Publish nightly builds again. Every nightly since 2.1.2 failed: the candidate
   build always asked for the Flatpak's *released* manifest, so the bundle came
   from the pinned tag while the payload audit compared it against the branch

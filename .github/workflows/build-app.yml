@@ -1,4 +1,4 @@
-# Tier 3: build the BedrockOnLinux application artifacts (.deb, AppImage,
+# Tier 3: build the BedrockOnLinux application artifacts (.deb, .rpm, AppImage,
 # portable .pyz, Flatpak) from source, consuming this fork's attested engine and
 # OpenSSL-XCurl set, then attest + publish them. Completes the traceable chain
 # source -> engine/xcurl (attested) -> installable app (attested).
@@ -62,7 +62,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            dpkg-dev patchelf squashfs-tools zsync desktop-file-utils file \
+            dpkg-dev rpm patchelf squashfs-tools zsync desktop-file-utils file \
             python3 python3-pip python3-venv python3-tk \
             build-essential ca-certificates curl xz-utils \
             flatpak flatpak-builder
@@ -143,6 +143,7 @@ jobs:
           retention-days: 1
           path: |
             dist/bedrock-on-linux_*.deb
+            dist/bedrock-on-linux-*.rpm
             dist/bedrock-on-linux-*.pyz
             dist/BedrockOnLinux-*-x86_64.AppImage
             dist/BedrockOnLinux-*-x86_64.flatpak
@@ -177,6 +178,7 @@ jobs:
         with:
           subject-path: |
             dist/bedrock-on-linux_*.deb
+            dist/bedrock-on-linux-*.rpm
             dist/bedrock-on-linux-*.pyz
             dist/BedrockOnLinux-*-x86_64.AppImage
             dist/BedrockOnLinux-*-x86_64.flatpak
@@ -305,6 +307,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/bedrock-on-linux_*.deb
+            dist/bedrock-on-linux-*.rpm
             dist/bedrock-on-linux-*.pyz
             dist/BedrockOnLinux-*-x86_64.AppImage
             dist/BedrockOnLinux-*-x86_64.flatpak
