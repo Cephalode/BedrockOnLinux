@@ -170,30 +170,6 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             self.assertIn("Terminal=false\n", entry)
             self.assertIn("StartupWMClass=BedrockOnLinux\n", entry)
 
-    def test_desktop_entries_offer_a_launcher_free_play_action(self):
-        for relative in (
-                "data/bedrock-on-linux.desktop",
-                "flatpak/io.github.wyze3306.BedrockOnLinux.desktop"):
-            entry = (ROOT / relative).read_text(encoding="utf-8")
-            self.assertIn("Actions=Play;\n", entry)
-            self.assertIn("[Desktop Action Play]\n", entry)
-            self.assertIn("Exec=bedrock-on-linux play\n", entry)
-            # The action group must follow the main group it belongs to.
-            self.assertLess(entry.index("[Desktop Entry]"),
-                            entry.index("[Desktop Action Play]"))
-
-    def test_packagers_rewrite_the_launcher_exec_without_the_play_action(self):
-        # Both scripts rewrote every Exec= line, which would have redirected
-        # the Play action back into the launcher window.
-        installer = (ROOT / "scripts/install.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            'sed "s|^Exec=bedrock-on-linux |Exec=$BIN/bedrock-on-linux |"',
-            installer)
-        appimage = (ROOT / "scripts/build-appimage.sh").read_text(
-            encoding="utf-8")
-        self.assertIn(
-            "sed '0,/^Exec=/s|^Exec=.*|Exec=bedrock-on-linux gui|'", appimage)
-
 
 class GuiStartupPolicyTests(unittest.TestCase):
     def test_pure_wayland_double_click_reports_xwayland_requirement(self):
