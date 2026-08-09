@@ -42,7 +42,7 @@ REQUIRED_COMPONENTS = {
 # whatever an archive declares would only prove internal consistency, so pin
 # the known DLL bytes as an independent trust anchor. Future engine revisions
 # must update the revision pin deliberately.
-REQUIRED_VARIANT_HASHES_BUILD_REV = "wow64-archs-native12"
+REQUIRED_VARIANT_HASHES_BUILD_REV = "wow64-archs-native13"
 REQUIRED_ENGINE_GLIBC_MAX = "2.31"
 REQUIRED_VKD3D_BASE_COMMIT = "3b10bd7a7ec6a7347e616cf8bea59333afec2255"
 REQUIRED_VKD3D_REVERT = "76c11d2e2b90b0a46dc894508e67e2aaacc2c04d"
