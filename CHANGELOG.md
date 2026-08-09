@@ -46,6 +46,14 @@
 
 ### Packaging
 
+- Publish nightly builds again. Every nightly since 2.1.2 failed: the candidate
+  build always asked for the Flatpak's *released* manifest, so the bundle came
+  from the pinned tag while the payload audit compared it against the branch
+  being built. The first commit merged after a release therefore broke the
+  build for good, and with the Flatpak a required format, no nightly release
+  was cut at all. A nightly now builds its Flatpak from the checkout like every
+  other artifact, keeping the AppStream metadata, and a stale pin during a real
+  release build says so instead of only listing the files that differ.
 - Document which component needs the Flatpak
   `--talk-name=org.freedesktop.Flatpak` permission and how to verify it. No
   launcher code calls the portal, so the permission read as unused; the caller

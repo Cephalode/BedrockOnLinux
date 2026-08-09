@@ -256,6 +256,25 @@ class BuildReleaseHygieneTests(unittest.TestCase):
         self.assertLess(build, required)
         self.assertIn('required_failures+=("Flatpak")', script[build:required])
 
+    def test_nightly_builds_the_flatpak_from_the_checkout(self):
+        # The manifest's pinned tag is behind the default branch between
+        # releases, so a nightly that built it would ship a Flatpak unrelated
+        # to the .deb/AppImage/.pyz beside it — and fail the payload audit,
+        # which is what stopped every nightly release after 2.1.2.
+        script = BUILD_RELEASE.read_text(encoding="utf-8")
+        self.assertIn('CHANNEL="${BOL_RELEASE_CHANNEL:-release}"', script)
+        guard = script.index('if [[ "$CHANNEL" == "release" ]]; then')
+        build = script.index('bash "$SRC/scripts/build-flatpak.sh"', guard)
+        self.assertIn("FLATPAK_ARGS=(--release)", script[guard:build])
+        self.assertNotIn(
+            'build-flatpak.sh" --release', script,
+            "the Flatpak mode must follow the channel, not be hard-coded")
+
+        workflow = (ROOT / ".github/workflows/build-app.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("BOL_RELEASE_CHANNEL: ${{ inputs.channel || 'release' }}",
+                      workflow)
+
     def test_stale_app_artifacts_are_removed_but_shared_assets_survive(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory)

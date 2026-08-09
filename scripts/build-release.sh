@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Build unreleased Linux candidate artifacts: .deb, AppImage, portable .pyz,
-# and a local/dev Flatpak bundle.
+# and a Flatpak bundle.
+#
+# BOL_RELEASE_CHANNEL selects where the Flatpak's app payload comes from:
+#   release (default) — the tracked Flathub manifest, i.e. the pinned tag. The
+#                       checkout must be that tag; the payload audit compares
+#                       the built tree against it.
+#   nightly           — this working tree, like every other artifact here. The
+#                       pinned tag is by definition behind the default branch
+#                       between releases, so building it would ship a Flatpak
+#                       that does not match the .deb/AppImage/.pyz next to it
+#                       and would fail that same audit.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,6 +21,15 @@ XCURL_REV="$(grep -m1 '^OPENSSL_XCURL_REV = ' "$SRC/bol/config.py" | cut -d'"' -
 XCURL_SHA="$(grep -m1 '^OPENSSL_XCURL_ARCHIVE_SHA256 = ' "$SRC/bol/config.py" | cut -d'"' -f2)"
 OUT="$SRC/dist"
 mkdir -p "$OUT"
+CHANNEL="${BOL_RELEASE_CHANNEL:-release}"
+case "$CHANNEL" in
+  release) FLATPAK_NOTE="" ;;
+  nightly) FLATPAK_NOTE=" (working tree, not the pinned tag)" ;;
+  *)
+    echo "!! BOL_RELEASE_CHANNEL must be 'release' or 'nightly', got '$CHANNEL'" >&2
+    exit 1
+    ;;
+esac
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1782250551}"
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || {
   echo "!! SOURCE_DATE_EPOCH must be a non-negative integer" >&2
@@ -197,14 +216,24 @@ if command -v flatpak-builder >/dev/null \
     || { command -v flatpak >/dev/null \
          && flatpak info org.flatpak.Builder >/dev/null 2>&1; }; then
   FLATPAK_LOG="$OUT/flatpak-build.log"
-  if bash "$SRC/scripts/build-flatpak.sh" --release >"$FLATPAK_LOG" 2>&1 \
-      && [[ -s "$FLATPAK" ]]; then
-    echo "  ✓ dist/$(basename "$FLATPAK")"
+  declare -a FLATPAK_ARGS=()
+  if [[ "$CHANNEL" == "release" ]]; then
+    FLATPAK_ARGS=(--release)
+  fi
+  if bash "$SRC/scripts/build-flatpak.sh" "${FLATPAK_ARGS[@]}" \
+      >"$FLATPAK_LOG" 2>&1 && [[ -s "$FLATPAK" ]]; then
+    echo "  ✓ dist/$(basename "$FLATPAK")$FLATPAK_NOTE"
     built_artifacts+=("$FLATPAK")
   else
     rm -f -- "$FLATPAK"
     echo "  !! Flatpak build failed — last 40 lines of scripts/build-flatpak.sh:"
     tail -n 40 "$FLATPAK_LOG" | sed 's/^/     /'
+    if [[ "$CHANNEL" == "release" ]] \
+        && grep -q "payload differs from checkout" "$FLATPAK_LOG"; then
+      echo "     ^ the checkout has moved past the tag the Flatpak manifest" \
+           "pins. Re-pin flatpak/*.yml to this release, or build this" \
+           "candidate with BOL_RELEASE_CHANNEL=nightly."
+    fi
     required_failures+=("Flatpak")
   fi
 else

@@ -127,6 +127,10 @@ jobs:
       - name: Build the application artifacts
         env:
           BOL_APPIMAGE_BUILD_CACHE: ${{ runner.temp }}/appimage-cache
+          # A nightly builds every artifact from the default branch, so its
+          # Flatpak must come from the checkout too — the manifest's pinned tag
+          # is behind that branch between releases.
+          BOL_RELEASE_CHANNEL: ${{ inputs.channel || 'release' }}
         run: |
           scripts/build-release.sh
           echo "VER=$(grep -m1 '^VERSION = ' bol/config.py | cut -d'"' -f2)" >> "$GITHUB_ENV"
