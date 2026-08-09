@@ -65,9 +65,9 @@ All currently supported builds target x86-64 Linux.
 |---|---|---|
 | AppImage | Most glibc-based desktop distributions | `./BedrockOnLinux-*-x86_64.AppImage` |
 | `.deb` | Debian, Ubuntu, Mint and LMDE | `sudo apt install ./bedrock-on-linux_*_amd64.deb` |
-| `.rpm` | Fedora, Nobara and Bazzite | `sudo dnf install ./bedrock-on-linux-*.x86_64.rpm` |
+| `.rpm` | Fedora and Nobara | `sudo dnf install ./bedrock-on-linux-*.x86_64.rpm` |
 | Portable `.pyz` | A host with Python 3.9+ and Tk | `./bedrock-on-linux-*.pyz gui` |
-| Flatpak bundle | Sandboxed local installation, when provided | `flatpak install --user ./BedrockOnLinux-*-x86_64.flatpak` |
+| Flatpak bundle | Atomic systems, like Bazzite | `flatpak install --user ./BedrockOnLinux-*-x86_64.flatpak` |
 
 ### AppImage quick start
 
