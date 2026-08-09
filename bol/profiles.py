@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .config import APP, DATA, PRETTY, XDG_DATA_HOME
+from .config import APP, DATA, FLATPAK_APP_ID, PRETTY, XDG_DATA_HOME
 from .log import BolError
 
 
@@ -184,11 +184,12 @@ def require_shortcuts_supported(
         environ=None, info_path=Path("/.flatpak-info")):
     if not profile_shortcuts_supported(environ, info_path):
         raise BolError(
-            "Desktop and Steam shortcuts cannot be installed from the Flatpak "
-            "sandbox: neither the host desktop nor Steam can see the "
-            "sandbox's private applications directory. Use the AppImage, "
-            ".deb or native package, or add the Flatpak's own command to "
-            "Steam by hand."
+            "Shortcuts cannot be written from the Flatpak sandbox: neither "
+            "the host desktop nor Steam can see the sandbox's private "
+            "applications directory. This build already offers the same "
+            "launch from the app menu entry's 'Play without the launcher' "
+            "action, and Steam can run it as a non-Steam game with the "
+            f"command: flatpak run {FLATPAK_APP_ID} play"
         )
 
 

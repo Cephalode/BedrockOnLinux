@@ -819,5 +819,40 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
         kill.assert_not_called()
 
 
+class DirectLaunchReadinessTests(unittest.TestCase):
+    def test_missing_game_and_account_are_both_named(self):
+        with mock.patch.object(launch, "load_settings", return_value={}), \
+                mock.patch.object(launch, "msa_signed_in",
+                                  return_value=False):
+            pending = launch.direct_launch_readiness()
+
+        self.assertEqual(len(pending), 2)
+        self.assertIn("No Minecraft version is installed", pending[0])
+        self.assertIn("No Microsoft account is linked", pending[1])
+
+    def test_prepared_installation_has_nothing_pending(self):
+        with tempfile.TemporaryDirectory() as td:
+            content = Path(td)
+            (content / "Minecraft.Windows.exe").write_bytes(b"MZ")
+            with mock.patch.object(
+                    launch, "load_settings",
+                    return_value={"game_dir": str(content)}), \
+                    mock.patch.object(launch, "msa_signed_in",
+                                      return_value=True):
+                self.assertEqual(launch.direct_launch_readiness(), [])
+
+    def test_uninstalled_game_dir_is_reported_even_when_recorded(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(
+                    launch, "load_settings",
+                    return_value={"game_dir": str(Path(td) / "gone")}), \
+                    mock.patch.object(launch, "msa_signed_in",
+                                      return_value=True):
+                pending = launch.direct_launch_readiness()
+
+        self.assertEqual(len(pending), 1)
+        self.assertIn("No Minecraft version is installed", pending[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -195,6 +195,34 @@ To refresh a same-tag archive replacement instead of reusing the local cache,
 run `bedrock-on-linux setup --mc <version> --force`. This still cannot retrieve
 an internal build the community archive has not published.
 
+### Launch without the launcher window (Steam, Steam Deck, app menu)
+
+Once a version is installed and the Microsoft account is linked, Minecraft can
+start on its own. **Tools ▸ Create direct launch shortcut** writes a
+*Minecraft Bedrock* desktop entry, or:
+
+```bash
+bedrock-on-linux shortcut          # ~/.local/share/applications entry + command
+bedrock-on-linux shortcut --profile "Alice"   # one isolated profile
+bedrock-on-linux play              # the same launch, from a terminal
+```
+
+In Steam, use **Add a Non-Steam Game** and pick that entry (or paste the
+printed command). It then appears in the library and in Steam Deck Game Mode,
+where Steam Input and the Deck's fullscreen handling apply as they do for any
+non-Steam game. The launcher's own app-menu entry also gained a **Play without
+the launcher** action, so a right-click on the existing icon starts the game
+directly — no extra shortcut needed. In the Flatpak, where host-visible
+shortcuts cannot be written from the sandbox, use that action or add
+`flatpak run io.github.wyze3306.BedrockOnLinux play` to Steam by hand.
+
+A launcher-free launch performs no first-run work: it cannot show the Microsoft
+device code or pick a version, so install and sign in from the launcher once
+before adding the shortcut (`shortcut` says so when either is still missing).
+It runs the same guarded launch as **▶ PLAY**, including the graphics-safety
+and prefix checks, and a failure that would have been printed to the launcher
+log is raised as a desktop notification instead.
+
 ### Multiple local Xbox profiles
 
 Create one isolated launcher root and desktop shortcut per player:
@@ -340,6 +368,7 @@ bedrock-on-linux setup --mc <version>   # download and prepare one version
 bedrock-on-linux profiles list          # isolated local Xbox profiles
 bedrock-on-linux login                  # link a Microsoft account
 bedrock-on-linux play                   # launch the selected version
+bedrock-on-linux shortcut               # desktop/Steam entry that skips the GUI
 bedrock-on-linux update                 # check for a launcher update
 ```
 

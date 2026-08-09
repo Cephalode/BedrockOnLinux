@@ -40,9 +40,9 @@ from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
 from .games import list_mc_versions
 from .gamesetup import do_setup
 from .inject import run_injector
-from .launch import launch
+from .launch import direct_launch_readiness, launch
 from . import log
-from .log import BolError, _LEVELS, warn
+from .log import BolError, _LEVELS, desktop_notify, warn
 from .prefix import (
     _mc_running,
     kill_wine,
@@ -51,8 +51,11 @@ from .prefix import (
 )
 from .profiles import (
     create_profile,
+    play_launch_command,
     profile_launch_command,
     require_profile_shortcuts_supported,
+    require_shortcuts_supported,
+    write_play_shortcut,
     write_profile_shortcut,
 )
 from .update import check_for_update, self_update
@@ -67,15 +70,7 @@ _DIALOG_MAX_PHYSICAL_SIZE = (760, 640)
 
 def _desktop_error(message):
     warn(message)
-    notifier = shutil.which("notify-send")
-    if notifier:
-        try:
-            subprocess.run(
-                [notifier, "--app-name", PRETTY, PRETTY, message],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=5, check=False)
-        except (OSError, subprocess.SubprocessError):
-            pass
+    desktop_notify(message)
 
 
 _X11_SOCKET_NAME = re.compile(r"^X([0-9]+)$")
@@ -2397,10 +2392,35 @@ def gui():
                 parent=d,
             )
 
+        def do_play_shortcut():
+            try:
+                require_shortcuts_supported()
+                shortcut = write_play_shortcut()
+                command = play_launch_command()
+                pending = direct_launch_readiness()
+            except Exception as exc:
+                messagebox.showerror(
+                    "Direct launch shortcut", str(exc), parent=d)
+                return
+            message = (
+                f"Created:\n{shortcut}\n\n"
+                "It starts Minecraft straight away, with no launcher window. "
+                "Add it to Steam with 'Add a Non-Steam Game' to play it from "
+                "the library, including Steam Deck Game Mode.\n\n"
+                f"Direct command:\n{command}"
+            )
+            if pending:
+                message += ("\n\nStill to do in the launcher:\n• "
+                            + "\n• ".join(pending))
+            messagebox.showinfo(
+                "Direct launch shortcut", message, parent=d)
+
         tool_actions = [
             ("Import content (.mcpack / .mcworld / .mcaddon / .mcskin)…",
              do_import, "ghost"),
             ("Inject a client DLL…", do_inject, "ghost"),
+            ("Create direct launch shortcut (skips this window)…",
+             do_play_shortcut, "ghost"),
             ("Create isolated Xbox account shortcut…",
              do_create_profile, "ghost"),
             ("Open Minecraft folder", lambda: subprocess.Popen(

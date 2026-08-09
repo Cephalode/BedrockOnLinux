@@ -11,6 +11,7 @@ from pathlib import Path
 from .auth import (
     account_epoch_is_current,
     msa_refresh,
+    msa_signed_in,
     msa_save_for_account_epoch,
     msa_session_snapshot,
     wine_apply_winegdk_prereqs,
@@ -590,3 +591,26 @@ def launch():
     """Run exactly one guarded launch for each user action."""
     with launch_lock() as lock_fds:
         return _launch_once(lock_fds)
+
+
+def direct_launch_readiness():
+    """First-run steps a launcher-free shortcut cannot perform on its own.
+
+    A shortcut that skips the window has nowhere to show a device code or a
+    version picker, so name what is still missing when one is created rather
+    than letting the first click fail silently. Cheap and offline: settings
+    and token files only, no network and no Wine process.
+    """
+    pending = []
+    game_dir = load_settings().get("game_dir")
+    if not game_dir or not Path(game_dir, "Minecraft.Windows.exe").exists():
+        pending.append(
+            "No Minecraft version is installed yet. Open the launcher once "
+            "and install one; the shortcut only starts a prepared "
+            "installation.")
+    if not msa_signed_in():
+        pending.append(
+            "No Microsoft account is linked yet. Sign in from the launcher "
+            "once; a shortcut has nowhere to display the Microsoft device "
+            "code.")
+    return pending

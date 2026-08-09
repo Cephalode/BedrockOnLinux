@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- Start Minecraft without the launcher window. **Tools ▸ Create direct launch
+  shortcut** and `bedrock-on-linux shortcut` write a *Minecraft Bedrock*
+  desktop entry that runs the game directly, and print the equivalent command;
+  `--profile NAME` scopes one to an isolated profile. Steam adds that entry as
+  a non-Steam game, so it plays from the library and from Steam Deck Game Mode
+  without the GUI in between. The launcher's own app-menu entry also gained a
+  **Play without the launcher** action, which is how the Flatpak — where
+  host-visible shortcuts cannot be written from the sandbox — offers the same
+  thing, alongside `flatpak run io.github.wyze3306.BedrockOnLinux play`
+  ([#158](https://github.com/Wyze3306/BedrockOnLinux/issues/158)).
+- Say why a launcher-free launch stopped. A desktop or Steam shortcut discards
+  the launcher's output, so a refused launch — no version installed, a busy
+  prefix, a blocked graphics session — looked exactly like the shortcut doing
+  nothing. Those failures are now raised as a desktop notification. Creating a
+  shortcut also names the first-run steps it cannot perform itself, since it
+  has nowhere to display the Microsoft device code or a version picker.
+
 ### Performance
 
 - Build the engine with Wine's in-process synchronization (ntsync) backend,
