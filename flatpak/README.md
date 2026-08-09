@@ -75,7 +75,8 @@ Per <https://docs.flathub.org/docs/for-app-authors/submission>:
 - `--talk-name=org.freedesktop.Flatpak`, `--allow=devel`, `--allow=multiarch`:
   the game runs through umu-launcher → pressure-vessel (Steam Linux Runtime),
   which spawns its sub-sandbox via the Flatpak portal and runs 32-bit Wine
-  code; same permission set as Lutris, Bottles and Heroic.
+  code; same permission set as Lutris, Bottles and Heroic. The repository's
+  `flatpak/README.md` names the exact caller and the command that verifies it.
 - `--share=network`: downloads + Microsoft/Xbox sign-in + multiplayer.
 - `--filesystem=~/.local/share/bedrock-on-linux:ro`: one-upgrade transition
   access to the exact old data root. The explicit home-relative path leaves the
@@ -93,3 +94,35 @@ are never merged automatically.
 
 The app ships no Minecraft content; users supply their own game files
 (launcher precedent on Flathub: `io.mrarm.mcpelauncher`).
+
+### Why the portal name is required
+
+Searching this repository for `org.freedesktop.Flatpak` finds the manifest and
+this file only, so the permission reads as unused
+([#157](https://github.com/Wyze3306/BedrockOnLinux/issues/157)). The launcher
+never calls the portal itself: the caller is the bundled Steam Linux Runtime.
+`pressure-vessel-wrap` detects `/.flatpak-info`, switches from its own
+bubblewrap container to Flatpak sub-sandbox mode, and its
+`bin/steam-runtime-launch-client` then requests that container with
+`org.freedesktop.Flatpak.Development.Spawn` on
+`/org/freedesktop/Flatpak/Development`. Both strings are in those binaries, not
+in any file tracked here. The runtime is not optional: the GDK networking that
+LAN and server joins need does not work under a bare `proton run`.
+
+Without the name, that method call fails with `ServiceUnknown`, pressure-vessel
+reports `subsandbox-unavailable` and the game cannot start — while the GUI,
+engine and game downloads, and Microsoft sign-in all keep working, which is why
+revoking it appears harmless. Check both paths on any machine:
+
+```bash
+flatpak run --command=gdbus io.github.wyze3306.BedrockOnLinux call --session \
+  --dest org.freedesktop.Flatpak \
+  --object-path /org/freedesktop/Flatpak/Development \
+  --method org.freedesktop.DBus.Peer.Ping
+```
+
+That prints `()`; inserting `--no-talk-name=org.freedesktop.Flatpak` before
+`--command` turns it into `Error: …ServiceUnknown`. Users who prefer the
+stricter sandbox can make that revocation permanent with `flatpak override
+--user --no-talk-name=org.freedesktop.Flatpak io.github.wyze3306.BedrockOnLinux`,
+accepting that the game will no longer start.

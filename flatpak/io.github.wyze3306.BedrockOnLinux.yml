@@ -3,8 +3,8 @@
 # Two things make this more than a plain Python app:
 #   1. The GUI is Tkinter, which org.freedesktop.Platform does not ship —
 #      a self-contained Tcl + Tk + CPython is bundled.
-#   2. The game runs through umu-launcher → pressure-vessel, a sub-sandbox
-#      created via the Flatpak portal — hence --talk-name=org.freedesktop.Flatpak,
+#   2. The game runs through umu-launcher → pressure-vessel, which builds its
+#      container as a Flatpak sub-sandbox — hence --talk-name=org.freedesktop.Flatpak,
 #      --allow=devel and --allow=multiarch (the Lutris/Bottles/Heroic recipe).
 #
 # Local test build: scripts/build-flatpak.sh (swaps the app source for the
@@ -38,9 +38,15 @@ finish-args:
   # Read-only access to the pre-XDG location for one-time migration. Using the
   # xdg-data alias here would shadow the private XDG destination read-only.
   - --filesystem=~/.local/share/bedrock-on-linux:ro
-  # umu/pressure-vessel spawns its Steam Linux Runtime sub-sandbox through the
-  # Flatpak portal; Wine needs ptrace (devel) and 32-bit code (multiarch)
+  # No launcher code talks to the portal; the caller is the bundled Steam Linux
+  # Runtime. pressure-vessel-wrap sees /.flatpak-info, switches from bubblewrap
+  # to sub-sandbox mode, and its steam-runtime-launch-client then asks for the
+  # container with org.freedesktop.Flatpak.Development.Spawn. Revoking the name
+  # leaves the GUI, downloads and sign-in working and breaks only the game
+  # launch, which is what makes the permission look unused (issue #157);
+  # flatpak/README.md documents how to check both paths.
   - --talk-name=org.freedesktop.Flatpak
+  # Wine needs ptrace (devel) and 32-bit code (multiarch)
   - --allow=devel
   - --allow=multiarch
 

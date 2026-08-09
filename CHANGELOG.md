@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Packaging
+
+- Document which component needs the Flatpak
+  `--talk-name=org.freedesktop.Flatpak` permission and how to verify it. No
+  launcher code calls the portal, so the permission read as unused; the caller
+  is the bundled Steam Linux Runtime, whose `pressure-vessel` switches to a
+  Flatpak sub-sandbox when it sees `/.flatpak-info` and requests it through
+  `org.freedesktop.Flatpak.Development.Spawn`. Revoking the name leaves the
+  GUI, downloads and sign-in working and breaks only the game launch, which is
+  what made it look removable
+  ([#157](https://github.com/Wyze3306/BedrockOnLinux/issues/157)).
+
 ## 2.1.2 — 2026-08-03
 
 ### Friends, Realms and Xbox Live
