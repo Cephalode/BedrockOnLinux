@@ -7,63 +7,46 @@
 
   outputs = { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
+      pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      bolPython = pkgs.python313.withPackages (ps: with ps; [
+        tkinter
+        cryptography
+        customtkinter
+        darkdetect
+        packaging
+        python-xlib
+        certifi
+      ]);
     in
     {
-      packages = forAllSystems (system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-          bolPython = pkgs.python313.withPackages (ps: with ps; [
-            tkinter
-            cryptography
-            customtkinter
-            darkdetect
-            packaging
-            python-xlib
-            certifi
-          ]);
-        in
-        {
-          default = pkgs.stdenv.mkDerivation {
-            pname = "bedrock-on-linux";
-            version = "2.1.3";
+      packages.x86_64-linux.default = pkgs.stdenv.mkDerivation {
+        pname = "bedrock-on-linux";
+        version = "2.1.3";
 
-            src = ./.;
+        src = ./.;
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
 
-            dontBuild = true;
+        installPhase = ''
+          mkdir -p $out/lib/bedrock-on-linux $out/bin $out/share/applications $out/share/icons/hicolor/256x256/apps
 
-            installPhase = ''
-              runHook preInstall
+          cp -r bol $out/lib/bedrock-on-linux/
+          cp bedrock-on-linux $out/lib/bedrock-on-linux/
 
-              mkdir -p $out/lib/bedrock-on-linux $out/bin $out/share/applications $out/share/icons/hicolor/256x256/apps
+          cp data/bedrock-on-linux.desktop $out/share/applications/
+          cp data/icon.png $out/share/icons/hicolor/256x256/apps/bedrock-on-linux.png
 
-              # Install the Python package
-              cp -r bol $out/lib/bedrock-on-linux/
-              cp bedrock-on-linux $out/lib/bedrock-on-linux/
+          makeWrapper ${bolPython}/bin/python3 $out/bin/bedrock-on-linux \
+            --add-flags "$out/lib/bedrock-on-linux/bedrock-on-linux" \
+            --prefix PYTHONPATH : "$out/lib/bedrock-on-linux"
+        '';
 
-              # Desktop entry and icon
-              cp data/bedrock-on-linux.desktop $out/share/applications/
-              cp data/icon.png $out/share/icons/hicolor/256x256/apps/bedrock-on-linux.png
-
-              # Wrapper script
-              makeWrapper ${bolPython}/bin/python3 $out/bin/bedrock-on-linux \
-                --add-flags "$out/lib/bedrock-on-linux/bedrock-on-linux" \
-                --prefix PYTHONPATH : "$out/lib/bedrock-on-linux"
-
-              runHook postInstall
-            '';
-
-            meta = {
-              description = "Run Minecraft Bedrock for Windows (GDK edition) on Linux";
-              homepage = "https://github.com/Cephalode/BedrockOnLinux";
-              license = pkgs.lib.licenses.mit;
-              platforms = [ "x86_64-linux" ];
-              mainProgram = "bedrock-on-linux";
-            };
-          };
-        });
+        meta = {
+          homepage = "https://github.com/Cephalode/BedrockOnLinux";
+          license = pkgs.lib.licenses.mit;
+          platforms = [ "x86_64-linux" ];
+          mainProgram = "bedrock-on-linux";
+        };
+      };
     };
 }
