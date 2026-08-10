@@ -7,7 +7,10 @@
 
   outputs = { self, nixpkgs }:
     let
-      pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      pkgs = import nixpkgs {
+        system = "x86_64-linux";
+        config.allowUnfree = true;
+      };
       bolPython = pkgs.python313.withPackages (ps: with ps; [
         tkinter
         cryptography
