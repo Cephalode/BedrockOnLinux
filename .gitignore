@@ -1,3 +1,14 @@
+dist/
+flatpak/.*.resolved.yml
+.flatpak-builder/
+*.part
+*.bol-orig
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.claude/
+*.git-original.bak
 result
 result-*
 .direnv
