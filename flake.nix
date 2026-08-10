@@ -36,7 +36,8 @@
           cp data/bedrock-on-linux.desktop $out/share/applications/
           cp data/icon.png $out/share/icons/hicolor/256x256/apps/bedrock-on-linux.png
 
-          makeWrapper ${bolPython}/bin/python3 $out/bin/bedrock-on-linux \
+          makeWrapper ${pkgs.steam-run}/bin/steam-run $out/bin/bedrock-on-linux \
+            --add-flags "${bolPython}/bin/python3" \
             --add-flags "$out/lib/bedrock-on-linux/bedrock-on-linux" \
             --prefix PYTHONPATH : "$out/lib/bedrock-on-linux"
         '';
