@@ -4,6 +4,30 @@
 
 ### Fixed
 
+- Reach the game from Steam Deck Game Mode. Adding the launcher to Steam and
+  starting it there left an interface whose buttons did nothing — no hover, no
+  click — and when a launch did happen the game stayed audible but invisible,
+  both only with the Flatpak
+  ([#127](https://github.com/Wyze3306/BedrockOnLinux/issues/127),
+  [#130](https://github.com/Wyze3306/BedrockOnLinux/issues/130)). Two causes,
+  both specific to that session:
+  - Gamescope's Xwayland legitimately reports zero RandR GPU providers, which
+    the launcher already tolerates — but only once it recognises the session,
+    and it recognised it from environment variables that a Flatpak sandbox
+    does not forward. Game Mode therefore looked like an ordinary X11 session
+    running on a software renderer, and the launcher refused to start with
+    *could not verify any X11 hardware provider*. That is why the AppImage was
+    unaffected and why connecting an external monitor, which makes a provider
+    appear, was the only known way out. The session is now identified by
+    Gamescope's own `GAMESCOPE_*` properties on the X root window, which no
+    sandbox hides.
+  - Game Mode shows one application window at a time, so the launcher's own
+    window stands between Steam and the game. Starting the launcher there now
+    starts the game directly instead, the same launcher-free path a *Minecraft
+    Bedrock* shortcut uses. A first run still opens the window, since
+    installing a version and signing in cannot be done without it, and
+    `BOL_FORCE_GUI=1` in the shortcut's launch options opens it on demand.
+
 - Keep playing after minimizing the game or leaving it on another virtual
   desktop. The window came back black and never repainted, the desktop
   eventually offered to force quit it, and it happened every single time;

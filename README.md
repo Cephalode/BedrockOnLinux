@@ -216,6 +216,14 @@ directly — no extra shortcut needed. In the Flatpak, where host-visible
 shortcuts cannot be written from the sandbox, use that action or add
 `flatpak run io.github.wyze3306.BedrockOnLinux play` to Steam by hand.
 
+Adding the launcher itself to Steam works too: in Game Mode it starts the game
+directly rather than opening its window, because Game Mode shows one window at
+a time and the launcher's own would stand between Steam and the game. Set
+`BOL_FORCE_GUI=1` in the shortcut's launch options to open the window there
+anyway — for changing a setting from the Deck, say. A first run still opens
+the window, since installing a version and signing in cannot be done without
+it.
+
 A launcher-free launch performs no first-run work: it cannot show the Microsoft
 device code or pick a version, so install and sign in from the launcher once
 before adding the shortcut (`shortcut` says so when either is still missing).

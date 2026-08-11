@@ -67,7 +67,71 @@ def _x11_session(env: Mapping[str, str]) -> bool:
     return bool(env.get("DISPLAY")) and not bool(env.get("WAYLAND_DISPLAY"))
 
 
-def _nested_gamescope_session(env: Mapping[str, str]) -> bool:
+def _gamescope_root_atoms(env: Mapping[str, str]) -> bool:
+    """True when the X display's root window carries Gamescope's own atoms.
+
+    Gamescope names every property it owns ``GAMESCOPE_*``, so the compositor
+    identifies itself on the root window of the Xwayland server it runs. This
+    is protocol only: it opens no GPU, exactly like the RandR probe beside it.
+
+    Reading them matters because the environment is not a reliable witness. A
+    Flatpak sandbox does not forward ``GAMESCOPE_WAYLAND_DISPLAY``, so in Steam
+    Deck Game Mode the packaged launcher saw an ordinary X11 session reporting
+    zero RandR providers and refused to start, while the AppImage on the same
+    Deck was fine. Connecting an external monitor made a provider appear and
+    was the only known way out (issue #127).
+    """
+
+    if not (env.get("DISPLAY") or "").strip():
+        return False
+    try:
+        import ctypes
+
+        xlib = ctypes.cdll.LoadLibrary("libX11.so.6")
+        xlib.XOpenDisplay.restype = ctypes.c_void_p
+        xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        xlib.XDefaultRootWindow.restype = ctypes.c_ulong
+        xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        xlib.XListProperties.restype = ctypes.POINTER(ctypes.c_ulong)
+        xlib.XListProperties.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_int)]
+        xlib.XGetAtomName.restype = ctypes.c_void_p
+        xlib.XGetAtomName.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        xlib.XFree.argtypes = [ctypes.c_void_p]
+        xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    except (OSError, AttributeError):
+        return False
+
+    display = xlib.XOpenDisplay(str(env["DISPLAY"]).encode())
+    if not display:
+        return False
+    display = ctypes.c_void_p(display)
+    try:
+        count = ctypes.c_int(0)
+        atoms = xlib.XListProperties(
+            display, xlib.XDefaultRootWindow(display), ctypes.byref(count))
+        if not atoms:
+            return False
+        try:
+            for index in range(count.value):
+                name = xlib.XGetAtomName(display, atoms[index])
+                if not name:
+                    continue
+                try:
+                    if ctypes.string_at(name).startswith(b"GAMESCOPE"):
+                        return True
+                finally:
+                    xlib.XFree(ctypes.c_void_p(name))
+        finally:
+            xlib.XFree(ctypes.cast(atoms, ctypes.c_void_p))
+    except Exception:
+        return False
+    finally:
+        xlib.XCloseDisplay(display)
+    return False
+
+
+def _nested_gamescope_session(env: Mapping[str, str], atom_probe=None) -> bool:
     """True only for an explicitly identified nested Gamescope session.
 
     Gamescope's Xwayland server legitimately reports zero RandR providers even
@@ -75,6 +139,10 @@ def _nested_gamescope_session(env: Mapping[str, str]) -> bool:
     Generic Steam or Steam Deck flags are deliberately insufficient: they can
     also be present on an ordinary direct-Xorg desktop, where zero providers
     remains a useful failure signal.
+
+    The environment is checked first because it costs nothing; the root-window
+    atoms are what still identify the session once a sandbox has dropped those
+    variables.
     """
 
     if (env.get("GAMESCOPE_WAYLAND_DISPLAY") or "").strip():
@@ -86,7 +154,20 @@ def _nested_gamescope_session(env: Mapping[str, str]) -> bool:
         if any(part == "gamescope" or part.startswith("gamescope-")
                for part in parts):
             return True
-    return False
+    probe = _gamescope_root_atoms if atom_probe is None else atom_probe
+    return bool(probe(env))
+
+
+def in_gamescope_session(environ: Optional[Mapping[str, str]] = None,
+                         atom_probe=None) -> bool:
+    """Whether this process is running inside a nested Gamescope session.
+
+    Steam Game Mode is the case that matters to callers: it shows one
+    application window at a time, so a launcher window there stands between
+    Steam and the game.
+    """
+    env = os.environ if environ is None else environ
+    return _nested_gamescope_session(env, atom_probe)
 
 
 def _xrandr_provider_count(env: Mapping[str, str], runner=None) -> Optional[int]:
@@ -645,7 +726,8 @@ def gpu_safety_acknowledgement_status(
 def graphics_safety_problem(
         environ: Optional[Mapping[str, str]] = None,
         xrandr_runner=None,
-        journal_runner=None) -> Optional[str]:
+        journal_runner=None,
+        atom_probe=None) -> Optional[str]:
     """Return an actionable reason to refuse launch, or ``None``.
 
     No Vulkan, OpenGL, ``nvidia-smi`` or DRM ioctl is performed here.
@@ -670,7 +752,7 @@ def graphics_safety_problem(
     if _x11_session(env):
         providers = _xrandr_provider_count(env, xrandr_runner)
         if providers == 0:
-            if _nested_gamescope_session(env):
+            if _nested_gamescope_session(env, atom_probe):
                 return None
             problem = (
                 "the X11 session exposes zero RandR GPU providers and is "

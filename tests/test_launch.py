@@ -854,5 +854,45 @@ class DirectLaunchReadinessTests(unittest.TestCase):
         self.assertIn("No Minecraft version is installed", pending[0])
 
 
+class GameModeDirectLaunchTests(unittest.TestCase):
+    """Steam Game Mode shows one window, so the launcher's own hides the game."""
+
+    def _decide(self, env, gamescope=True, pending=()):
+        with mock.patch.object(launch, "in_gamescope_session",
+                               return_value=gamescope), \
+                mock.patch.object(launch, "direct_launch_readiness",
+                                  return_value=list(pending)):
+            return launch.game_mode_direct_launch(env)
+
+    def test_prepared_installation_in_game_mode_skips_the_window(self):
+        self.assertTrue(self._decide({}))
+
+    def test_ordinary_desktop_session_keeps_the_window(self):
+        self.assertFalse(self._decide({}, gamescope=False))
+
+    def test_first_run_work_still_needs_the_window(self):
+        self.assertFalse(self._decide(
+            {}, pending=["No Minecraft version is installed yet."]))
+
+    def test_forcing_the_gui_wins_over_game_mode(self):
+        for value in ("1", "yes", "on", "true", "TRUE"):
+            with self.subTest(value=value):
+                self.assertFalse(self._decide({"BOL_FORCE_GUI": value}))
+
+    def test_unset_or_falsey_force_variable_is_ignored(self):
+        for value in ("", "0", "no", " "):
+            with self.subTest(value=value):
+                self.assertTrue(self._decide({"BOL_FORCE_GUI": value}))
+
+    def test_readiness_is_not_consulted_outside_game_mode(self):
+        with mock.patch.object(launch, "in_gamescope_session",
+                               return_value=False), \
+                mock.patch.object(
+                    launch, "direct_launch_readiness",
+                    side_effect=AssertionError(
+                        "a desktop session must not probe first-run state")):
+            self.assertFalse(launch.game_mode_direct_launch({}))
+
+
 if __name__ == "__main__":
     unittest.main()

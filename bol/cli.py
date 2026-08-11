@@ -12,7 +12,11 @@ from .doctor import doctor
 from .games import list_mc_versions
 from .gamesetup import do_setup
 from .gui import gui
-from .launch import direct_launch_readiness, launch
+from .launch import (
+    direct_launch_readiness,
+    game_mode_direct_launch,
+    launch,
+)
 from .log import BolError, IS_TTY, desktop_notify, die, err, info, ok, warn
 from .network import diagnose_network
 from .prefix import reset_prefix
@@ -47,6 +51,24 @@ def _report_launch_failure(message):
     if IS_TTY:
         return
     desktop_notify(f"Minecraft did not start.\n{message}")
+
+
+def _start_launcher(direct=None):
+    """Open the launcher window, or start the game when the window cannot help.
+
+    Steam Game Mode shows one application window at a time, so the launcher's
+    window there hides the game rather than leading to it. Say which path was
+    taken: with no terminal in Game Mode the notification is the only place a
+    failure can surface, so the caller reports one as if 'play' had been run.
+    """
+    if direct is None:
+        direct = game_mode_direct_launch()
+    if not direct:
+        gui()
+        return
+    info("Steam Game Mode detected — starting Minecraft directly. Set "
+         "BOL_FORCE_GUI=1 to open the launcher window here instead.")
+    launch()
 
 
 def main():
@@ -112,6 +134,9 @@ def main():
     sub.add_parser("changelog", help="display the launcher's release changelog history")
 
     a = p.parse_args()
+    # A launcher start that turned into a direct launch reports its failures
+    # the way 'play' does, since Game Mode leaves no terminal to print to.
+    went_direct = False
     try:
         # Migration must precede every write to the new XDG root.
         from .util import _ensure_xdg_storage
@@ -216,15 +241,19 @@ def main():
             except Exception as e:
                 print(f"Error fetching changelog: {e}")
         elif a.cmd == "gui":
-            gui()
+            # Decide before launching: a failure must already know that it has
+            # no terminal to be printed to.
+            went_direct = game_mode_direct_launch()
+            _start_launcher(went_direct)
         else:
             if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-                gui()
+                went_direct = game_mode_direct_launch()
+                _start_launcher(went_direct)
             else:
                 p.print_help()
     except BolError as exc:
         if not getattr(exc, "reported", False):
             err(str(exc))
-        if a.cmd == "play":
+        if a.cmd == "play" or went_direct:
             _report_launch_failure(str(exc))
         sys.exit(1)

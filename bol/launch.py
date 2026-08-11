@@ -30,6 +30,7 @@ from .gpu_safety import (
     acknowledge_gpu_crash_command,
     arm_gpu_launch,
     disarm_gpu_launch,
+    in_gamescope_session,
     mark_gpu_wrapper_returned,
     require_safe_graphics_session,
     retire_idle_current_boot_marker,
@@ -614,3 +615,28 @@ def direct_launch_readiness():
             "once; a shortcut has nowhere to display the Microsoft device "
             "code.")
     return pending
+
+
+def game_mode_direct_launch(environ=None):
+    """Whether starting the launcher should go straight to the game instead.
+
+    Steam Game Mode is a single-window session: Gamescope shows one
+    application window at a time, so the launcher's own window stands between
+    Steam and the game. Its dialogs are then unreachable, which leaves the
+    interface looking dead (#127), and the game window never becomes the one
+    on screen even though the game is audibly running (#130). The supported
+    answer there is the launcher-free launch, so take it automatically rather
+    than requiring a second, hand-made Steam entry for it.
+
+    Only when the installation can start on its own: first-run work still
+    needs the window, and there it is better to show one that is awkward to
+    drive than to fail with nothing on screen. BOL_FORCE_GUI=1 keeps the
+    window in every case.
+    """
+    source = os.environ if environ is None else environ
+    if str(source.get("BOL_FORCE_GUI", "")).strip().lower() in (
+            "1", "yes", "on", "true"):
+        return False
+    if not in_gamescope_session(source):
+        return False
+    return not direct_launch_readiness()

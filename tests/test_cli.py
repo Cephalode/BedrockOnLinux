@@ -3,6 +3,7 @@
 
 import contextlib
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -259,6 +260,70 @@ class CliTests(unittest.TestCase):
             cli.main()
 
         self.assertEqual(exited.exception.code, 1)
+
+
+class GameModeLauncherStartTests(unittest.TestCase):
+    """Adding the launcher to Steam must still reach the game in Game Mode."""
+
+    def _run(self, argv, direct):
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(cli, "game_mode_direct_launch",
+                                  return_value=direct), \
+                mock.patch.object(cli, "launch") as launched, \
+                mock.patch.object(cli, "gui") as window, \
+                mock.patch.object(cli, "info"):
+            cli.main()
+        return launched, window
+
+    def test_game_mode_starts_the_game_instead_of_the_window(self):
+        for argv in (["bedrock-on-linux"], ["bedrock-on-linux", "gui"]):
+            with self.subTest(argv=argv):
+                launched, window = self._run(argv, direct=True)
+                launched.assert_called_once_with()
+                window.assert_not_called()
+
+    def test_desktop_session_still_opens_the_window(self):
+        for argv in (["bedrock-on-linux"], ["bedrock-on-linux", "gui"]):
+            with self.subTest(argv=argv):
+                launched, window = self._run(argv, direct=False)
+                window.assert_called_once_with()
+                launched.assert_not_called()
+
+    def test_game_mode_launch_failure_reaches_the_desktop(self):
+        # Game Mode leaves no terminal, so the notification is the only place
+        # this can surface.
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(cli, "IS_TTY", False), \
+                mock.patch.object(cli, "game_mode_direct_launch",
+                                  return_value=True), \
+                mock.patch.object(
+                    cli, "launch",
+                    side_effect=BolError("No game — choose a version")), \
+                mock.patch.object(cli, "desktop_notify") as notified, \
+                mock.patch.object(cli, "info"), \
+                mock.patch.object(cli, "err"), \
+                self.assertRaises(SystemExit) as exited:
+            cli.main()
+
+        self.assertEqual(exited.exception.code, 1)
+        self.assertIn("No game — choose a version", notified.call_args.args[0])
+
+    def test_window_failure_is_not_reported_as_a_launch_failure(self):
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(cli, "IS_TTY", False), \
+                mock.patch.object(cli, "game_mode_direct_launch",
+                                  return_value=False), \
+                mock.patch.object(cli, "gui",
+                                  side_effect=BolError("Tk is missing")), \
+                mock.patch.object(cli, "desktop_notify") as notified, \
+                mock.patch.object(cli, "err"), \
+                self.assertRaises(SystemExit):
+            cli.main()
+
+        notified.assert_not_called()
 
 
 if __name__ == "__main__":

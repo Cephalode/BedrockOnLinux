@@ -200,8 +200,46 @@ class GraphicsSafetyTests(unittest.TestCase):
                 env,
                 xrandr_runner=xrandr,
                 journal_runner=self.clean_journal,
+                atom_probe=lambda _env: False,
             )
         self.assertIn("zero RandR GPU providers", problem)
+
+    def test_sandboxed_gamescope_is_recognised_without_its_variables(self):
+        # A Flatpak sandbox does not forward GAMESCOPE_WAYLAND_DISPLAY, so in
+        # Steam Deck Game Mode the packaged launcher saw a plain X11 session
+        # with zero RandR providers and refused to start (#127).
+        def xrandr(*_args, **_kwargs):
+            return result("Providers: number : 0\n")
+
+        with mock.patch.object(
+                gpu_safety, "_nvidia_device_with_mesa_glx",
+                side_effect=AssertionError(
+                    "nested Gamescope must not inspect direct-Xorg GLX")):
+            self.assertIsNone(gpu_safety.graphics_safety_problem(
+                {"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11"},
+                xrandr_runner=xrandr,
+                journal_runner=self.clean_journal,
+                atom_probe=lambda _env: True,
+            ))
+
+    def test_root_atoms_are_not_probed_when_the_environment_already_says_so(self):
+        def xrandr(*_args, **_kwargs):
+            return result("Providers: number : 0\n")
+
+        def must_not_run(_env):
+            raise AssertionError("the X server must not be opened needlessly")
+
+        self.assertIsNone(gpu_safety.graphics_safety_problem(
+            {"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+             "GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0"},
+            xrandr_runner=xrandr,
+            journal_runner=self.clean_journal,
+            atom_probe=must_not_run,
+        ))
+
+    def test_root_atom_probe_needs_a_display(self):
+        self.assertFalse(gpu_safety._gamescope_root_atoms({}))
+        self.assertFalse(gpu_safety._gamescope_root_atoms({"DISPLAY": "  "}))
 
     def test_gamescope_only_exempts_a_parsed_zero_provider_result(self):
         def failed(*_args, **_kwargs):
