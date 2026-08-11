@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.4 — 2026-08-11
 
 ### Fixed
 
@@ -55,6 +55,15 @@
   on a correct revert. Repackaging a published engine to change only its vkd3d
   payload also now finds the WineGDK build records where such an engine keeps
   them, beside its embedded provenance.
+
+### Internal
+
+- Share the helpers six modules had each reimplemented: hashing a file,
+  removing a path without following a directory symlink, testing existence
+  including a dangling symlink, and reading an opt-in environment string. Two
+  of the copies were byte-identical. Only one behaviour changed, and only for
+  the better: removing a game directory now survives a concurrent delete, as
+  the other two copies of that helper always did.
 
 ## 2.1.3 — 2026-08-09
 
