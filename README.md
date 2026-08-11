@@ -17,6 +17,10 @@ Microsoft/Xbox identity, multiplayer, friends and Realms.**
 
 ---
 
+## New Discord Community
+
+https://discord.gg/5YJq54Yhbu
+
 ## What 2.0 provides
 
 BedrockOnLinux installs the Minecraft version you select, prepares a managed
