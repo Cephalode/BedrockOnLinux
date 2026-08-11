@@ -38,11 +38,13 @@ REQUIRED_COMPONENTS = {
     "vkd3d_nv_dgc": VKD3D_NV_DGC_COMPONENT_VERSION,
 }
 
-# native5 through native12 keep the reviewed r11/r12 universal graphics payload. Hashing
-# whatever an archive declares would only prove internal consistency, so pin
-# the known DLL bytes as an independent trust anchor. Future engine revisions
-# must update the revision pin deliberately.
-REQUIRED_VARIANT_HASHES_BUILD_REV = "wow64-archs-native13"
+# native5 through native13 kept the reviewed r11/r12 universal graphics
+# payload; native14 rebuilds it with the occluded frame-latency fix, which
+# changes d3d12core.dll on both architectures and leaves d3d12.dll untouched.
+# Hashing whatever an archive declares would only prove internal consistency,
+# so pin the known DLL bytes as an independent trust anchor. Future engine
+# revisions must update the revision pin deliberately.
+REQUIRED_VARIANT_HASHES_BUILD_REV = "wow64-archs-native14"
 REQUIRED_ENGINE_GLIBC_MAX = "2.31"
 REQUIRED_VKD3D_BASE_COMMIT = "3b10bd7a7ec6a7347e616cf8bea59333afec2255"
 REQUIRED_VKD3D_REVERT = "76c11d2e2b90b0a46dc894508e67e2aaacc2c04d"
@@ -119,13 +121,13 @@ REQUIRED_VARIANT_HASHES = {
             "d6f4e30131e5f05f9167f93c2277652b7d2299ef43a4f623990ee4fd8a34cc4c",
         ("files/lib/wine/vkd3d-proton/x86_64-windows/"
          "d3d12core.dll.bol-ext-dgc"):
-            "870d498f1762b99c18fc3fa02cb92bc35dfbbf121162fa49e06521d8d5ef54da",
+            "09cc495a96dd4861b1fd75c3ce1e6a5efc21c8bccc1f1ac8a4b134dd63f14b2b",
         ("files/lib/wine/vkd3d-proton/i386-windows/"
          "d3d12.dll.bol-ext-dgc"):
             "aac73e3555cb3ca893b3ef11ab033e42a0ffa3139e3ac4ae8ded1667cd321190",
         ("files/lib/wine/vkd3d-proton/i386-windows/"
          "d3d12core.dll.bol-ext-dgc"):
-            "48ecfec79064ea81fcca378239da02051655588fff69005678b2483b7a2f0daa",
+            "b0ef89b9c147b35d751154186cd5a4e249cb2cdbbbafe9f0a47757f6c3fd0fd7",
     },
     NV_DGC: {
         ("files/lib/wine/vkd3d-proton/x86_64-windows/"
@@ -133,13 +135,13 @@ REQUIRED_VARIANT_HASHES = {
             "d6f4e30131e5f05f9167f93c2277652b7d2299ef43a4f623990ee4fd8a34cc4c",
         ("files/lib/wine/vkd3d-proton/x86_64-windows/"
          "d3d12core.dll.bol-nv-dgc"):
-            "870d498f1762b99c18fc3fa02cb92bc35dfbbf121162fa49e06521d8d5ef54da",
+            "09cc495a96dd4861b1fd75c3ce1e6a5efc21c8bccc1f1ac8a4b134dd63f14b2b",
         ("files/lib/wine/vkd3d-proton/i386-windows/"
          "d3d12.dll.bol-nv-dgc"):
             "aac73e3555cb3ca893b3ef11ab033e42a0ffa3139e3ac4ae8ded1667cd321190",
         ("files/lib/wine/vkd3d-proton/i386-windows/"
          "d3d12core.dll.bol-nv-dgc"):
-            "48ecfec79064ea81fcca378239da02051655588fff69005678b2483b7a2f0daa",
+            "b0ef89b9c147b35d751154186cd5a4e249cb2cdbbbafe9f0a47757f6c3fd0fd7",
     },
 }
 

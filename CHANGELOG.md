@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Keep playing after minimizing the game or leaving it on another virtual
+  desktop. The window came back black and never repainted, the desktop
+  eventually offered to force quit it, and it happened every single time;
+  turning on the Legacy compatibility renderer was the only way out, at the
+  cost of the anti-aliasing. An occluded `Present` returns before it queues
+  anything, so the callback that releases the frame latency object Minecraft
+  waits on never runs — and under Wine that is permanent rather than a paused
+  frame, because the blocked render loop stops pumping messages, so the window
+  manager can no longer deliver the restore that would clear the occlusion.
+  The managed engine, now `wow64-archs-native14`, rebuilds vkd3d-proton with
+  that object released on the occluded path, so the render loop survives being
+  hidden and picks the window back up. Only `d3d12core.dll` changes; the
+  Legacy compatibility renderer is no longer needed for this. The game now
+  keeps rendering while minimized, which is what it already did under that
+  renderer ([#50](https://github.com/Wyze3306/BedrockOnLinux/issues/50)).
+
+### Build
+
+- Make the reviewed vkd3d-proton payload reproducible again. `git diff
+  --check` counted the blank line ending the restored upstream shader source
+  as an error and aborted the build, and the generated revert patch is
+  compared byte for byte against the vendored one while its `index` lines
+  abbreviate blob hashes with `core.abbrev=auto`, whose length grows with the
+  repository — upstream had since crossed that threshold, so the check failed
+  on a correct revert. Repackaging a published engine to change only its vkd3d
+  payload also now finds the WineGDK build records where such an engine keeps
+  them, beside its embedded provenance.
+
 ## 2.1.3 — 2026-08-09
 
 ### Added
