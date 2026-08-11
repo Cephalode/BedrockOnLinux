@@ -48,7 +48,6 @@
         meta = {
           homepage = "https://github.com/Wyze3306/BedrockOnLinux";
           license = pkgs.lib.licenses.mit;
-          platforms = [ "x86_64-linux" ];
           mainProgram = "bedrock-on-linux";
         };
       };
