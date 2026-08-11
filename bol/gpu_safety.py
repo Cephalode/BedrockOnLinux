@@ -23,7 +23,7 @@ from typing import Mapping, Optional
 
 from .config import GAMES, WINEGDK_BUILD_REV
 from .log import BolError, die, warn
-from .util import launcher_command
+from .util import env_flag, launcher_command
 
 
 try:
@@ -54,10 +54,6 @@ class GpuSafetyAcknowledgementStatus:
 def acknowledge_gpu_crash_command() -> str:
     """The acknowledgement command line for the running installation."""
     return launcher_command("doctor", "--acknowledge-gpu-crash")
-
-
-def _truthy(value: Optional[str]) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _x11_session(env: Mapping[str, str]) -> bool:
@@ -791,7 +787,7 @@ def require_safe_graphics_session(
     problem = graphics_safety_problem(env)
     if not problem:
         return
-    if _truthy(env.get("BOL_ALLOW_UNSAFE_GPU")):
+    if env_flag(env.get("BOL_ALLOW_UNSAFE_GPU")):
         warn("BOL_ALLOW_UNSAFE_GPU=1 bypasses the graphics safety block: "
              + problem + ".")
         return

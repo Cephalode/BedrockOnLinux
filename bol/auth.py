@@ -1325,9 +1325,8 @@ def wine_apply_winegdk_prereqs():
         user.append(reg_sz("Environment", name, val))
     # Wine's virtual desktop makes ClipCursor reliable in windowed mode.
     # This remains opt-in because it changes windowing for the whole prefix.
-    from .util import _screen_wh
-    confine = (os.environ.get("BOL_CONFINE_CURSOR", "").lower()
-               in ("1", "yes", "on", "true")
+    from .util import _screen_wh, env_flag
+    confine = (env_flag(os.environ.get("BOL_CONFINE_CURSOR"))
                or load_settings().get("confine_cursor", False))
     applied = load_settings().get("_confine_applied", False)
     if confine:

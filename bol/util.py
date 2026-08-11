@@ -3,6 +3,7 @@
 
 import http.client
 import fcntl
+import hashlib
 import json
 import os
 import shlex
@@ -515,3 +516,35 @@ def _screen_wh(runner=None):
     bol.x11.primary_output_size for how the primary monitor is found."""
     from .x11 import primary_output_size
     return primary_output_size(runner)
+
+
+def sha256_file(path):
+    """SHA-256 of a file, read in blocks so a multi-gigabyte engine fits."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def path_exists(path):
+    """Like exists(), but also true for a dangling symlink."""
+    path = Path(path)
+    return path.exists() or path.is_symlink()
+
+
+def remove_path(path):
+    """Remove a file, symlink or tree without following a directory symlink."""
+    path = Path(path)
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.exists():
+            shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+
+
+def env_flag(value):
+    """Whether an environment or settings string opts in."""
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

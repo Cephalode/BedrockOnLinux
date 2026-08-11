@@ -34,7 +34,7 @@ from .config import (
 )
 from .log import BolError, die, info, ok, warn
 from .proton import proton_path
-from .util import download
+from .util import download, sha256_file
 
 # Records the engine revision a managed prefix was last built/refreshed with,
 # so an engine upgrade can refresh the prefix's cached Windows system DLLs
@@ -481,14 +481,6 @@ def require_prefix_idle(prefix: Path, action="modify the Wine prefix"):
     return True
 
 
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def repair_managed_prefix_user32(prefix=None):
     """Restore the managed prefix's 64-bit user32 from the verified engine."""
     if os.environ.get("BOL_WINEPREFIX", "").strip():
@@ -532,10 +524,10 @@ def repair_managed_prefix_user32(prefix=None):
             "run Install / Update to rebuild it."
         )
 
-    source_hash = _sha256_path(source)
+    source_hash = sha256_file(source)
     if target.is_file() and not target.is_symlink():
         try:
-            if _sha256_path(target) == source_hash:
+            if sha256_file(target) == source_hash:
                 return False
         except OSError:
             pass
@@ -558,7 +550,7 @@ def repair_managed_prefix_user32(prefix=None):
     staged = Path(staged_name)
     try:
         shutil.copy2(source, staged, follow_symlinks=False)
-        if _sha256_path(staged) != source_hash:
+        if sha256_file(staged) != source_hash:
             raise BolError(
                 "The managed user32.dll repair copy failed integrity checking."
             )
@@ -624,17 +616,17 @@ def _dll_differs(source, target):
     if target.is_symlink() or not target.is_file():
         return True
     try:
-        return _sha256_path(target) != _sha256_path(source)
+        return sha256_file(target) != sha256_file(source)
     except OSError:
         return True
 
 
 def _replace_managed_dll(source, target):
     """Atomically refresh one prefix DLL from the engine; return if changed."""
-    source_hash = _sha256_path(source)
+    source_hash = sha256_file(source)
     if target.is_file() and not target.is_symlink():
         try:
-            if _sha256_path(target) == source_hash:
+            if sha256_file(target) == source_hash:
                 return False
         except OSError:
             pass
@@ -654,7 +646,7 @@ def _replace_managed_dll(source, target):
     staged = Path(staged_name)
     try:
         shutil.copy2(source, staged, follow_symlinks=False)
-        if _sha256_path(staged) != source_hash:
+        if sha256_file(staged) != source_hash:
             raise BolError(
                 "The managed runtime refresh failed integrity checking for "
                 "%s." % target.name)

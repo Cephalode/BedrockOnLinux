@@ -50,6 +50,7 @@ from .util import (
     _screen_wh,
     apply_custom_env,
     custom_env_map,
+    env_flag,
     LAUNCHER_OWNED_ENV,
     LAUNCHER_OWNED_ENV_ALTERNATIVE,
     launcher_owned_overrides,
@@ -468,7 +469,7 @@ def _launch_once(lock_fds=()):
             warn("Wayland session without X DISPLAY — install XWayland (or set "
                  "BOL_INPUT=wayland to use winewayland).")
     if use_gamescope:
-        if gs_opt and gs_opt.strip().lower() not in ("1", "yes", "on", "true"):
+        if gs_opt and not env_flag(gs_opt):
             gs_argv = ["gamescope"] + shlex.split(gs_opt)
         else:
             gs_argv = ["gamescope", "-f"]
@@ -634,8 +635,7 @@ def game_mode_direct_launch(environ=None):
     window in every case.
     """
     source = os.environ if environ is None else environ
-    if str(source.get("BOL_FORCE_GUI", "")).strip().lower() in (
-            "1", "yes", "on", "true"):
+    if env_flag(source.get("BOL_FORCE_GUI")):
         return False
     if not in_gamescope_session(source):
         return False

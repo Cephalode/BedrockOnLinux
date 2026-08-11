@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -20,6 +19,7 @@ from .config import (
 )
 from .engine_lock import managed_engine_lock
 from .log import BolError
+from .util import sha256_file
 
 
 EXT_DGC = "ext-dgc"
@@ -207,17 +207,6 @@ def _safe_manifest_file(root: Path, relative: str, variant: str,
     return resolved
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while True:
-            block = stream.read(1 << 20)
-            if not block:
-                break
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _valid_sha256(value) -> bool:
     if not isinstance(value, str) or len(value) != 64:
         return False
@@ -388,7 +377,7 @@ def validate_engine_manifest(
                 relative)
         expected_hash = expected_hash.lower()
         source = _safe_manifest_file(root, relative, "critical_files", None)
-        actual_hash = _sha256(source)
+        actual_hash = sha256_file(source)
         if actual_hash != expected_hash:
             raise BolError(
                 "Engine manifest validation failed: SHA-256 mismatch for "
@@ -492,7 +481,7 @@ def validate_engine_manifest(
             expected_hash = expected_hash.lower()
             source = _safe_manifest_file(root, relative, variant,
                                          required_variant)
-            actual_hash = _sha256(source)
+            actual_hash = sha256_file(source)
             if actual_hash != expected_hash:
                 detail = "SHA-256 mismatch for %s" % relative
                 if variant == NV_DGC and required_variant == NV_DGC:
@@ -566,7 +555,7 @@ def _transactional_activate(
             stage_path = target.with_name(
                 target.name + ".bol-stage-" + transaction)
             _copy_file_synced(source, stage_path)
-            if _sha256(stage_path) != expected_hash:
+            if sha256_file(stage_path) != expected_hash:
                 raise OSError("staged SHA-256 mismatch for %s" % target)
             stages[target] = stage_path
 
@@ -584,7 +573,7 @@ def _transactional_activate(
         _fsync_directories(directories)
 
         for target, expected_hash in all_targets:
-            if not target.is_file() or _sha256(target) != expected_hash:
+            if not target.is_file() or sha256_file(target) != expected_hash:
                 raise OSError("post-activation SHA-256 mismatch for %s" % target)
     except Exception as exc:
         rollback_errors = []
@@ -641,7 +630,7 @@ def activate_vkd3d_variant(
             target = root.joinpath(*PurePosixPath(target_relative).parts)
             all_targets.append((target, expected_hash))
             try:
-                current_hash = _sha256(target) if target.is_file() else None
+                current_hash = sha256_file(target) if target.is_file() else None
             except OSError:
                 current_hash = None
             if current_hash != expected_hash:
