@@ -12,3 +12,5 @@ __pycache__/
 result
 result-*
 .direnv
+xodus-cli-*.tar.gz
+xodus-src-*.tar.gz

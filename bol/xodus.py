@@ -192,16 +192,23 @@ def ensure_cli():
 
 
 def signed_in():
-    """True when Xodus holds a usable Microsoft session.
+    """True when Xodus holds a usable Microsoft *user* session.
 
     Xodus is built with --features key-chain-file, so its tokens live in a
     single RON file instead of a D-Bus secret service (which does not exist in
     a Steam Deck Game Mode session or inside a Flatpak sandbox).
+
+    The file existing proves nothing: every command that needs an identity
+    provisions device credentials first, which creates the keyring with only a
+    'device-tokens' entry. Downloading needs the *user* token that
+    `xodus-cli login` stores under 'user-tokens' — without it the download dies
+    deep inside Xodus on a missing token instead of asking anyone to sign in.
     """
     try:
-        return XODUS_KEYRING.is_file() and XODUS_KEYRING.stat().st_size > 0
+        blob = XODUS_KEYRING.read_bytes()
     except OSError:
         return False
+    return b"user-tokens" in blob
 
 
 def login():
@@ -279,10 +286,26 @@ def install(product, dest: Path, progress=None):
             raise NotSignedIn(
                 "The Microsoft session for the download expired. Sign in "
                 "again.")
-        last = next((line for line in reversed(tail) if line.strip()), "")
         raise XodusError(
-            f"The Minecraft download failed{': ' + last if last else '.'}")
+            f"The Minecraft download failed{': ' + _failure_line(tail) if _failure_line(tail) else '.'}")
     return dest
+
+
+def _failure_line(tail):
+    """The line worth showing the user out of what the download printed.
+
+    A Rust panic ends with "note: run with RUST_BACKTRACE=1", so taking the
+    last line reports the least informative one and hides the actual cause on
+    the line above.
+    """
+    lines = [line.strip() for line in tail if line.strip()]
+    for index, line in enumerate(lines):
+        if "panicked at" in line:
+            message = next((later for later in lines[index + 1:]
+                            if not later.startswith("note:")), "")
+            return message or line
+    return next((line for line in reversed(lines)
+                 if not line.startswith("note:")), "")
 
 
 def _run_streaming(cmd, progress=None):

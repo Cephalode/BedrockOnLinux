@@ -101,6 +101,50 @@ class EnsureCliTests(unittest.TestCase):
             self.assertIn("XODUS_ARCHIVE_SHA256", str(raised.exception))
 
 
+class SignedInTests(unittest.TestCase):
+    def _keyring(self, tmp, body):
+        path = Path(tmp) / "keyring.ron"
+        path.write_bytes(body)
+        return mock.patch.object(xodus, "XODUS_KEYRING", path)
+
+    def test_device_credentials_alone_are_not_a_sign_in(self):
+        # Every xodus command that needs an identity provisions device
+        # credentials first, so the keyring exists long before anyone signs in.
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._keyring(tmp, b'("device-tokens",("dev_license","..."))'):
+            self.assertFalse(xodus.signed_in())
+
+    def test_a_user_token_is_a_sign_in(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._keyring(tmp, b'("device-tokens",...)("user-tokens",...)'):
+            self.assertTrue(xodus.signed_in())
+
+    def test_a_missing_keyring_is_not_a_sign_in(self):
+        with mock.patch.object(xodus, "XODUS_KEYRING",
+                               Path("/nonexistent/keyring.ron")):
+            self.assertFalse(xodus.signed_in())
+
+
+class FailureLineTests(unittest.TestCase):
+    def test_a_panic_reports_its_message_not_the_backtrace_note(self):
+        tail = [
+            "thread 'main' (586427) panicked at src/package.rs:86:50:",
+            "called `Result::unwrap()` on an `Err` value: NotFound",
+            "note: run with `RUST_BACKTRACE=1` environment variable",
+        ]
+        # Taking the last line would report the note and hide the cause.
+        self.assertEqual(xodus._failure_line(tail),
+                         "called `Result::unwrap()` on an `Err` value: NotFound")
+
+    def test_an_ordinary_error_reports_its_last_line(self):
+        self.assertEqual(
+            xodus._failure_line(["connecting", "", "could not reach the CDN"]),
+            "could not reach the CDN")
+
+    def test_nothing_printed_reports_nothing(self):
+        self.assertEqual(xodus._failure_line([]), "")
+
+
 class InstallErrorTests(unittest.TestCase):
     def _patched(self, code, tail):
         return (

@@ -113,7 +113,11 @@ XODUS_REPO = "xodus-gaming/xodus"
 XODUS_SOURCE_COMMIT = "4615749c6e02cc3b9acce2abbe9916fe8c376f9a"
 XODUS_REV = "4615749c6e02"
 # Integrity pin for the CI-built xodus-cli archive.
-XODUS_ARCHIVE_SHA256 = ""
+# DEV PIN: this is a local build of the commit above, made on a developer
+# machine, so it will not match the archive build-xodus.yml produces (different
+# toolchain and paths). The workflow fails loudly on the mismatch and says to
+# re-pin; do that from the reviewed CI build before any release.
+XODUS_ARCHIVE_SHA256 = "6fa1c3e14edcc37225a02a614b93c0ca954b6313a9accd37262d7117904d787e"
 XODUS_DIR = DATA / "xodus"
 XODUS_BIN = XODUS_DIR / "xodus-cli"
 # Xodus keeps its tokens in a file keyring (built with --features
