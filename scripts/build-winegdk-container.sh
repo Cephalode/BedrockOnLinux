@@ -33,6 +33,8 @@ readonly VENDORED_CONTEXT_CALLBACK_PATCH="$PROJECT_ROOT/third_party/winegdk-nati
 readonly VENDORED_CONTEXT_CALLBACK_PATCH_SHA256="33afb0b3bcd7678e828a955d639d3384b8b5c656219b05e9c53bb45dd7c34919"
 readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0005-winex11-use-client-surface-origin.patch"
 readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
+readonly VENDORED_XSTORE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0006-xgameruntime-stop-faking-xstore-answers.patch"
+readonly VENDORED_XSTORE_PATCH_SHA256="0ae38358531a81af9b20a997d73f07b383db68afcd14cf89107dd9442f101fd1"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
 readonly NTSYNC_UAPI_HEADER="$PROJECT_ROOT/third_party/linux-uapi/ntsync.h"
 readonly NTSYNC_UAPI_HEADER_SHA256="006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262"
@@ -135,6 +137,16 @@ echo "== Applying X11 client-surface geometry backport"
 git -C "$SRC" apply --check "$VENDORED_CLIENT_SURFACE_PATCH" \
   || { echo "!! X11 client-surface patch does not apply" >&2; exit 1; }
 git -C "$SRC" apply "$VENDORED_CLIENT_SURFACE_PATCH"
+
+echo "== Applying the XStore honest-failure fix"
+[ -f "$VENDORED_XSTORE_PATCH" ] \
+  || { echo "!! missing XStore patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_XSTORE_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_XSTORE_PATCH_SHA256" ] \
+  || { echo "!! XStore patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_XSTORE_PATCH" \
+  || { echo "!! XStore patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_XSTORE_PATCH"
 
 echo "== Verifying reviewed source hashes"
 [ -f "$SOURCE_SHA256SUMS" ] || { echo "!! missing SOURCE-SHA256SUMS" >&2; exit 1; }

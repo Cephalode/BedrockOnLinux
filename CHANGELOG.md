@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- Stop the crash that hit the main menu as soon as an account was signed in.
+  Offline play was fine, but signing in brought the game to the menu, let it
+  start loading the account and then killed it with a page fault
+  ([#171](https://github.com/Wyze3306/BedrockOnLinux/issues/171)). The engine's
+  Xbox store component answered two of the queries the signed-in menu makes —
+  the game licence and the list of associated products — as if a Microsoft
+  Store were really behind it, handing back a hard-coded licence and an empty
+  product catalogue. The game took those for real answers, marked its store
+  data loaded and then read through catalogue entries that were never filled
+  in. Both queries now report that no store service is available, which is a
+  state the game already knows how to handle: it retries a few times and
+  carries on with the store disabled, and the menu stays up. Signing out and
+  back in, resetting the Wine prefix or reinstalling Minecraft were never real
+  cures — the crash depended on timing, which is why it came and went.
+
 - Open the launcher again. 2.1.4 made starting the launcher in a Gamescope
   session start Minecraft directly instead of showing its window, to get past
   Steam Deck Game Mode showing one window at a time. That took the launcher

@@ -299,6 +299,7 @@ WINEGDK_NATIVE_PROVENANCE_FILES=(
   0003-xgameruntime-use-windows-achievements-token.patch
   0004-combase-implement-context-callback.patch
   0005-winex11-use-client-surface-origin.patch
+  0006-xgameruntime-stop-faking-xstore-answers.patch
 )
 
 verify_sha256() {
@@ -348,10 +349,10 @@ verify_winegdk_source_provenance() {
     "ee0543f11737a11f5edec389967bb41482c7f5eda3807c24d171dd6bf6301274" \
     "WineGDK r12 source delta"
   verify_sha256 "$native_root/README.md" \
-    "024273361c23c92f1ddce82d47e064ee466025c15935173ec440bbc2fa1f2a2c" \
+    "04bbe7412e66e61dac3be4f1ec2eeda1590d9bfb184bece8575eca4c5d9377b6" \
     "WineGDK native5 source-delta README"
   verify_sha256 "$native_root/SOURCE-SHA256SUMS" \
-    "2dc69fe66823ab29cc3fd54b92605d9f9149eb8006486c0e7450192b2857cbb6" \
+    "642486a98b1985395e0a704bca76fbfa2124ee1de97d1d8c671213790b9bbd29" \
     "WineGDK native5 source hash lock"
   verify_sha256 \
     "$native_root/0001-winegdk-native5-Xbox-and-file-picker-runtime.patch" \
@@ -373,6 +374,10 @@ verify_winegdk_source_provenance() {
     "$native_root/0005-winex11-use-client-surface-origin.patch" \
     "464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8" \
     "WineGDK X11 client-surface geometry backport"
+  verify_sha256 \
+    "$native_root/0006-xgameruntime-stop-faking-xstore-answers.patch" \
+    "0ae38358531a81af9b20a997d73f07b383db68afcd14cf89107dd9442f101fd1" \
+    "WineGDK XStore honest-failure fix"
 }
 
 has_marker() {
@@ -656,6 +661,8 @@ for arch in "${ARCHES[@]}"; do
     echo "!! WineGDK Xbox Achievements token fix missing for $arch" >&2
     exit 1
   }
+  has_text "$xgdk" "no store service available, failing the" || {
+    echo "!! WineGDK XStore honest-failure fix missing for $arch" >&2; exit 1; }
   has_text "$xgdk" "requesting token: method=" || {
     echo "!! WineGDK native XUser request path missing for $arch" >&2; exit 1; }
   has_text "$xgdk" "unsupported GDK QueryApiImpl class" || {
@@ -852,6 +859,7 @@ for relative_root, names in (
         "native5/0003-xgameruntime-use-windows-achievements-token.patch",
         "native5/0004-combase-implement-context-callback.patch",
         "native5/0005-winex11-use-client-surface-origin.patch",
+        "native5/0006-xgameruntime-stop-faking-xstore-answers.patch",
     )),
     (gdk_proton_provenance_root, ("provenance.env",)),
 ):

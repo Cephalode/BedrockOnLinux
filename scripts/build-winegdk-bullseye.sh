@@ -33,8 +33,10 @@ readonly VENDORED_CONTEXT_CALLBACK_PATCH="$PROJECT_ROOT/third_party/winegdk-nati
 readonly VENDORED_CONTEXT_CALLBACK_PATCH_SHA256="33afb0b3bcd7678e828a955d639d3384b8b5c656219b05e9c53bb45dd7c34919"
 readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0005-winex11-use-client-surface-origin.patch"
 readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
+readonly VENDORED_XSTORE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0006-xgameruntime-stop-faking-xstore-answers.patch"
+readonly VENDORED_XSTORE_PATCH_SHA256="0ae38358531a81af9b20a997d73f07b383db68afcd14cf89107dd9442f101fd1"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
-readonly SOURCE_SHA256SUMS_SHA256="2dc69fe66823ab29cc3fd54b92605d9f9149eb8006486c0e7450192b2857cbb6"
+readonly SOURCE_SHA256SUMS_SHA256="642486a98b1985395e0a704bca76fbfa2124ee1de97d1d8c671213790b9bbd29"
 readonly NTSYNC_UAPI_HEADER="$PROJECT_ROOT/third_party/linux-uapi/ntsync.h"
 readonly NTSYNC_UAPI_HEADER_SHA256="006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262"
 readonly GLIBC_CEILING="2.31"
@@ -511,6 +513,11 @@ fi
 [[ "$(sha256sum "$VENDORED_CLIENT_SURFACE_PATCH" | cut -d' ' -f1)" == \
     "$VENDORED_CLIENT_SURFACE_PATCH_SHA256" ]] ||
   die "vendored X11 client-surface patch SHA-256 mismatch"
+[[ -f "$VENDORED_XSTORE_PATCH" ]] ||
+  die "vendored XStore patch is missing"
+[[ "$(sha256sum "$VENDORED_XSTORE_PATCH" | cut -d' ' -f1)" == \
+    "$VENDORED_XSTORE_PATCH_SHA256" ]] ||
+  die "vendored XStore patch SHA-256 mismatch"
 [[ "$SOURCE_DATE_EPOCH" == "$EXPECTED_SOURCE_DATE_EPOCH" ]] ||
   die "WineGDK source timestamp changed: $SOURCE_DATE_EPOCH"
 
@@ -556,6 +563,7 @@ vendored_followup_patch_sha256=$VENDORED_FOLLOWUP_PATCH_SHA256
 vendored_achievements_patch_sha256=$VENDORED_ACHIEVEMENTS_PATCH_SHA256
 vendored_context_callback_patch_sha256=$VENDORED_CONTEXT_CALLBACK_PATCH_SHA256
 vendored_client_surface_patch_sha256=$VENDORED_CLIENT_SURFACE_PATCH_SHA256
+vendored_xstore_patch_sha256=$VENDORED_XSTORE_PATCH_SHA256
 source_sha256sums_sha256=$SOURCE_SHA256SUMS_SHA256
 source_date_epoch=$SOURCE_DATE_EPOCH
 debian_suite=$DEBIAN_SUITE
@@ -608,6 +616,11 @@ git -C "$WORK_ROOT/source" apply --check "$VENDORED_CLIENT_SURFACE_PATCH" ||
   die "vendored X11 client-surface patch does not apply"
 git -C "$WORK_ROOT/source" apply "$VENDORED_CLIENT_SURFACE_PATCH" ||
   die "could not apply vendored X11 client-surface patch"
+printf '==> Applying the XStore honest-failure fix\n'
+git -C "$WORK_ROOT/source" apply --check "$VENDORED_XSTORE_PATCH" ||
+  die "vendored XStore patch does not apply"
+git -C "$WORK_ROOT/source" apply "$VENDORED_XSTORE_PATCH" ||
+  die "could not apply vendored XStore patch"
 [[ -f "$SOURCE_SHA256SUMS" ]] || die "WineGDK source hash manifest is missing"
 [[ "$(sha256sum "$SOURCE_SHA256SUMS" | cut -d' ' -f1)" == \
     "$SOURCE_SHA256SUMS_SHA256" ]] ||

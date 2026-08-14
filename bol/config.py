@@ -92,7 +92,7 @@ WINEGDK_OUT = PROTON_DIR / "GDK-Proton-xuser"
 # match the reviewed pins below.
 WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
-WINEGDK_SOURCE_MANIFEST_SHA256 = "2dc69fe66823ab29cc3fd54b92605d9f9149eb8006486c0e7450192b2857cbb6"
+WINEGDK_SOURCE_MANIFEST_SHA256 = "642486a98b1985395e0a704bca76fbfa2124ee1de97d1d8c671213790b9bbd29"
 WINEGDK_BUILD_REV = "wow64-archs-native14"
 WINEGDK_ARCHIVE_SHA256 = "dfab2adc204225441335c7ba0d19b7b7caa70bd69ffbc3b10e661cf682888572"
 # Build workflows verify this deterministic intermediate before reusing it.
