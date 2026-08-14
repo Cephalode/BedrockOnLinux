@@ -38,6 +38,9 @@ CONTEXT_CALLBACK_PATCH = (
 XSTORE_PATCH = (
     DELTA / "0006-xgameruntime-stop-faking-xstore-answers.patch"
 )
+MAPPED_FD_PATCH = (
+    DELTA / "0007-ntdll-load-main-image-from-a-mapped-fd.patch"
+)
 SOURCE_SUMS = DELTA / "SOURCE-SHA256SUMS"
 CHANGED_FILES = {
     "dlls/combase/combase.c",
@@ -45,6 +48,7 @@ CHANGED_FILES = {
     "dlls/combase/dcom.idl",
     "dlls/combase/marshal.c",
     "dlls/combase/stubmanager.c",
+    "dlls/ntdll/unix/loader.c",
     "dlls/ole32/dcom.idl",
     "dlls/windows.storage.applicationdata/Makefile.in",
     "dlls/windows.storage.applicationdata/main.c",
@@ -126,6 +130,10 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             self._constant("VENDORED_XSTORE_PATCH_SHA256"),
         )
         self.assertEqual(
+            hashlib.sha256(MAPPED_FD_PATCH.read_bytes()).hexdigest(),
+            self._constant("VENDORED_MAPPED_FD_PATCH_SHA256"),
+        )
+        self.assertEqual(
             hashlib.sha256(SOURCE_SUMS.read_bytes()).hexdigest(),
             self._constant("SOURCE_SHA256SUMS_SHA256"),
         )
@@ -145,11 +153,13 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         achievements = ACHIEVEMENTS_PATCH.read_text()
         context_callback = CONTEXT_CALLBACK_PATCH.read_text()
         xstore = XSTORE_PATCH.read_text()
+        mapped_fd = MAPPED_FD_PATCH.read_text()
         self.assertTrue(text.startswith(f"From {WINEGDK_SOURCE_COMMIT} "))
         changed = {
             left for left, right in re.findall(
                 r"^diff --git a/(\S+) b/(\S+)$",
-                text + followup + achievements + context_callback + xstore,
+                text + followup + achievements + context_callback + xstore
+                + mapped_fd,
                 re.MULTILINE,
             )
             if left == right
@@ -575,6 +585,7 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             CONTEXT_CALLBACK_PATCH,
             CLIENT_SURFACE_PATCH,
             XSTORE_PATCH,
+            MAPPED_FD_PATCH,
         ):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             self.assertIn(digest, text, path.name)

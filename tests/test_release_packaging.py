@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,9 +33,18 @@ PACKAGE_ENGINE = ROOT / "scripts/package-engine.sh"
 RUN_CANDIDATE = ROOT / "scripts/run-candidate.sh"
 
 
+# The engine pin is blank between adding an engine patch and publishing the
+# build that carries it, and the release scripts refuse a candidate in that
+# state on purpose. These tests exercise the packaging mechanics rather than
+# that gate (verify-release-candidate.sh owns it), so they stand in a
+# syntactically valid pin while the real one is unset.
+_PLACEHOLDER_ENGINE_SHA = "ee" * 32
+_ENGINE_SHA = WINEGDK_ARCHIVE_SHA256 or _PLACEHOLDER_ENGINE_SHA
+
+
 def _config(version=VERSION, rev=WINEGDK_BUILD_REV,
             source_commit=WINEGDK_SOURCE_COMMIT,
-            archive_sha=WINEGDK_ARCHIVE_SHA256,
+            archive_sha=_ENGINE_SHA,
             xcurl_rev=OPENSSL_XCURL_REV,
             xcurl_sha=OPENSSL_XCURL_ARCHIVE_SHA256,
             umu_version=UMU_VERSION,
@@ -63,11 +73,28 @@ def _bol_regular_files():
             yield path, relative.as_posix()
 
 
+def _payload_bytes(source, relative):
+    """The payload byte-for-byte, except for an engine pin that is still unset.
+
+    Between adding an engine patch and publishing the build that carries it,
+    WINEGDK_ARCHIVE_SHA256 is deliberately blank and the release scripts refuse
+    such a candidate. That gate has its own test; here it would only stop the
+    packaging mechanics from being exercised at all.
+    """
+    data = source.read_bytes()
+    if relative == "bol/config.py" and not WINEGDK_ARCHIVE_SHA256:
+        data = data.replace(
+            b'WINEGDK_ARCHIVE_SHA256 = ""',
+            b'WINEGDK_ARCHIVE_SHA256 = "%s"' % _PLACEHOLDER_ENGINE_SHA.encode())
+    return data
+
+
 def _copy_bol_payload(destination):
     for source, relative in _bol_regular_files():
         output = destination / Path(relative).relative_to("bol")
         output.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, output)
+        output.write_bytes(_payload_bytes(source, relative))
+        shutil.copystat(source, output)
 
 
 class CandidateMetadataTests(unittest.TestCase):
@@ -78,10 +105,33 @@ class CandidateMetadataTests(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
+    def _staged_checkout(self):
+        """A checkout the verifier can read, with the engine pin filled in.
+
+        verify-release-candidate.sh resolves the checkout from its own path and
+        refuses outright while WINEGDK_ARCHIVE_SHA256 is unset, which is the
+        release gate doing its job (test_release_gate_* covers it). Staging a
+        copy keeps these packaging tests measuring packaging rather than
+        whether an engine happens to be published today.
+        """
+        staged = self.base / "checkout"
+        if staged.exists():
+            return staged
+        _copy_bol_payload(staged / "bol")
+        (staged / "scripts").mkdir(parents=True)
+        shutil.copy2(VERIFY, staged / "scripts" / VERIFY.name)
+        (staged / "data").mkdir(parents=True)
+        for relative in ("LICENSE", "data/icon.png",
+                         "data/bedrock-on-linux.desktop"):
+            shutil.copy2(ROOT / relative, staged / relative)
+        return staged
+
     def _run(self, *artifacts):
+        staged = self._staged_checkout()
         return subprocess.run(
-            [str(VERIFY), *(str(path) for path in artifacts)],
-            cwd=ROOT,
+            [str(staged / "scripts" / VERIFY.name),
+             *(str(path) for path in artifacts)],
+            cwd=staged,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -105,7 +155,7 @@ class CandidateMetadataTests(unittest.TestCase):
                 elif relative in replacements:
                     archive.writestr(relative, replacements[relative])
                 else:
-                    archive.write(source, relative)
+                    archive.writestr(relative, _payload_bytes(source, relative))
             for relative, payload in extras.items():
                 archive.writestr(relative, payload)
             archive.write(ROOT / "LICENSE", "LICENSE")
@@ -263,6 +313,30 @@ class CandidateMetadataTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("VERSION="), 3)
         self.assertIn("Candidate metadata verified", result.stdout)
+
+    def test_release_gate_refuses_an_unpinned_engine(self):
+        # Adding an engine patch blanks WINEGDK_ARCHIVE_SHA256 until the build
+        # carrying it is published. No candidate may be verified in that state,
+        # otherwise a release could ship pointing at an engine nobody built.
+        staged = self._staged_checkout()
+        config = staged / "bol/config.py"
+        original = config.read_text(encoding="utf-8")
+        config.write_text(
+            re.sub(r'^WINEGDK_ARCHIVE_SHA256 = ".*"$',
+                   'WINEGDK_ARCHIVE_SHA256 = ""',
+                   original, count=1, flags=re.MULTILINE),
+            encoding="utf-8")
+        try:
+            result = subprocess.run(
+                [str(staged / "scripts" / VERIFY.name), str(self._pyz())],
+                cwd=staged, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=False)
+        finally:
+            config.write_text(original, encoding="utf-8")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("WINEGDK_ARCHIVE_SHA256 is not a lowercase SHA-256 pin",
+                      result.stderr)
 
     def test_rejects_stale_engine_revision_inside_versioned_pyz(self):
         artifact = self._pyz(

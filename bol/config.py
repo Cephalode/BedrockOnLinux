@@ -91,11 +91,17 @@ WINEGDK_OUT = PROTON_DIR / "GDK-Proton-xuser"
 # match the reviewed pins below.
 WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
-WINEGDK_SOURCE_MANIFEST_SHA256 = "642486a98b1985395e0a704bca76fbfa2124ee1de97d1d8c671213790b9bbd29"
-WINEGDK_BUILD_REV = "wow64-archs-native14"
-WINEGDK_ARCHIVE_SHA256 = "dfab2adc204225441335c7ba0d19b7b7caa70bd69ffbc3b10e661cf682888572"
+WINEGDK_SOURCE_MANIFEST_SHA256 = "64110338d984b672402bdc46d6681894070cba8c4a3342769008aefed33bd9db"
+WINEGDK_BUILD_REV = "wow64-archs-native15"
+# native15 adds the ntdll mapped-fd loader (patch 0007), which the Microsoft
+# Store packages need: their game executable stays encrypted on disk. These two
+# pins can only come from a real build, so they are filled in from the
+# build-winegdk.yml / build-engine.yml run that publishes this revision. Until
+# then _verify_engine_archive() refuses every candidate, which is the intended
+# behaviour: an engine without 0007 cannot start the game.
+WINEGDK_ARCHIVE_SHA256 = ""
 # Build workflows verify this deterministic intermediate before reusing it.
-WINEGDK_PREFIX_SHA256 = "52be53d173068d2d79967022a886a9ace3368186ce435eb979a07bc38caced2c"
+WINEGDK_PREFIX_SHA256 = ""
 
 SELF_REPO = WINEGDK_PREBUILT_REPO
 

@@ -70,7 +70,23 @@ not own may still belong to the native GDK threading sidecar, where
 driven and closed through the implementation that owns them instead of being
 silently replaced by a thread-pool queue of our own.
 
+The `0007` patch lets the loader map the main image straight from a file
+descriptor. Minecraft is no longer installed from a repackaged copy of the
+game: it is downloaded from the Microsoft Store with the user's own account,
+and the package keeps the segments it flags `KEEP_ENCRYPTED_ON_DISK` — the game
+executable on GDK titles — encrypted at rest, exactly as on Windows. What sits
+on disk is not a loadable PE, so there is nothing for `open_dll_file` to open.
+The launcher decrypts the executable into anonymous memory at launch and passes
+the descriptor through `WINE_DLL_FILE_MAP`, whose `<fd>:<nt-name>` entries
+`open_main_image` now consults before touching the filesystem; the plaintext
+never reaches a file. Without a match, or without the variable, the loader takes
+its usual path unchanged. This is a port of `xodus-gaming/wine` commit
+`183d5d90b62a`, using `RtlUnicodeToUTF8N` in place of the `locale_private.h`
+helpers this Wine base predates, and carrying only the loader change: the
+upstream commit's standalone C launcher is replaced by the launcher's own
+Python implementation in `bol/launch.py`.
+
 `SOURCE-SHA256SUMS` pins every source file changed by the cumulative r12 to
 native5 delta and its follow-ups. The Bullseye builder applies the reviewed r12
 and native patches when the target commit is unavailable, always applies `0002`
-through `0005`, then verifies the complete resulting source tree.
+through `0007`, then verifies the complete resulting source tree.
