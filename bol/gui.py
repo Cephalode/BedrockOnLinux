@@ -798,7 +798,7 @@ def gui():
                 self.win = None
 
     na = NativeAuth()
-    ui = {"versions": [], "labels": [], "busy": False, "details": False,
+    ui = {"versions": [], "busy": False, "details": False,
           "launch_active": False, "changelog_active": False,
           "changelogs_loaded": False, "changelog_head": None,
           "settings_head": None,
@@ -893,7 +893,7 @@ def gui():
 
     status = ctk.CTkFrame(root, fg_color="transparent")
     status.pack(fill="x", padx=26, pady=(4, 0))
-    status_txt = tk.StringVar(value="Select a version to play.")
+    status_txt = tk.StringVar(value="Ready to play.")
     status_lbl = ctk.CTkLabel(status, textvariable=status_txt, text_color=T.SUB,
                                font=font(12), anchor="w")
     status_lbl.pack(fill="x")
@@ -929,42 +929,35 @@ def gui():
 
     vbox = ctk.CTkFrame(bar, fg_color="transparent")
     vbox.pack(side="left")
-    mc_var = tk.StringVar(value="")
+    # The Store serves one build per edition, so there is nothing to pick from
+    # a list: the choice is Minecraft or Minecraft Preview, and both fit in a
+    # two-segment toggle that is always visible.
+    edition_var = tk.StringVar(value="release")
+    edition_buttons = {}
 
-    _pick = {"win": None, "hover": False, "bind_id": None}
+    def current_edition():
+        return next((v for v in (ui.get("versions") or [])
+                     if v["id"] == edition_var.get()), None)
 
-    def close_picker():
-        bid = _pick.get("bind_id")
-        if bid:
-            root.unbind("<Configure>", bid)
-            _pick["bind_id"] = None
-            
-        try:
-            ver_arrow.configure(text="▾")
-            if not _pick.get("hover"):
-                ver_field.configure(fg_color=T.CARD_2)
-                ver_lbl.configure(text_color=T.FG)
-        except NameError:
-            pass
-        w = _pick["win"]
-        _pick["win"] = None
-        if w is not None:
-            try:
-                w.destroy()
-            except Exception:
-                pass
+    def _edition_name(edition_id):
+        """Short display name, usable before the edition list has loaded."""
+        entry = next((v for v in (ui.get("versions") or [])
+                      if v["id"] == edition_id), None)
+        if entry:
+            return entry["name"].replace(" for Windows", "")
+        return "Minecraft Preview" if edition_id == "preview" else "Minecraft"
 
-    def set_version(label):
-        mc_var.set(label or "")
+    def select_edition(edition_id):
+        if edition_var.get() == edition_id:
+            return
+        edition_var.set(edition_id)
         _update_selected_chip()
-        close_picker()
 
     def _sync_theme(w, is_beta=None):
         if w == acct_dot:
             return
         if is_beta is None:
-            lab = mc_var.get()
-            is_beta = "BETA" in lab if lab else False
+            is_beta = edition_var.get() == "preview"
             
         c_new = T.GOLD if is_beta else T.GREEN
         h_new = T.GOLD_HOV if is_beta else T.GREEN_HOV
@@ -1027,240 +1020,82 @@ def gui():
             _sync_theme(child, is_beta)
 
     def _update_selected_chip():
-        lab = mc_var.get()
-        if not lab:
-            selected_chip.configure(text="")
-            return
-        is_beta = "BETA" in lab
+        chosen = edition_var.get()
+        is_beta = chosen == "preview"
+        entry = current_edition()
 
         s = load_settings()
         changed = False
         if s.get("ui_is_beta") != is_beta:
             s["ui_is_beta"] = is_beta
             changed = True
-            
-        # The label names an edition; the build number on disk is written by
-        # games.use_game_dir() from the manifest, so don't overwrite it here.
-        chosen = next((v["id"] for v, x in zip(ui.get("versions") or [],
-                                               ui.get("labels") or [])
-                       if x == lab), None)
-        if chosen and s.get("mc_edition") != chosen:
+        if s.get("mc_edition") != chosen:
             s["mc_edition"] = chosen
             changed = True
-            
+        # show_betas is no longer a setting of its own; it is what picking
+        # Preview means, and util.mc_releases() still reads it to choose which
+        # release notes to show.
+        if s.get("show_betas") != is_beta:
+            s["show_betas"] = is_beta
+            changed = True
         if changed:
             save_settings(s)
 
+        # The build number comes from the manifest of what is installed, so it
+        # only appears once there is something installed to report.
+        installed = (entry or {}).get("installed")
+        name = _edition_name(chosen)
         selected_chip.configure(
-            text=f"  {lab.split('  ')[0]}"
-                 f"{'  ·  BETA' if is_beta else ''}  ",
+            text=f"  {name}{'  ·  ' + installed if installed else ''}  ",
             text_color=T.GOLD if is_beta else T.GREEN,
             fg_color=T.GOLD_DIM if is_beta else T.GREEN_DIM)
-            
-        try:
-            active = _pick.get("hover") or _pick.get("win")
-            ver_lbl.configure(text_color=T.THEME_ACCENT if active else T.FG)
-            ver_arrow.configure(text_color=T.SUB)
-        except Exception:
-            pass
-            
+
         try:
             if hasattr(play_btn, "_tooltip"):
                 is_kill = "Kill" in play_btn._tooltip.text
                 play_btn._tooltip.text = (
-                    f"{'Kill' if is_kill else 'Play'} {lab.split('  ')[0]}")
+                    f"{'Kill' if is_kill else 'Play'} {name}")
         except Exception:
             pass
 
         _sync_theme(root, is_beta)
-        
+        # After _sync_theme: it recolours theme-coloured widgets wholesale, and
+        # the selected segment carries a theme colour of its own.
+        _paint_edition_toggle()
+
         if ui.get("changelogs_loaded") and tab_game is not None and changelog_view.winfo_ismapped():
             from .util import mc_releases
             load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
 
-    def open_picker():
-        if _pick["win"] is not None:
-            close_picker()
-            return
-        labels = ui.get("labels") or []
-        if not labels:
-            return
-        # winfo_* returns physical (already-scaled) screen pixels, but CTk
-        # widget constructors and .place() multiply whatever we pass them by
-        # the current widget scaling again — dividing here avoids the popup
-        # being double-scaled (wrong size/position) at 150%/200% UI scale.
-        x = (ver_field.winfo_rootx() - root.winfo_rootx()) / _ui_scale
-        y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-        w = ver_field.winfo_width() / _ui_scale
-        
-        s = load_settings()
-        saved_h = s.get("picker_height")
-        if saved_h is not None:
-            h = min(max(100, int(saved_h)), y - 24)
-        else:
-            h = min(360, 40 + 32 * min(len(labels), 8))
-        
-        win = ctk.CTkFrame(root, width=w, height=h, fg_color=T.CARD_2, bg_color=T.CARD, border_width=1, border_color=T.BORDER, corner_radius=12)
-        _pick["win"] = win
-        win.pack_propagate(False)
-        win.place(x=x, y=y - h - 4)
-        win.lift()
-        
-        def drag_resize(event):
-            cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-            mouse_y = (event.y_root - root.winfo_rooty()) / _ui_scale
-            mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
-            new_h = cur_y - 4 - mouse_y
-            win.configure(height=new_h)
-            win.place(y=mouse_y)
-            
-        def end_drag(event):
-            cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-            mouse_y = (event.y_root - root.winfo_rooty()) / _ui_scale
-            mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
-            new_h = cur_y - 4 - mouse_y
-            s2 = load_settings()
-            s2["picker_height"] = new_h
-            save_settings(s2)
-            
-        def update_position(_event=None):
-            if _pick["win"] != win: return
-            try:
-                cur_x = (ver_field.winfo_rootx() - root.winfo_rootx()) / _ui_scale
-                cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-                cur_h = win.cget("height")
-                win.place(x=cur_x, y=cur_y - int(cur_h) - 4)
-            except Exception:
-                pass
-                
-        _pick["bind_id"] = root.bind("<Configure>", update_position, add="+")
-            
-        grip_container = ctk.CTkFrame(win, width=w - 40, height=18, fg_color="transparent", cursor="sb_v_double_arrow")
-        grip_container.pack(side="top", pady=(2, 0))
-        grip_container.pack_propagate(False)
-        
-        grip = ctk.CTkFrame(grip_container, width=40, height=4, fg_color=T.BORDER, corner_radius=2)
-        grip.place(relx=0.5, rely=0.5, anchor="center")
-        
-        for widget in (grip_container, grip):
-            widget.bind("<B1-Motion>", drag_resize)
-            widget.bind("<ButtonRelease-1>", end_drag)
-            widget.bind("<Button-1>", lambda _event: search.focus_set())
+    # Two segments instead of a dropdown: with one build per edition there is
+    # nothing to search, scroll or resize, so the popup, its saved height and
+    # its outside-click handling all go away with it.
+    ed_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD,
+                            corner_radius=12, height=52)
+    ed_field.pack(anchor="w")
+    ed_field.pack_propagate(False)
 
-        ver_arrow.configure(text="▴")
+    def _paint_edition_toggle():
+        chosen = edition_var.get()
+        for eid, button in edition_buttons.items():
+            on = eid == chosen
+            beta = eid == "preview"
+            button.configure(
+                fg_color=(T.GOLD_DIM if beta else T.GREEN_DIM)
+                if on else "transparent",
+                hover_color=T.CARD_3,
+                text_color=(T.GOLD if beta else T.GREEN) if on else T.SUB)
 
-        search = ctk.CTkEntry(win, placeholder_text="Filter versions…",
-                               fg_color=T.CARD_3, border_width=0,
-                               text_color=T.FG, corner_radius=8, height=30,
-                               font=font(12))
-        search.pack(fill="x", padx=6, pady=(6, 4))
-        search.focus_set()
-
-        sf = ctk.CTkScrollableFrame(win, fg_color=T.CARD_2, corner_radius=8)
-        sf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        cur = mc_var.get()
-        
-        _pick["no_match"] = ctk.CTkLabel(sf, text="No matches", text_color=T.MUTED, font=font(12))
-        _pick["buttons"] = []
-        for lab in labels:
-            is_beta = "BETA" in lab
-            c_bg = T.GOLD if is_beta else T.GREEN
-            c_dim = T.GOLD_DIM if is_beta else T.GREEN_DIM
-            
-            row = ctk.CTkButton(
-                sf, text=lab, anchor="w", height=30, corner_radius=6,
-                fg_color=c_dim if lab == cur else "transparent",
-                hover_color=c_dim,
-                text_color=c_bg if lab == cur else T.FG,
-                font=font(12), command=lambda l=lab: set_version(l))
-            if lab != cur:
-                def _enter(_event, r=row, c=c_bg):
-                    r.configure(text_color=c)
-
-                def _leave(_event, r=row):
-                    r.configure(text_color=T.FG)
-                row.bind("<Enter>", _enter, add="+")
-                row.bind("<Leave>", _leave, add="+")
-            _pick["buttons"].append((lab, row))
-            row.pack(fill="x", pady=1)
-
-        def rebuild(_e=None):
-            q = search.get().strip().lower()
-            shown_any = False
-            for lab, row in _pick["buttons"]:
-                if not q or q in lab.lower():
-                    row.pack(fill="x", pady=1)
-                    shown_any = True
-                else:
-                    row.pack_forget()
-                    
-            if not shown_any:
-                _pick["no_match"].pack(pady=10)
-            else:
-                _pick["no_match"].pack_forget()
-                
-        def on_enter(_e=None):
-            q = search.get().strip().lower()
-            shown = [lab for lab in labels if q in lab.lower()] if q else labels
-            if shown:
-                set_version(shown[0])
-            return "break"
-
-        search.bind("<KeyRelease>", rebuild)
-        search.bind("<Return>", on_enter)
-        search.bind("<Escape>", lambda _event: close_picker())
-        
-        rebuild()
-        # Bind after every row exists so the wheel scrolls the list from
-        # anywhere in the popup, including over a version button.
-        _enable_scrollable_frame_wheel(sf, win)
-        win.bind("<Escape>", lambda _event: close_picker())
-        
-    def global_click(event):
-        w = _pick.get("win")
-        if w is None:
-            return
-        try:
-            wx, wy = w.winfo_rootx(), w.winfo_rooty()
-            ww, wh = w.winfo_width(), w.winfo_height()
-            vx, vy = ver_field.winfo_rootx(), ver_field.winfo_rooty()
-            vw, vh = ver_field.winfo_width(), ver_field.winfo_height()
-            mx, my = event.x_root, event.y_root
-            
-            in_w = (wx <= mx <= wx + ww) and (wy <= my <= wy + wh)
-            in_v = (vx <= mx <= vx + vw) and (vy <= my <= vy + vh)
-            
-            if not in_w and not in_v:
-                close_picker()
-        except Exception:
-            pass
-
-    root.bind_all("<Button-1>", global_click, add="+")
-
-    ver_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD, corner_radius=12,
-                              width=220, height=52)
-    ver_field.pack(anchor="w")
-    ver_field.pack_propagate(False)
-    ver_lbl = ctk.CTkLabel(ver_field, textvariable=mc_var, text_color=T.FG,
-                            font=font(16), anchor="w")
-    ver_lbl.pack(side="left", fill="x", expand=True, padx=(14, 0))
-    ver_arrow = ctk.CTkLabel(ver_field, text="▾", text_color=T.SUB, font=font(16, "bold"))
-    ver_arrow.pack(side="right", padx=(0, 12))
-    Tooltip(ver_field, "Change edition")
-
-    def _ver_hover(on):
-        _pick["hover"] = on
-        if on or _pick["win"] is not None:
-            ver_field.configure(fg_color=T.CARD_3)
-            ver_lbl.configure(text_color=T.THEME_ACCENT)
-        else:
-            ver_field.configure(fg_color=T.CARD_2)
-            ver_lbl.configure(text_color=T.FG)
-            
-    for _w in (ver_field, ver_lbl, ver_arrow):
-        _w.bind("<Enter>", lambda _event: _ver_hover(True))
-        _w.bind("<Leave>", lambda _event: _ver_hover(False))
-        _w.bind("<Button-1>", lambda _event: open_picker())
+    for _eid, _text in (("release", "Minecraft"), ("preview", "Preview")):
+        _button = mkbtn(ed_field, _text,
+                        (lambda e=_eid: select_edition(e)), kind="flat",
+                        width=106, height=40, font=font(14, "bold"),
+                        corner_radius=9)
+        _button.pack(side="left", padx=(6, 0) if _eid == "release" else (2, 6),
+                     pady=6)
+        edition_buttons[_eid] = _button
+    Tooltip(ed_field, "Minecraft, or the Preview build")
+    _paint_edition_toggle()
 
     rbox = ctk.CTkFrame(bar, fg_color="transparent")
     rbox.pack(side="right")
@@ -1639,44 +1474,24 @@ def gui():
                           height=32, font=font(16), corner_radius=8)
         copy_btn.pack(side="left", padx=(2, 0))
 
-    def _edition_label(entry):
-        # The Microsoft Store serves only the current build of an edition, so
-        # the picker names editions and shows the build that is on disk.
-        parts = [entry["name"].replace(" for Windows", "")]
-        if entry.get("installed"):
-            parts.append(entry["installed"])
-        if entry["beta"]:
-            parts.append("BETA")
-        return "  ·  ".join(parts)
-
     def refresh_versions():
-        beta = load_settings().get("show_betas", False)
+        # Both editions are always offered; the toggle is the choice, so there
+        # is no longer a setting deciding whether Preview is even listed.
         try:
-            ui["versions"] = list_editions(beta)
+            ui["versions"] = list_editions(include_beta=True)
         except Exception as e:
             log._LOG_SINK(f"xx editions: {e}")
             return
-        labels = [_edition_label(v) for v in ui["versions"]]
 
         def ap():
-            ui["labels"] = labels
-            cur = (load_settings().get("mc_edition") or "")
-            pick = next((label for label, v in zip(labels, ui["versions"])
-                         if v["id"] == cur),
-                        labels[0] if labels else "")
-            if labels:
-                mc_var.set(pick)
-                _update_selected_chip()
+            known = {v["id"] for v in ui["versions"]}
+            cur = (load_settings().get("mc_edition") or "").strip()
+            edition_var.set(cur if cur in known else "release")
+            _update_selected_chip()
         root.after(0, ap)
 
     def selected_version():
-        if not ui["versions"] or not mc_var.get():
-            return None
-        labels = [_edition_label(v) for v in ui["versions"]]
-        try:
-            return ui["versions"][labels.index(mc_var.get())]
-        except ValueError:
-            return None
+        return current_edition()
 
     def busy(on):
         ui["busy"] = on
@@ -1694,8 +1509,8 @@ def gui():
                     command=lambda: kill_wine()
                 )
                 if hasattr(play_btn, "_tooltip"):
-                    cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
-                    play_btn._tooltip.text = f"Kill {cur_ver}"
+                    play_btn._tooltip.text = (
+                        f"Kill {_edition_name(edition_var.get())}")
             else:
                 play_btn._img_norm = _create_play_icon(16, T.FG, T.THEME_ACCENT)
                 play_btn.configure(
@@ -1707,8 +1522,8 @@ def gui():
                     command=lambda: do_play()
                 )
                 if hasattr(play_btn, "_tooltip"):
-                    cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
-                    play_btn._tooltip.text = f"Play {cur_ver}"
+                    play_btn._tooltip.text = (
+                        f"Play {_edition_name(edition_var.get())}")
 
     def step_aside_for_game():
         """Unmap the launcher window once the game process exists.
@@ -1973,19 +1788,6 @@ def gui():
             
         ctk.CTkSwitch(tab_general, text="Show changelog on startup",
                       variable=changelog_startup_v, command=save_changelog_startup,
-                      progress_color=T.THEME_ACCENT, font=font(13)
-                      ).pack(anchor="w", pady=8, padx=4)
-
-        beta_v = tk.BooleanVar(value=load_settings().get("show_betas", False))
-
-        def save_beta():
-            s2 = load_settings()
-            s2["show_betas"] = beta_v.get()
-            save_settings(s2)
-            threading.Thread(target=refresh_versions, daemon=True).start()
-            load_changelogs(force=True)
-        ctk.CTkSwitch(tab_general, text="Show the Preview edition",
-                      variable=beta_v, command=save_beta,
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=8, padx=4)
 
@@ -2754,8 +2556,7 @@ def gui():
 
     def render_game_changelog(widget, data, dividers):
         from .util import format_display_version
-        ui_sel = mc_var.get()
-        ui_wants_beta = "BETA" in ui_sel if ui_sel else False
+        ui_wants_beta = edition_var.get() == "preview"
         # The picker names an edition, not a build, so scroll to the release
         # notes of the build actually installed.
         target_version = (load_settings().get("mc_version") or "").strip() or None

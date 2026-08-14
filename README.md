@@ -5,6 +5,7 @@
 **Minecraft Bedrock for Windows, running on Linux — with real Xbox sign-in,
 Friends, servers and Realms.**
 
+[Website](https://wyze3306.github.io/BedrockOnLinux/) ·
 [Latest release](https://github.com/Wyze3306/BedrockOnLinux/releases/latest) ·
 [Discord](https://discord.gg/5YJq54Yhbu) ·
 [Report a bug](https://github.com/Wyze3306/BedrockOnLinux/issues) ·

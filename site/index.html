@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BedrockOnLinux: Minecraft Bedrock Edition on Linux</title>
+<meta name="description" content="Play Minecraft Bedrock Edition on Linux with real Xbox sign-in, Friends, servers and Realms. Free open-source launcher for Ubuntu, Fedora, Arch and Steam Deck.">
+<link rel="canonical" href="https://wyze3306.github.io/BedrockOnLinux/">
+<meta name="theme-color" content="#2E9E4F">
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="BedrockOnLinux">
+<meta property="og:title" content="BedrockOnLinux: Minecraft Bedrock Edition on Linux">
+<meta property="og:description" content="Play Minecraft Bedrock Edition on Linux with real Xbox sign-in, Friends, servers and Realms. Free and open source.">
+<meta property="og:url" content="https://wyze3306.github.io/BedrockOnLinux/">
+<meta property="og:image" content="https://wyze3306.github.io/BedrockOnLinux/screenshot.png">
+<meta property="og:image:alt" content="The BedrockOnLinux launcher window on a Linux desktop">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="BedrockOnLinux: Minecraft Bedrock Edition on Linux">
+<meta name="twitter:description" content="Play Minecraft Bedrock Edition on Linux with real Xbox sign-in, Friends, servers and Realms.">
+<meta name="twitter:image" content="https://wyze3306.github.io/BedrockOnLinux/screenshot.png">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="#top" aria-label="BedrockOnLinux, back to top">
+    <img class="wordmark-block" src="icon.png" width="128" height="128" alt="">
+    <span>BedrockOnLinux</span>
+  </a>
+  <nav class="topbar-links" aria-label="Primary">
+    <a href="https://github.com/Wyze3306/BedrockOnLinux">Source</a>
+    <a href="https://discord.gg/5YJq54Yhbu">Discord</a>
+    <a class="topbar-cta" href="#download">Download</a>
+  </nav>
+</header>
+
+<main id="main">
+
+  <section class="band band-sky" id="top">
+    <div class="wrap hero">
+      <p class="eyebrow">Free · Open source · MIT</p>
+      <h1>Minecraft Bedrock Edition,<br>running on&nbsp;Linux.</h1>
+      <p class="lede">
+        Real Microsoft sign-in, with Friends, public servers and Realms. The game
+        comes from the Microsoft Store, downloaded with <em>your own account</em>.
+        No repacks, no relay.
+      </p>
+
+      <div class="hero-actions">
+        <a class="btn btn-primary" id="dl-main" href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">
+          <span class="btn-title">Download for Linux</span>
+          <span class="btn-sub" id="dl-main-sub">AppImage · latest release</span>
+        </a>
+        <a class="btn" href="#download">All formats and install commands</a>
+      </div>
+
+      <p class="distros">
+        <span>Ubuntu</span><span>Debian</span><span>Mint / LMDE</span><span>Fedora</span><span>Arch</span><span>openSUSE</span><span>Steam Deck</span>
+      </p>
+    </div>
+  </section>
+
+  <section class="band band-grass" id="download">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Download</p>
+        <h2>Pick the file for your system</h2>
+        <p class="section-lede">
+          Every build is x86-64. Not sure which one? Take the AppImage. It carries
+          its own Python, GUI toolkit and certificates, and runs on most desktops
+          without installing anything.
+        </p>
+      </div>
+
+      <div class="grid grid-3">
+        <article class="card card-pick">
+          <h3>AppImage</h3>
+          <p class="card-for">Most Linux desktops</p>
+          <a class="asset" data-asset="appimage" href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Download AppImage <span class="asset-size"></span></a>
+          <pre><code>chmod +x BedrockOnLinux-*.AppImage
+./BedrockOnLinux-*-x86_64.AppImage</code></pre>
+          <p class="card-note">No FUSE on your system? Run it with <code>APPIMAGE_EXTRACT_AND_RUN=1</code>.</p>
+        </article>
+
+        <article class="card card-pick">
+          <h3>.deb</h3>
+          <p class="card-for">Debian · Ubuntu · Mint · LMDE</p>
+          <a class="asset" data-asset="deb" href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Download .deb <span class="asset-size"></span></a>
+          <pre><code>sudo apt install ./bedrock-on-linux_*_amd64.deb</code></pre>
+          <p class="card-note">Puts <code>bedrock-on-linux</code> on your <code>PATH</code> and pulls in WebKitGTK.</p>
+        </article>
+
+        <article class="card card-pick">
+          <h3>.rpm</h3>
+          <p class="card-for">Fedora · Nobara</p>
+          <a class="asset" data-asset="rpm" href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Download .rpm <span class="asset-size"></span></a>
+          <pre><code>sudo dnf install ./bedrock-on-linux-*.x86_64.rpm</code></pre>
+          <p class="card-note">Same as the .deb: system install, dependencies declared.</p>
+        </article>
+
+        <article class="card card-pick">
+          <h3>Flatpak</h3>
+          <p class="card-for">Atomic systems such as Bazzite</p>
+          <a class="asset" data-asset="flatpak" href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Download Flatpak <span class="asset-size"></span></a>
+          <pre><code>flatpak install --user ./BedrockOnLinux-*-x86_64.flatpak</code></pre>
+          <p class="card-note">Sandboxed. It cannot write host shortcuts or inject client DLLs. The Store sign-in also needs WebKitGTK, which the runtime does not ship yet.</p>
+        </article>
+
+        <article class="card card-pick">
+          <h3>Portable .pyz</h3>
+          <p class="card-for">A host that already has Python and Tk</p>
+          <a class="asset" data-asset="pyz" href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Download .pyz <span class="asset-size"></span></a>
+          <pre><code>./bedrock-on-linux-*.pyz gui</code></pre>
+          <p class="card-note">Single file. It uses your system Python and installs its two pinned dependencies on first use.</p>
+        </article>
+
+        <article class="card card-pick card-verify">
+          <h3>Verify what you downloaded</h3>
+          <p class="card-for">Every release ships checksums</p>
+          <pre><code>sha256sum -c BedrockOnLinux-*-SHA256SUMS</code></pre>
+          <p class="card-note">
+            <a href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Release notes and all assets on GitHub →</a>
+          </p>
+        </article>
+      </div>
+
+      <p class="callout callout-warn">
+        <strong>You must own Minecraft.</strong> The game is downloaded from
+        Microsoft's own CDN, under your account's licence. BedrockOnLinux ships no
+        Minecraft files and redistributes none.
+      </p>
+    </div>
+  </section>
+
+  <section class="band band-dirt" id="start">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Get started</p>
+        <h2>Four steps, once</h2>
+      </div>
+
+      <ol class="steps">
+        <li>
+          <h3>Open BedrockOnLinux</h3>
+          <p>Nothing to configure first. The launcher checks your graphics stack before Wine ever runs.</p>
+        </li>
+        <li>
+          <h3>Sign in to Xbox</h3>
+          <p>Choose <b>Sign in</b>, open the Microsoft device-code page and type the code. You can skip this step. Offline, single-player worlds and LAN play still work. Only Realms, servers, the Marketplace and Xbox friends need the account.</p>
+        </li>
+        <li>
+          <h3>Pick an edition and press PLAY</h3>
+          <p>Choose <b>Minecraft</b> or <b>Minecraft Preview</b>. The first PLAY opens a separate Store sign-in window, where you link the Microsoft account that owns the game. That step is required: it authorises the download.</p>
+        </li>
+        <li>
+          <h3>Play</h3>
+          <p>Friends, Servers and Realms work from Minecraft's own tabs. The first run downloads the game and the engine, then verifies both. Later runs reuse them.</p>
+        </li>
+      </ol>
+
+      <div class="split">
+        <div>
+          <h3 class="h-sub">Steam and Steam Deck</h3>
+          <p>
+            Once a version is installed and an account is linked, Minecraft can
+            start on its own. <b>Tools ▸ Create direct launch shortcut</b> writes
+            a <i>Minecraft Bedrock</i> desktop entry. Add it through
+            <b>Add a Non-Steam Game</b> and it behaves like any other non-Steam
+            title, with Steam Input and Deck fullscreen handling.
+          </p>
+          <p>
+            Game Mode shows one window at a time, so <b>▶ PLAY</b> hands the screen
+            over. The launcher steps aside while Minecraft runs, then comes back
+            when you quit.
+          </p>
+        </div>
+        <div>
+          <h3 class="h-sub">From a terminal</h3>
+          <pre><code>bedrock-on-linux shortcut   # desktop / Steam entry
+bedrock-on-linux play       # launch right now
+bedrock-on-linux import world.mcworld
+bedrock-on-linux doctor     # host deps + GPU safety</code></pre>
+          <p class="card-note">On <code>PATH</code> with the .deb and .rpm. The AppImage, .pyz and Flatpak take the same commands through their own entry point.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band-stone" id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">What works</p>
+        <h2>The Xbox side is implemented, not faked</h2>
+        <p class="section-lede">
+          XGame configuration, XUser, request signing, gamertags, privileges and the
+          XSAPI context are native code inside the engine. You sign in to Microsoft
+          from inside Minecraft, exactly as on Windows.
+        </p>
+      </div>
+
+      <div class="grid grid-3">
+        <article class="card">
+          <h3>Real online play</h3>
+          <p>Friends, invitations, joining a friend's world, public servers and Realms all run on that identity. Realms gets its own token for the Bedrock Realms audience.</p>
+        </article>
+        <article class="card">
+          <h3>No relay, no proxy</h3>
+          <p>Sign-in happens directly between your machine, Microsoft and Xbox. Nothing is routed through a third party.</p>
+        </article>
+        <article class="card">
+          <h3>Nothing touches the running game</h3>
+          <p>The engine never scans or rewrites the Minecraft process, and packaging rejects any build that still contains that code. The launcher does adjust three files on disk before launch, including the game's stack size. Each edit is fingerprinted and skipped when it no longer matches.</p>
+        </article>
+        <article class="card">
+          <h3>Your desktop's file dialogs</h3>
+          <p><i>Import World</i> and custom-skin selection open your real file chooser. The engine implements the WinAppSDK picker for both Windows architectures.</p>
+        </article>
+        <article class="card">
+          <h3>Achievements</h3>
+          <p>Your existing list loads, through a user-only token built for Minecraft's own Achievements request. Nothing is unlocked, emulated or forced.</p>
+        </article>
+        <article class="card">
+          <h3>One machine, several players</h3>
+          <p>Separate Xbox profiles keep accounts, prefixes and worlds apart, while the multi-gigabyte game and its caches stay shared.</p>
+        </article>
+        <article class="card">
+          <h3>Worlds, add-ons and skins</h3>
+          <p><code>.mcworld</code>, <code>.mcaddon</code>, <code>.mcpack</code>, <code>.mctemplate</code> and <code>.mcskin</code> import from the command line. Nothing is overwritten.</p>
+        </article>
+        <article class="card">
+          <h3>Updates that roll back</h3>
+          <p>Engine updates are SHA-256 pinned and swapped atomically. A bad download, a full disk or a hash mismatch leaves the working engine exactly where it was.</p>
+        </article>
+        <article class="card">
+          <h3>Graphics safety first</h3>
+          <p>The launcher reads driver state that already exists. It never opens a Vulkan device just to test yours, and it refuses to start on top of a session that already died.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band-slate" id="requirements">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Requirements</p>
+        <h2>What you need</h2>
+      </div>
+
+      <div class="split">
+        <ul class="reqs">
+          <li><b>An x86-64 glibc desktop.</b> Checked against a glibc 2.31 baseline. ARM and musl-only systems such as stock Alpine are out of scope. You do not need a 32-bit userspace: the engine uses Wine's pure WoW64 path.</li>
+          <li><b>X11 or XWayland</b> for the launcher window. The game normally uses XWayland too. Native Wine Wayland exists behind <code>BOL_INPUT=wayland</code>, but it stays experimental.</li>
+          <li><b>A Vulkan 1.3 driver</b> exposing <code>VK_EXT_device_generated_commands</code>, or the older NVIDIA <code>VK_NV_device_generated_commands</code>. The bundled vkd3d-proton payload carries both.</li>
+          <li><b>Disk space</b> for the game, the compressed engine and a temporary extraction. <code>No space left on device</code> is harmless. Free some space and press PLAY again.</li>
+          <li><b>A Microsoft account that owns Minecraft.</b> Required to install at all, not only to play online.</li>
+          <li><b>WebKitGTK</b> (<code>libwebkit2gtk-4.1-0</code>) for the Store sign-in window. The .deb and .rpm pull it in, and <code>doctor</code> reports it when missing.</li>
+        </ul>
+
+        <div>
+          <div class="callout">
+            <h3 class="h-sub">Stuck on Vulkan 1.2?</h3>
+            <p>
+              <b>Settings ▸ Advanced ▸ Legacy compatibility renderer</b> exists,
+              but treat it as a last resort. It swaps the entire Direct3D stack to
+              WineD3D, dropping DXVK and vkd3d-proton. Minecraft renders purely
+              through D3D12, so this replaces exactly the renderer it uses.
+              Artifacts are common and performance may not improve.
+            </p>
+          </div>
+          <div class="callout callout-warn">
+            <h3 class="h-sub">If your desktop froze, don't just retry</h3>
+            <p>
+              Find out why the session died, then reboot. A fatal GPU event in the
+              kernel log means fixing the driver first. Once the launcher can prove
+              the incident belongs to a previous boot, <b>Settings ▸ Tools</b>
+              offers to acknowledge it.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band-deep" id="engine">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Under the hood</p>
+        <h2>Where the game comes from, and what runs it</h2>
+      </div>
+
+      <div class="split">
+        <div>
+          <p>
+            <a href="https://github.com/xodus-gaming/xodus">Xodus</a> signs in to
+            your Microsoft account, asks Microsoft's licensing service for the
+            title licence, and streams the MSIXVC package straight from the Xbox
+            CDN, decrypting it as it goes. This is the same path Windows takes.
+          </p>
+          <p>
+            The game then runs on a GDK-Proton engine built from a WineGDK fork.
+            You never need a compiler, a Windows install or a second machine.
+          </p>
+          <p class="card-note">
+            There is no version list. The Xbox CDN serves only the current build of
+            each edition, so you get whatever Microsoft is shipping today, exactly
+            as on Windows. The launcher re-checks for a delta every twelve hours
+            and downloads only what changed.
+          </p>
+        </div>
+        <div>
+          <h3 class="h-sub">Engine integrity</h3>
+          <ul class="reqs reqs-tight">
+            <li>The engine is <b>not built on your computer</b>. The launcher accepts only the revision and archive SHA-256 recorded in <code>bol/config.py</code>.</li>
+            <li>WineGDK is built in an unprivileged Debian 11 chroot. Every resulting ELF is rejected if it needs a glibc symbol newer than 2.31.</li>
+            <li>The exact source commit, the reviewed patches and per-file hashes live under <code>third_party/</code>.</li>
+            <li>Packaging embeds licences, provenance and a manifest hashing every critical runtime file, then extracts and re-checks the finished archive.</li>
+            <li>Installation uses a lock and a transactional rename, so an interrupted update can never quietly become the active engine.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band-bedrock" id="faq">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">FAQ</p>
+        <h2>Questions people actually ask</h2>
+      </div>
+
+      <div class="faq">
+        <details>
+          <summary>Do I need to own Minecraft?</summary>
+          <p>Yes. The game is downloaded from the Microsoft Store under your own account's licence, so that account has to own Minecraft Bedrock Edition. You can also point the launcher at a local copy you already have.</p>
+        </details>
+        <details>
+          <summary>Is this piracy? Does it ship Minecraft files?</summary>
+          <p>No. BedrockOnLinux ships no Minecraft game files and redistributes none by proxy either. It is a compatibility launcher: it fetches the real package from Microsoft's CDN with your licence, then runs it on Wine.</p>
+        </details>
+        <details>
+          <summary>Which Linux distributions are supported?</summary>
+          <p>Any x86-64 glibc desktop: Ubuntu, Debian, Linux Mint and LMDE, Fedora, Arch, openSUSE and their derivatives. Native packages exist for Debian-family and Fedora-family systems, an AppImage for everything else, and a Flatpak for atomic systems such as Bazzite.</p>
+        </details>
+        <details>
+          <summary>Do Realms, servers and Xbox friends work?</summary>
+          <p>Yes. Sign-in, Friends, invitations, joining a friend's world, public servers and Realms all run on a real Microsoft identity, implemented natively in the engine rather than on a proxy or a relay.</p>
+        </details>
+        <details>
+          <summary>Does it run on Steam Deck?</summary>
+          <p>Yes, including Game Mode. Add either the launcher or the generated <i>Minecraft Bedrock</i> shortcut as a non-Steam game. In Game Mode the launcher steps aside while the game runs, then comes back when you quit.</p>
+        </details>
+        <details>
+          <summary>Can I install an older Minecraft version?</summary>
+          <p>No. The Xbox CDN serves only the current build of each edition, so there is no way to match a server frozen on an older one. Updates arrive on their own.</p>
+        </details>
+        <details>
+          <summary>Does it work on Wayland?</summary>
+          <p>The launcher window needs X11 or XWayland, and the game normally uses XWayland too. Native Wine Wayland is available with <code>BOL_INPUT=wayland</code>, but it is experimental and does not remove the launcher's own requirement.</p>
+        </details>
+        <details>
+          <summary>Where does my Microsoft password go?</summary>
+          <p>Not through the launcher. Xbox sign-in uses Microsoft's device-code page in your browser, and the Store sign-in opens Microsoft's own page in a webview. Your credentials stay between you and Microsoft. The launcher only stores the resulting tokens, in its private data folder.</p>
+        </details>
+        <details>
+          <summary>Does it modify Minecraft?</summary>
+          <p>Not while it runs. The engine never scans or rewrites the Minecraft process, and packaging rejects any engine build that still contains that code. Before launch, the launcher does adjust three files on disk: two Wine libraries, and the game executable's stack size, which prevents a crash in the settings and pause menus. Every edit checks a byte fingerprint first and is skipped when the bytes no longer match.</p>
+        </details>
+        <details>
+          <summary>Does it run on ARM, a Raspberry Pi, or Alpine?</summary>
+          <p>No. Every build is x86-64 and glibc-based. ARM and musl-only systems are out of scope.</p>
+        </details>
+        <details>
+          <summary>Is it free?</summary>
+          <p>Yes. BedrockOnLinux is free and open source under the MIT licence. You still need to own the game.</p>
+        </details>
+      </div>
+
+      <div class="help">
+        <h3 class="h-sub">Something broke</h3>
+        <p>
+          Start with <code>bedrock-on-linux doctor</code> for host dependencies and
+          GPU safety, or <code>doctor --network</code> for DNS, TLS, clock and VPN
+          observations. Logs live in
+          <code>~/.local/share/bedrock-on-linux/logs/</code>, and
+          <b>Settings ▸ Open logs folder</b> opens them.
+        </p>
+        <p>
+          A bug report is much easier to act on with the launcher version, engine
+          revision, Minecraft version, distribution, GPU and driver, plus the
+          relevant logs. Never include account tokens.
+        </p>
+        <p class="help-links">
+          <a class="btn btn-small" href="https://github.com/Wyze3306/BedrockOnLinux/issues">Report a bug</a>
+          <a class="btn btn-small" href="https://discord.gg/5YJq54Yhbu">Ask on Discord</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-grid">
+    <div>
+      <p class="wordmark wordmark-footer"><img class="wordmark-block" src="icon.png" width="128" height="128" alt=""><span>BedrockOnLinux</span></p>
+      <p class="footer-note">
+        An independent compatibility project. Not affiliated with, endorsed by or
+        supported by Mojang or Microsoft. Minecraft is a trademark of Mojang AB.
+      </p>
+    </div>
+    <nav aria-label="Footer">
+      <h2 class="footer-h">Project</h2>
+      <a href="https://github.com/Wyze3306/BedrockOnLinux">Source code</a>
+      <a href="https://github.com/Wyze3306/BedrockOnLinux/releases/latest">Releases</a>
+      <a href="https://github.com/Wyze3306/BedrockOnLinux/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/Wyze3306/BedrockOnLinux/issues">Issues</a>
+    </nav>
+    <nav aria-label="Licensing">
+      <h2 class="footer-h">Licences</h2>
+      <a href="https://github.com/Wyze3306/BedrockOnLinux/blob/main/LICENSE">BedrockOnLinux (MIT)</a>
+      <a href="https://github.com/xodus-gaming/xodus">Xodus (GPL-3.0)</a>
+      <a href="https://github.com/Wyze3306/BedrockOnLinux/tree/main/third_party">Third-party provenance</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="main.js" defer></script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "BedrockOnLinux",
+  "description": "Free open-source launcher that runs Minecraft Bedrock Edition on Linux with real Xbox sign-in, Friends, public servers and Realms.",
+  "applicationCategory": "GameApplication",
+  "operatingSystem": "Linux (x86-64, glibc 2.31+)",
+  "url": "https://wyze3306.github.io/BedrockOnLinux/",
+  "downloadUrl": "https://github.com/Wyze3306/BedrockOnLinux/releases/latest",
+  "installUrl": "https://github.com/Wyze3306/BedrockOnLinux/releases/latest",
+  "screenshot": "https://wyze3306.github.io/BedrockOnLinux/screenshot.png",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "Wyze3306", "url": "https://github.com/Wyze3306" },
+  "codeRepository": "https://github.com/Wyze3306/BedrockOnLinux"
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Do I need to own Minecraft?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The game is downloaded from the Microsoft Store under your own account's licence, so that account has to own Minecraft Bedrock Edition. You can also point the launcher at a local copy you already have." } },
+    { "@type": "Question", "name": "Is this piracy? Does it ship Minecraft files?", "acceptedAnswer": { "@type": "Answer", "text": "No. BedrockOnLinux ships no Minecraft game files and redistributes none by proxy either. It is a compatibility launcher: it fetches the real package from Microsoft's CDN with your licence, then runs it on Wine." } },
+    { "@type": "Question", "name": "Which Linux distributions are supported?", "acceptedAnswer": { "@type": "Answer", "text": "Any x86-64 glibc desktop: Ubuntu, Debian, Linux Mint and LMDE, Fedora, Arch, openSUSE and their derivatives. Native packages exist for Debian-family and Fedora-family systems, an AppImage for everything else, and a Flatpak for atomic systems such as Bazzite." } },
+    { "@type": "Question", "name": "Do Realms, servers and Xbox friends work?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Sign-in, Friends, invitations, joining a friend's world, public servers and Realms all run on a real Microsoft identity, implemented natively in the engine rather than on a proxy or a relay." } },
+    { "@type": "Question", "name": "Does it run on Steam Deck?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, including Game Mode. Add either the launcher or the generated Minecraft Bedrock shortcut as a non-Steam game. In Game Mode the launcher steps aside while the game runs, then comes back when you quit." } },
+    { "@type": "Question", "name": "Can I install an older Minecraft version?", "acceptedAnswer": { "@type": "Answer", "text": "No. The Xbox CDN serves only the current build of each edition, so there is no way to match a server frozen on an older one. Updates arrive on their own." } },
+    { "@type": "Question", "name": "Does it work on Wayland?", "acceptedAnswer": { "@type": "Answer", "text": "The launcher window needs X11 or XWayland, and the game normally uses XWayland too. Native Wine Wayland is available with BOL_INPUT=wayland, but it is experimental and does not remove the launcher's own requirement." } },
+    { "@type": "Question", "name": "Where does my Microsoft password go?", "acceptedAnswer": { "@type": "Answer", "text": "Not through the launcher. Xbox sign-in uses Microsoft's device-code page in your browser, and the Store sign-in opens Microsoft's own page in a webview. Your credentials stay between you and Microsoft. The launcher only stores the resulting tokens, in its private data folder." } },
+    { "@type": "Question", "name": "Does it modify Minecraft?", "acceptedAnswer": { "@type": "Answer", "text": "Not while it runs. The engine never scans or rewrites the Minecraft process, and packaging rejects any engine build that still contains that code. Before launch, the launcher does adjust three files on disk: two Wine libraries, and the game executable's stack size, which prevents a crash in the settings and pause menus. Every edit checks a byte fingerprint first and is skipped when the bytes no longer match." } },
+    { "@type": "Question", "name": "Does it run on ARM, a Raspberry Pi, or Alpine?", "acceptedAnswer": { "@type": "Answer", "text": "No. Every build is x86-64 and glibc-based. ARM and musl-only systems are out of scope." } },
+    { "@type": "Question", "name": "Is it free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. BedrockOnLinux is free and open source under the MIT licence. You still need to own the game." } }
+  ]
+}
+</script>
+
+</body>
+</html>
