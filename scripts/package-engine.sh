@@ -301,6 +301,7 @@ WINEGDK_NATIVE_PROVENANCE_FILES=(
   0005-winex11-use-client-surface-origin.patch
   0006-xgameruntime-stop-faking-xstore-answers.patch
   0007-ntdll-load-main-image-from-a-mapped-fd.patch
+  0008-ntdll-accept-a-path-in-the-image-map.patch
 )
 
 verify_sha256() {
@@ -350,10 +351,10 @@ verify_winegdk_source_provenance() {
     "ee0543f11737a11f5edec389967bb41482c7f5eda3807c24d171dd6bf6301274" \
     "WineGDK r12 source delta"
   verify_sha256 "$native_root/README.md" \
-    "04bbe7412e66e61dac3be4f1ec2eeda1590d9bfb184bece8575eca4c5d9377b6" \
+    "2135fa80f798eb41c5298fc429a1766507e51e77215c24a4197369ba782d0d0f" \
     "WineGDK native5 source-delta README"
   verify_sha256 "$native_root/SOURCE-SHA256SUMS" \
-    "64110338d984b672402bdc46d6681894070cba8c4a3342769008aefed33bd9db" \
+    "0feb01ca058086eccf4f4a0e6895f541547ae89aa0d2ab86f08291224de5ed46" \
     "WineGDK native5 source hash lock"
   verify_sha256 \
     "$native_root/0001-winegdk-native5-Xbox-and-file-picker-runtime.patch" \
@@ -383,6 +384,10 @@ verify_winegdk_source_provenance() {
     "$native_root/0007-ntdll-load-main-image-from-a-mapped-fd.patch" \
     "0ebb25f67183b0bb052b9cbb76f6a0aca02be89fc7be448ff94702b178e9ffc6" \
     "WineGDK ntdll mapped-fd main-image loader"
+  verify_sha256 \\
+    "$native_root/0008-ntdll-accept-a-path-in-the-image-map.patch" \\
+    "7510e707abf9869d40b855754d58c025e1bd98cec455bef3dbec79e9d14461a3" \\
+    "WineGDK ntdll image-map path support"
 }
 
 has_marker() {
@@ -866,6 +871,7 @@ for relative_root, names in (
         "native5/0005-winex11-use-client-surface-origin.patch",
         "native5/0006-xgameruntime-stop-faking-xstore-answers.patch",
         "native5/0007-ntdll-load-main-image-from-a-mapped-fd.patch",
+        "native5/0008-ntdll-accept-a-path-in-the-image-map.patch",
     )),
     (gdk_proton_provenance_root, ("provenance.env",)),
 ):

@@ -9,7 +9,7 @@ from .config import LOGS
 from .deps import ensure_login_deps
 from .fixups import fix_curl_ssl, hide_signin_button, install_gdk_xbox_dlls
 from .gameinput import install_gameinput
-from .games import _auto_edition, _game_root, install_game, use_game_dir
+from .games import _auto_selection, _game_root, install_game, use_game_dir
 from .log import BolError, info, ok, warn
 from .prefix import (
     active_prefix,
@@ -22,27 +22,30 @@ from .proton import ensure_proton
 from .util import launcher_owned_overrides, load_settings, mkdirs
 from .winegdk import ensure_winegdk
 
-def do_setup(game_dir=None, mc_edition=None, proton_tag=None, force=False,
-             progress=None):
+def do_setup(game_dir=None, mc_edition=None, mc_version=None, proton_tag=None,
+             force=False, progress=None):
     """Install/update shared game, engine and prefix state exclusively."""
     with shared_assets_lock(
             "install or update BedrockOnLinux", exclusive=True), \
             prefix_operation_lock("install or update BedrockOnLinux"):
-        return _do_setup(game_dir, mc_edition, proton_tag, force, progress)
+        return _do_setup(game_dir, mc_edition, mc_version, proton_tag,
+                         force, progress)
 
 
-def _do_setup(game_dir=None, mc_edition=None, proton_tag=None, force=False,
-              progress=None):
+def _do_setup(game_dir=None, mc_edition=None, mc_version=None, proton_tag=None,
+              force=False, progress=None):
     mkdirs()
     s = load_settings()
     ensure_login_deps()
     if mc_edition:
-        use_game_dir(install_game(mc_edition, progress, force=force))
+        use_game_dir(install_game(mc_edition, mc_version, progress,
+                                  force=force))
     elif game_dir and _game_root(Path(game_dir).expanduser()):
         use_game_dir(game_dir)
     cur = load_settings().get("game_dir")
     if not cur or not _game_root(Path(cur)):
-        use_game_dir(install_game(_auto_edition(s), progress, force=force))
+        edition, version = _auto_selection(s)
+        use_game_dir(install_game(edition, version, progress, force=force))
     gd = Path(load_settings()["game_dir"])
     if load_settings().get("proton_source") == "winegdk":
         ensure_winegdk(force, progress)

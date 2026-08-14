@@ -3,13 +3,27 @@
 
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from bol import games
 from bol.log import BolError
+
+
+_CATALOGUE = (
+    {"version": "1.26.44.3",
+     "urls": ["http://assets1.xboxlive.com/Z/a/"
+              "7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4403.0.b/x.msixvc"]},
+    {"version": "1.26.42.1",
+     "urls": ["http://assets1.xboxlive.com/Z/a/"
+              "7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4201.0.b/x.msixvc"]},
+)
+
+
+def _catalogue(installed=()):
+    return [dict(entry, installed=entry["version"] in installed)
+            for entry in _CATALOGUE]
 
 
 def _write_game(root, marker=b"MZ game"):
@@ -23,27 +37,30 @@ def _write_game(root, marker=b"MZ game"):
 
 class EditionListingTests(unittest.TestCase):
     def test_beta_edition_is_hidden_unless_requested(self):
-        with mock.patch.object(games, "GAMES", Path("/nonexistent")):
-            stable = games.list_editions(include_beta=False)
-            everything = games.list_editions(include_beta=True)
+        stable = games.list_editions(include_beta=False)
+        everything = games.list_editions(include_beta=True)
 
         self.assertTrue(stable)
         self.assertTrue(all(not e["beta"] for e in stable))
         self.assertTrue(any(e["beta"] for e in everything))
         self.assertGreater(len(everything), len(stable))
 
-    def test_listing_reports_the_installed_build(self):
+
+class VersionListingTests(unittest.TestCase):
+    def test_builds_already_on_disk_are_marked(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            _write_game(base / "release")
-            with mock.patch.object(games, "GAMES", base):
-                editions = games.list_editions(include_beta=True)
+            _write_game(base / "release" / "1.26.42.1")
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "version_catalogue",
+                                      return_value=_CATALOGUE):
+                builds = games.list_versions("release")
 
-        by_id = {e["id"]: e for e in editions}
-        # The store serves only the current build, so the number shown comes
-        # from the manifest of what is actually installed.
-        self.assertEqual(by_id["release"]["installed"], "1.26.33.1")
-        self.assertIsNone(by_id["preview"]["installed"])
+        by_version = {b["version"]: b for b in builds}
+        # Switching back to a build you already have must cost nothing, so the
+        # picker has to be able to say which those are.
+        self.assertTrue(by_version["1.26.42.1"]["installed"])
+        self.assertFalse(by_version["1.26.44.3"]["installed"])
 
 
 class InstallTests(unittest.TestCase):
@@ -52,122 +69,89 @@ class InstallTests(unittest.TestCase):
         # inherited from before the Store switch. Without this the tests would
         # read whatever is installed on the machine running them.
         self.settings = {}
-        patcher = mock.patch.object(
-            games, "load_settings", side_effect=lambda: dict(self.settings))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target, kwargs in (
+                ("load_settings", {"side_effect": lambda: dict(self.settings)}),
+                ("list_versions", {"return_value": _catalogue()})):
+            patcher = mock.patch.object(games, target, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _edition(self):
         return {"id": "release", "product": "9NBLGGH2JHXJ",
                 "name": "Minecraft for Windows", "beta": False}
 
-    def test_fresh_install_streams_and_records_the_product(self):
+    def test_no_version_named_installs_the_newest(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            edition = self._edition()
 
-            def fake_install(product, dest, progress=None):
+            def fake_install(url, dest, progress=None):
                 _write_game(Path(dest))
-                return dest
 
             with mock.patch.object(games, "GAMES", base), \
                     mock.patch.object(games.xodus, "install",
                                       side_effect=fake_install) as install:
-                root = games.install_game(edition)
-
-            install.assert_called_once()
-            self.assertEqual(install.call_args[0][0], "9NBLGGH2JHXJ")
-            self.assertTrue((root / "Minecraft.Windows.exe").exists())
-            record = json.loads(
-                (base / "release" / games._INSTALL_METADATA).read_text())
-            self.assertEqual(record["product"], "9NBLGGH2JHXJ")
-
-    def test_recent_install_is_not_restreamed(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            _write_game(base / "release")
-            games._write_install_record(base / "release", self._edition())
-
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(games.xodus, "install") as install:
-                games.install_game(self._edition())
-
-            # Re-checking the CDN on every launch would cost package metadata
-            # for nothing; the delta check is on an interval.
-            install.assert_not_called()
-
-    def test_stale_install_is_delta_checked(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            self._stale(base)
-
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(games.xodus, "install") as install:
-                games.install_game(self._edition())
-
-            install.assert_called_once()
-
-    def test_clock_moving_backwards_does_not_freeze_the_build(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            _write_game(base / "release")
-            games._write_install_record(base / "release", self._edition())
-            record_path = base / "release" / games._INSTALL_METADATA
-            record = json.loads(record_path.read_text())
-            record["checked"] = int(time.time()) + 10 * games._UPDATE_INTERVAL
-            record_path.write_text(json.dumps(record), encoding="utf-8")
-
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(games.xodus, "install") as install:
-                games.install_game(self._edition())
-
-            install.assert_called_once()
-
-    def test_a_different_product_in_the_folder_is_replaced(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            _write_game(base / "release")
-            games._write_install_record(
-                base / "release",
-                {"id": "release", "product": "SOMETHINGELSE"})
-
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(games.xodus, "install") as install:
-                games.install_game(self._edition())
-
-            install.assert_called_once()
-
-    def _stale(self, base):
-        _write_game(base / "release")
-        games._write_install_record(base / "release", self._edition())
-        record_path = base / "release" / games._INSTALL_METADATA
-        record = json.loads(record_path.read_text())
-        record["checked"] = int(time.time()) - games._UPDATE_INTERVAL - 1
-        record_path.write_text(json.dumps(record), encoding="utf-8")
-        return record_path
-
-    def test_a_failed_update_check_still_starts_the_installed_game(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            record_path = self._stale(base)
-
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(
-                        games.xodus, "install",
-                        side_effect=BolError("no network")):
                 root = games.install_game(self._edition())
 
-            # Being offline or signed out must not stand between the player
-            # and a game that is already installed and complete.
-            self.assertTrue((root / "Minecraft.Windows.exe").exists())
-            # The check is rescheduled, not retried on every single launch.
-            self.assertFalse(games._update_due(
-                base / "release", json.loads(record_path.read_text())))
+            self.assertEqual(root, base / "release" / "1.26.44.3")
+            self.assertIn("1.26.4403", install.call_args[0][0])
+            record = json.loads(
+                (base / "release" / "1.26.44.3"
+                 / games._INSTALL_METADATA).read_text())
+            self.assertEqual(record["version"], "1.26.44.3")
+
+    def test_a_named_version_is_the_one_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def fake_install(url, dest, progress=None):
+                _write_game(Path(dest))
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install",
+                                      side_effect=fake_install) as install:
+                root = games.install_game(self._edition(), "1.26.42.1")
+
+            self.assertEqual(root, base / "release" / "1.26.42.1")
+            self.assertIn("1.26.4201", install.call_args[0][0])
+
+    def test_a_build_already_on_disk_is_not_downloaded_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release" / "1.26.42.1")
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install") as install:
+                games.install_game(self._edition(), "1.26.42.1")
+
+            install.assert_not_called()
+
+    def test_a_delisted_version_falls_back_to_the_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def fake_install(url, dest, progress=None):
+                _write_game(Path(dest))
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install",
+                                      side_effect=fake_install):
+                root = games.install_game(self._edition(), "1.0.0.0")
+
+            # A build Microsoft stopped serving must not leave PLAY dead.
+            self.assertEqual(root, base / "release" / "1.26.44.3")
+
+    def test_an_empty_catalogue_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(games, "GAMES", Path(tmp)), \
+                mock.patch.object(games, "list_versions", return_value=[]), \
+                self.assertRaises(BolError):
+            games.install_game(self._edition())
 
     def test_an_install_from_before_the_store_switch_still_starts(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            # The pre-Store layout is GAMES/<version-tag>/, not GAMES/<edition>/.
+            # The pre-Store layout is GAMES/<version-tag>/, not
+            # GAMES/<edition>/<version>/.
             legacy = _write_game(base / "1.26.42.1" / "Microsoft.MinecraftUWP")
             self.settings["game_dir"] = str(legacy)
 
@@ -179,33 +163,6 @@ class InstallTests(unittest.TestCase):
 
             # An upgrade must not strand a player on a game they already have.
             self.assertEqual(root, legacy)
-
-    def test_a_store_install_is_preferred_over_the_inherited_copy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            legacy = _write_game(base / "1.26.42.1" / "Microsoft.MinecraftUWP")
-            self.settings["game_dir"] = str(legacy)
-
-            def fake_install(product, dest, progress=None):
-                _write_game(Path(dest))
-                return dest
-
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(games.xodus, "install",
-                                      side_effect=fake_install):
-                root = games.install_game(self._edition())
-
-            self.assertEqual(root, base / "release")
-
-    def test_a_failed_install_with_nothing_installed_is_an_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(
-                        games.xodus, "install",
-                        side_effect=BolError("no network")), \
-                    self.assertRaises(BolError):
-                games.install_game(self._edition())
 
     def test_being_signed_out_is_surfaced_not_swallowed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -223,25 +180,21 @@ class InstallTests(unittest.TestCase):
                     self.assertRaises(games.xodus.NotSignedIn):
                 games.install_game(self._edition())
 
-    def test_a_forced_update_failure_is_still_an_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            self._stale(base)
-            with mock.patch.object(games, "GAMES", base), \
-                    mock.patch.object(
-                        games.xodus, "install",
-                        side_effect=BolError("no network")), \
-                    self.assertRaises(BolError):
-                games.install_game(self._edition(), force=True)
+    def test_a_failed_download_with_nothing_installed_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(games, "GAMES", Path(tmp)), \
+                mock.patch.object(games.xodus, "install",
+                                  side_effect=BolError("no network")), \
+                self.assertRaises(BolError):
+            games.install_game(self._edition())
 
     def test_incomplete_tree_after_streaming_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
 
-            def truncated(product, dest, progress=None):
+            def truncated(url, dest, progress=None):
                 Path(dest).mkdir(parents=True, exist_ok=True)
                 (Path(dest) / "Minecraft.Windows.exe").write_bytes(b"MZ")
-                return dest
 
             with mock.patch.object(games, "GAMES", base), \
                     mock.patch.object(games.xodus, "install",
@@ -255,7 +208,7 @@ class SelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             games_dir = base / "games"
-            root = _write_game(games_dir / "preview")
+            root = _write_game(games_dir / "preview" / "1.26.50.25")
             settings = {}
 
             with mock.patch.object(games, "GAMES", games_dir), \
@@ -267,9 +220,9 @@ class SelectionTests(unittest.TestCase):
                 games.use_game_dir(root)
 
         self.assertEqual(settings["mc_edition"], "preview")
-        self.assertEqual(settings["mc_version"], "1.26.33.1")
+        self.assertEqual(settings["mc_version"], "1.26.50.25")
 
-    def test_imported_folder_leaves_the_edition_alone(self):
+    def test_imported_folder_leaves_the_selection_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = _write_game(base / "elsewhere")
@@ -286,16 +239,20 @@ class SelectionTests(unittest.TestCase):
         # A copy from outside the managed tree is not an edition; keeping the
         # previous choice would let the next setup reinstall over it.
         self.assertEqual(settings["mc_edition"], "release")
-        self.assertEqual(settings["game_dir"], str(root.resolve()))
+        # Its own build is still reported, from the manifest.
+        self.assertEqual(settings["mc_version"], "1.26.33.1")
 
-    def test_auto_edition_prefers_the_remembered_choice(self):
-        chosen = games._auto_edition({"mc_edition": "preview"})
-        self.assertEqual(chosen["id"], "preview")
+    def test_auto_selection_prefers_the_remembered_choice(self):
+        edition, version = games._auto_selection(
+            {"mc_edition": "preview", "mc_version": "1.26.50.25"})
+        self.assertEqual(edition["id"], "preview")
+        self.assertEqual(version, "1.26.50.25")
 
-    def test_auto_edition_falls_back_to_the_stable_one(self):
-        with mock.patch.object(games, "GAMES", Path("/nonexistent")):
-            chosen = games._auto_edition({})
-        self.assertFalse(chosen["beta"])
+    def test_auto_selection_falls_back_to_the_stable_edition(self):
+        edition, version = games._auto_selection({})
+        self.assertFalse(edition["beta"])
+        # No version means "whatever is newest", which install_game resolves.
+        self.assertIsNone(version)
 
 
 class ManifestVersionTests(unittest.TestCase):

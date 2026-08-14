@@ -37,7 +37,7 @@ from .relocation import (
 )
 from .content import _mojang_dir, import_content
 from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
-from .games import list_editions
+from .games import list_editions, list_versions
 from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
@@ -507,6 +507,20 @@ class _ThemedMessageBox:
         ) == "Yes"
 
 
+_LOADING_VERSIONS = "Loading…"
+_NO_VERSIONS = "No build listed"
+
+
+def _build_label(build):
+    """Menu label for a catalogue entry.
+
+    A tick marks builds already on disk, because switching back to one of
+    those costs nothing while any other choice is a download.
+    """
+    return f"{build['version']}  ✓" if build.get("installed") \
+        else str(build["version"])
+
+
 def _create_play_icon(size=16, fg_color="white", bg_color="black"):
     import tkinter as tk
     fg = Theme.r(fg_color)
@@ -798,7 +812,7 @@ def gui():
                 self.win = None
 
     na = NativeAuth()
-    ui = {"versions": [], "busy": False, "details": False,
+    ui = {"versions": [], "builds": [], "busy": False, "details": False,
           "launch_active": False, "changelog_active": False,
           "changelogs_loaded": False, "changelog_head": None,
           "settings_head": None,
@@ -933,11 +947,19 @@ def gui():
     # a list: the choice is Minecraft or Minecraft Preview, and both fit in a
     # two-segment toggle that is always visible.
     edition_var = tk.StringVar(value="release")
+    version_var = tk.StringVar(value=_LOADING_VERSIONS)
     edition_buttons = {}
+    _builds_ui = {"dialog": None, "pending": False}
 
     def current_edition():
         return next((v for v in (ui.get("versions") or [])
                      if v["id"] == edition_var.get()), None)
+
+    def selected_build():
+        """The catalogue entry the build menu names, or None while loading."""
+        label = version_var.get()
+        return next((b for b in (ui.get("builds") or [])
+                     if _build_label(b) == label), None)
 
     def _edition_name(edition_id):
         """Short display name, usable before the edition list has loaded."""
@@ -951,6 +973,23 @@ def gui():
         if edition_var.get() == edition_id:
             return
         edition_var.set(edition_id)
+        # Show the switch immediately and blank the build list, so the click
+        # is visibly taken even though the new list arrives a moment later --
+        # and so nothing persists a build belonging to the other edition.
+        ui["builds"] = []
+        _builds_ui["pending"] = False
+        close_build_list()
+        version_var.set(_LOADING_VERSIONS)
+        _update_selected_chip()
+        # Pass the edition explicitly: the click decides, and re-reading it
+        # from settings here is what used to lose clicks.
+        threading.Thread(target=refresh_versions, args=(edition_id,),
+                         daemon=True).start()
+
+    def select_version(label=None):
+        if label is not None:
+            version_var.set(label)
+        close_build_list()
         _update_selected_chip()
 
     def _sync_theme(w, is_beta=None):
@@ -1022,7 +1061,6 @@ def gui():
     def _update_selected_chip():
         chosen = edition_var.get()
         is_beta = chosen == "preview"
-        entry = current_edition()
 
         s = load_settings()
         changed = False
@@ -1031,6 +1069,10 @@ def gui():
             changed = True
         if s.get("mc_edition") != chosen:
             s["mc_edition"] = chosen
+            changed = True
+        build = selected_build()
+        if build and s.get("mc_version") != build["version"]:
+            s["mc_version"] = build["version"]
             changed = True
         # show_betas is no longer a setting of its own; it is what picking
         # Preview means, and util.mc_releases() still reads it to choose which
@@ -1041,12 +1083,10 @@ def gui():
         if changed:
             save_settings(s)
 
-        # The build number comes from the manifest of what is installed, so it
-        # only appears once there is something installed to report.
-        installed = (entry or {}).get("installed")
         name = _edition_name(chosen)
+        shown = build["version"] if build else ""
         selected_chip.configure(
-            text=f"  {name}{'  ·  ' + installed if installed else ''}  ",
+            text=f"  {name}{'  ·  ' + shown if shown else ''}  ",
             text_color=T.GOLD if is_beta else T.GREEN,
             fg_color=T.GOLD_DIM if is_beta else T.GREEN_DIM)
 
@@ -1067,12 +1107,15 @@ def gui():
             from .util import mc_releases
             load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
 
-    # Two segments instead of a dropdown: with one build per edition there is
-    # nothing to search, scroll or resize, so the popup, its saved height and
-    # its outside-click handling all go away with it.
-    ed_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD,
+    # Edition on the left, build on the right. The old picker was a custom
+    # popup with a search box, a resizable window, a saved height and
+    # outside-click handling; the edition is two buttons and the build is a
+    # stock option menu, so none of that has to exist.
+    row = ctk.CTkFrame(vbox, fg_color="transparent")
+    row.pack(anchor="w")
+    ed_field = ctk.CTkFrame(row, fg_color=T.CARD_2, bg_color=T.CARD,
                             corner_radius=12, height=52)
-    ed_field.pack(anchor="w")
+    ed_field.pack(side="left")
     ed_field.pack_propagate(False)
 
     def _paint_edition_toggle():
@@ -1096,6 +1139,83 @@ def gui():
         edition_buttons[_eid] = _button
     Tooltip(ed_field, "Minecraft, or the Preview build")
     _paint_edition_toggle()
+
+    # The build list lives inside the launcher window rather than in a menu
+    # the window manager owns. A CTkOptionMenu posts a Tk menu as its own
+    # top-level window, and here that window could not be clicked reliably --
+    # the click opened it, and then nothing. Placing the list in root sidesteps
+    # stacking and grabs entirely, and it still costs a fraction of the old
+    # picker: no search box, no resizing, no remembered height.
+    build_field = ctk.CTkFrame(row, fg_color=T.CARD_2, bg_color=T.CARD,
+                               corner_radius=12, width=168, height=52)
+    build_field.pack(side="left", padx=(10, 0))
+    build_field.pack_propagate(False)
+    build_label = ctk.CTkLabel(build_field, textvariable=version_var,
+                               text_color=T.FG, font=font(14), anchor="w")
+    build_label.pack(side="left", fill="x", expand=True, padx=(14, 0))
+    build_arrow = ctk.CTkLabel(build_field, text="▾", text_color=T.SUB,
+                               font=font(15, "bold"))
+    build_arrow.pack(side="right", padx=(0, 12))
+    Tooltip(build_field, "Which build to play")
+
+    def open_build_list(_event=None):
+        """Choose a build from a small dialog.
+
+        Not a dropdown: a CTkOptionMenu posts a Tk menu that the window manager
+        owns, and here that menu opened but could not be clicked -- which is
+        why the old picker rolled its own. A dialog with a scrollable list is
+        the same shape as the Settings panes, which already work, and it needs
+        no search box, no resizing and no remembered height.
+        """
+        if _builds_ui["dialog"] is not None:
+            return
+        builds = ui.get("builds") or []
+        if not builds:
+            # The list is still being fetched. Remember the click instead of
+            # dropping it: a click that does nothing at all is why this felt
+            # like it needed several tries.
+            _builds_ui["pending"] = True
+            return
+        d = dialog("Choose a build", 300, 420)
+        _builds_ui["dialog"] = d
+
+        def done(_event=None):
+            _builds_ui["dialog"] = None
+            build_arrow.configure(text="▾")
+            if d.winfo_exists():
+                d.destroy()
+        d.protocol("WM_DELETE_WINDOW", done)
+        d.bind("<Destroy>", lambda e: done() if e.widget is d else None)
+        build_arrow.configure(text="▴")
+
+        ctk.CTkLabel(d, text=_edition_name(edition_var.get()),
+                     text_color=T.SUB, font=font(12)).pack(pady=(12, 6))
+        listing = ctk.CTkScrollableFrame(d, fg_color=T.CARD_2,
+                                         corner_radius=10)
+        listing.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        current = version_var.get()
+        for build in builds:
+            label = _build_label(build)
+            chosen = label == current
+            entry = mkbtn(listing, label,
+                          (lambda v=label: (select_version(v), done())),
+                          kind="ghost", height=32, font=font(13),
+                          corner_radius=8, anchor="w",
+                          fg_color=T.THEME_DIM if chosen else T.CARD_2,
+                          hover_color=T.CARD_3,
+                          text_color=T.THEME_ACCENT if chosen else T.FG)
+            entry.pack(fill="x", padx=6, pady=2)
+        _enable_scrollable_frame_wheel(listing)
+
+    def close_build_list(_event=None):
+        d = _builds_ui["dialog"]
+        if d is not None and d.winfo_exists():
+            d.destroy()
+        _builds_ui["dialog"] = None
+        build_arrow.configure(text="▾")
+
+    for _w in (build_field, build_label, build_arrow):
+        _w.bind("<Button-1>", open_build_list)
 
     rbox = ctk.CTkFrame(bar, fg_color="transparent")
     rbox.pack(side="right")
@@ -1474,20 +1594,51 @@ def gui():
                           height=32, font=font(16), corner_radius=8)
         copy_btn.pack(side="left", padx=(2, 0))
 
-    def refresh_versions():
+    def refresh_versions(edition_id=None):
+        """Fill the build menu for an edition.
+
+        ``edition_id`` is what the player just clicked. Only the startup call
+        omits it and lets the stored settings choose -- re-reading them on
+        every refresh meant a click could be undone by a listing that had
+        already read the previous value, which is why switching edition
+        needed several tries.
+        """
         # Both editions are always offered; the toggle is the choice, so there
         # is no longer a setting deciding whether Preview is even listed.
+        ui["versions"] = list_editions(include_beta=True)
+        known = {v["id"] for v in ui["versions"]}
+        chosen = edition_id
+        if chosen is None:
+            chosen = (load_settings().get("mc_edition") or "").strip()
+            if chosen not in known:
+                chosen = "release"
+            root.after(0, lambda: edition_var.set(chosen))
+        want = (load_settings().get("mc_version") or "").strip()
         try:
-            ui["versions"] = list_editions(include_beta=True)
+            builds = list_versions(chosen)
         except Exception as e:
-            log._LOG_SINK(f"xx editions: {e}")
-            return
+            log._LOG_SINK(f"xx builds: {e}")
+            builds = []
 
         def ap():
-            known = {v["id"] for v in ui["versions"]}
-            cur = (load_settings().get("mc_edition") or "").strip()
-            edition_var.set(cur if cur in known else "release")
+            # Ignore a listing that finished after the player moved on.
+            if edition_var.get() != chosen:
+                return
+            ui["builds"] = builds
+            labels = [_build_label(b) for b in builds]
+            # Keep the build already showing when it exists here too, so a
+            # refresh never silently moves the player to another one.
+            current = version_var.get()
+            pick = current if current in labels else next(
+                (label for label, b in zip(labels, builds)
+                 if b["version"] == want), labels[0] if labels else "")
+            version_var.set(pick or _NO_VERSIONS)
+            close_build_list()
             _update_selected_chip()
+            if _builds_ui["pending"] and builds:
+                # Honour the click made while this was still loading.
+                _builds_ui["pending"] = False
+                open_build_list()
         root.after(0, ap)
 
     def selected_version():
@@ -1577,10 +1728,10 @@ def gui():
         done.wait()
         return bool(answer.get("yes"))
 
-    def _setup_with_store_account(ver):
+    def _setup_with_store_account(ver, version=None):
         from . import xodus
         try:
-            do_setup(mc_edition=ver, progress=set_progress)
+            do_setup(mc_edition=ver, mc_version=version, progress=set_progress)
         except xodus.NotSignedIn:
             if not _ask_on_main(
                     "Sign in to download Minecraft",
@@ -1595,7 +1746,7 @@ def gui():
                 return
             set_status("Waiting for the Microsoft sign-in…", T.FG)
             xodus.login()
-            do_setup(mc_edition=ver, progress=set_progress)
+            do_setup(mc_edition=ver, mc_version=version, progress=set_progress)
 
     def do_play():
         if ui["busy"]:
@@ -1607,7 +1758,9 @@ def gui():
         def work():
             try:
                 ver = selected_version()
-                _setup_with_store_account(ver)
+                build = selected_build()
+                _setup_with_store_account(
+                    ver, build["version"] if build else None)
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
                 try:

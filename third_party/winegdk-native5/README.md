@@ -86,7 +86,19 @@ helpers this Wine base predates, and carrying only the loader change: the
 upstream commit's standalone C launcher is replaced by the launcher's own
 Python implementation in `bol/launch.py`.
 
+The `0008` patch lets a `WINE_DLL_FILE_MAP` entry name a file instead of a
+descriptor, chosen by a leading `/`. `0007` alone is enough on a bare Wine, but
+not through a container: Minecraft runs inside the Steam Linux Runtime, where a
+descriptor number means nothing, and Wine died on `sendmsg: Bad file
+descriptor` before drawing a frame. The loader now opens such an entry, unlinks
+it immediately, and maps the descriptor it is left holding — so the decrypted
+image has no name from the first instant and is reachable only through that
+process, exactly as an anonymous mapping would be. The launcher stages it on
+`/dev/shm`, which is RAM, so nothing reaches durable storage either. Descriptor
+entries are unchanged, and a map with no matching entry still falls through to
+the ordinary on-disk path.
+
 `SOURCE-SHA256SUMS` pins every source file changed by the cumulative r12 to
 native5 delta and its follow-ups. The Bullseye builder applies the reviewed r12
 and native patches when the target commit is unavailable, always applies `0002`
-through `0007`, then verifies the complete resulting source tree.
+through `0008`, then verifies the complete resulting source tree.

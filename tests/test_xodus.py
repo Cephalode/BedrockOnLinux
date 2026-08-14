@@ -42,6 +42,91 @@ class EditionTests(unittest.TestCase):
         self.assertNotEqual(xodus.list_editions()[0]["name"], "mutated")
 
 
+_RELEASE_CID = "7792d9ce-355a-493c-afbd-768f4a77c3b0"
+_PREVIEW_CID = "98bd2335-9b01-4e4c-bd05-ccc01614078b"
+
+
+def _cdn(content_id, build="1.26.4403.0"):
+    return (f"http://assets1.xboxlive.com/Z/abc/{content_id}/{build}.def/"
+            "Microsoft.MinecraftUWP_x64__8wekyb3d8bbwe.msixvc")
+
+
+class IndexedUrlTests(unittest.TestCase):
+    """The build index decides what gets downloaded, so entries are checked."""
+
+    def setUp(self):
+        self.release = xodus.edition("release")
+
+    def test_a_matching_cdn_url_is_accepted(self):
+        url = _cdn(_RELEASE_CID)
+        self.assertEqual(xodus._indexed_url(self.release, url), url)
+
+    def test_another_host_is_refused(self):
+        self.assertIsNone(xodus._indexed_url(
+            self.release,
+            f"http://evil.example/Z/abc/{_RELEASE_CID}/1.0/x.msixvc"))
+
+    def test_a_lookalike_host_is_refused(self):
+        # "xboxlive.com.evil.test" must not pass for "xboxlive.com".
+        self.assertIsNone(xodus._indexed_url(
+            self.release,
+            f"http://assets1.xboxlive.com.evil.test/Z/a/{_RELEASE_CID}/x.msixvc"))
+
+    def test_another_products_content_id_is_refused(self):
+        # Otherwise picking Preview could download the Release package.
+        self.assertIsNone(
+            xodus._indexed_url(self.release, _cdn(_PREVIEW_CID)))
+
+    def test_a_non_package_url_is_refused(self):
+        self.assertIsNone(xodus._indexed_url(
+            self.release, f"http://assets1.xboxlive.com/Z/a/{_RELEASE_CID}/x.exe"))
+
+
+class CatalogueTests(unittest.TestCase):
+    def _payload(self):
+        return {
+            "release": {
+                "1.26.42.1": [_cdn(_RELEASE_CID, "1.26.4201.0")],
+                "1.26.44.3": [_cdn(_RELEASE_CID, "1.26.4403.0")],
+                "1.21.120.4": [_cdn(_RELEASE_CID, "1.21.12004.0")],
+                "1.26.40.5": ["http://evil.example/x.msixvc"],
+            },
+            "preview": {"1.26.50.25": [_cdn(_PREVIEW_CID, "1.26.5025.0")]},
+        }
+
+    def test_builds_are_listed_newest_first(self):
+        with mock.patch.object(xodus, "_fetch_with_fallback",
+                               return_value=self._payload()):
+            builds = xodus.version_catalogue("release")
+
+        # String order would put 1.21.120.4 above 1.26.42.1.
+        self.assertEqual([b["version"] for b in builds],
+                         ["1.26.44.3", "1.26.42.1", "1.21.120.4"])
+
+    def test_an_entry_with_no_usable_url_is_dropped(self):
+        with mock.patch.object(xodus, "_fetch_with_fallback",
+                               return_value=self._payload()):
+            builds = xodus.version_catalogue("release")
+
+        self.assertNotIn("1.26.40.5", [b["version"] for b in builds])
+
+    def test_each_edition_reads_its_own_channel(self):
+        with mock.patch.object(xodus, "_fetch_with_fallback",
+                               return_value=self._payload()):
+            builds = xodus.version_catalogue("preview")
+
+        self.assertEqual([b["version"] for b in builds], ["1.26.50.25"])
+
+    def test_a_missing_channel_is_an_error(self):
+        with mock.patch.object(xodus, "_fetch_with_fallback",
+                               return_value={"release": {}}), \
+                self.assertRaises(xodus.XodusError):
+            xodus.version_catalogue("preview")
+
+    def test_an_unknown_edition_lists_nothing(self):
+        self.assertEqual(xodus.version_catalogue("nope"), [])
+
+
 class EnsureCliTests(unittest.TestCase):
     def test_matching_digest_installs_the_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -253,111 +338,136 @@ def _stack_reserve(data):
 
 
 class WrapEncryptedLaunchTests(unittest.TestCase):
+    EXE = "/games/release/1.26.44.3/Minecraft.Windows.exe"
+    NT = "\\??\\Z:\\games\\release\\1.26.44.3\\Minecraft.Windows.exe"
+
     def _wrap(self, tmp, argv):
         with mock.patch.object(xodus, "ensure_cli",
                                return_value=Path("/opt/xodus-cli")):
             return xodus.wrap_encrypted_launch(argv, Path(tmp) / "game",
                                                Path(tmp) / "run")
 
-    def test_command_runs_xodus_and_names_the_executable(self):
+    def test_images_left_by_a_dead_launch_are_swept(self):
+        stale = Path(tempfile.mkstemp(prefix="bol-", dir="/dev/shm")[1])
+        os.close(os.open(stale, os.O_RDONLY))
+        os.utime(stale, (0, 0))
+        fresh = Path(tempfile.mkstemp(prefix="bol-", dir="/dev/shm")[1])
+        self.addCleanup(lambda: fresh.unlink(missing_ok=True))
+        self.addCleanup(lambda: stale.unlink(missing_ok=True))
+
         with tempfile.TemporaryDirectory() as tmp:
-            cmd = self._wrap(
-                tmp, ["/usr/bin/python3", "/opt/umu-run",
-                      "/games/release/Minecraft.Windows.exe"])
+            self._wrap(tmp, [sys.executable, "-c", "pass", self.EXE])
+
+        # The loader unlinks its own copy in milliseconds, so anything still
+        # named is from a launch that died -- and each one is the size of the
+        # game executable, in RAM.
+        self.assertFalse(stale.exists())
+        # A copy a concurrent launch just staged must survive.
+        self.assertTrue(fresh.exists())
+
+    def test_command_runs_xodus_over_the_game_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = self._wrap(tmp, ["/usr/bin/python3", "/opt/umu-run", self.EXE])
 
         self.assertEqual(cmd[:2], ["/opt/xodus-cli", "run"])
+        self.assertEqual(cmd[2], str(Path(tmp) / "game"))
         self.assertEqual(cmd[3], str(Path(tmp) / "run"
                                      / "xodus-launch-wrapper.py"))
-        # Naming the executable matters: xodus otherwise takes whichever
-        # keep_encrypted entry its hash map yields first.
-        self.assertEqual(cmd[-2:], ["--exe", "\\Minecraft.Windows.exe"])
+        # Naming the executable to xodus-cli would mean guessing how the
+        # package spells its own segment keys, and a wrong guess is fatal
+        # there; the wrapper picks it out of the map by name instead.
+        self.assertNotIn("--exe", cmd)
 
-    def test_wrapper_appends_the_nt_name_to_the_launch_command(self):
+    def _memfd(self, payload=None):
+        fd = os.memfd_create("bol-test", 0)
+        os.write(fd, payload if payload is not None else _pe32plus_header())
+        os.set_inheritable(fd, True)
+        self.addCleanup(lambda: os.close(fd))
+        return fd
+
+    def _run(self, wrapper, argv1, file_map, fds, **kwargs):
+        return subprocess.run(
+            [sys.executable, wrapper, argv1], pass_fds=tuple(fds),
+            env={**os.environ, "WINE_DLL_FILE_MAP": file_map}, **kwargs)
+
+    def _recorder(self, tmp, script):
+        path = Path(tmp) / "out.txt"
+        return path, [sys.executable, "-c",
+                      f"import os, sys, pathlib; "
+                      f"pathlib.Path({str(path)!r}).write_text({script})",
+                      self.EXE]
+
+    def test_the_executable_is_chosen_by_name_not_by_position(self):
         with tempfile.TemporaryDirectory() as tmp:
-            recorder = Path(tmp) / "argv.txt"
-            cmd = self._wrap(tmp, [
-                sys.executable, "-c",
-                "import sys, pathlib; "
-                f"pathlib.Path({str(recorder)!r}).write_text('\\n'.join(sys.argv[1:]))",
-                "/games/release/Minecraft.Windows.exe"])
-            wrapper = cmd[3]
+            recorder, argv = self._recorder(tmp, "sys.argv[-1]")
+            cmd = self._wrap(tmp, argv)
+            exe_fd, other_fd = self._memfd(), self._memfd()
+            other = "\\??\\Z:\\games\\release\\1.26.44.3\\other.dll"
 
-            nt_name = "\\??\\Z:\\games\\release\\Minecraft.Windows.exe"
-            subprocess.run([sys.executable, wrapper, nt_name], check=True,
-                           env={**os.environ, "WINE_DLL_FILE_MAP": ""})
+            # The executable is deliberately not the first entry, and the
+            # argument xodus passed names the wrong file.
+            self._run(cmd[3], other,
+                      f"{other_fd}:{other}|{exe_fd}:{self.NT}",
+                      (exe_fd, other_fd), check=True)
 
-            # The launcher's own command survives; only the executable
-            # argument is replaced by the name xodus assigned.
-            self.assertEqual(recorder.read_text().splitlines()[-1], nt_name)
+            self.assertEqual(recorder.read_text(), self.NT)
 
-    def test_wrapper_raises_the_stack_reserve_of_the_mapped_descriptor(self):
+    def test_the_map_hands_over_paths_not_descriptors(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cmd = self._wrap(tmp, [sys.executable, "-c", "pass",
-                                   "/games/release/Minecraft.Windows.exe"])
-            wrapper = cmd[3]
+            recorder, argv = self._recorder(
+                tmp, 'os.environ["WINE_DLL_FILE_MAP"]')
+            cmd = self._wrap(tmp, argv)
+            fd = self._memfd()
 
-            fd = os.memfd_create("test-exe", 0)
-            try:
-                os.write(fd, _pe32plus_header())
-                os.set_inheritable(fd, True)
-                nt_name = "\\??\\Z:\\games\\Minecraft.Windows.exe"
-                subprocess.run(
-                    [sys.executable, wrapper, nt_name], check=True,
-                    pass_fds=(fd,),
-                    env={**os.environ,
-                         "WINE_DLL_FILE_MAP": f"{fd}:{nt_name}"})
-                patched = os.pread(fd, 0x400, 0)
-            finally:
-                os.close(fd)
+            self._run(cmd[3], self.NT, f"{fd}:{self.NT}", (fd,), check=True)
+            converted = recorder.read_text()
 
-        # The loader reads SizeOfStackReserve when it maps the image, and a
-        # Store package has no on-disk header to edit, so the memfd is the only
-        # place the settings/pause fix (#27) can land.
-        self.assertEqual(_stack_reserve(patched), 0x1000000)
+        # A descriptor number means nothing inside the Steam Linux Runtime
+        # container, which is why Wine died on "Bad file descriptor".
+        path, _, mapped = converted.partition(":")
+        self.addCleanup(lambda: Path(path).unlink(missing_ok=True))
+        self.assertEqual(mapped, self.NT)
+        self.assertTrue(path.startswith("/dev/shm/bol-"), path)
+        self.assertTrue(Path(path).is_file())
+        # RAM-backed and private: the decrypted image is readable by nobody
+        # else while it briefly has a name.
+        self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
 
-    def test_wrapper_leaves_other_descriptors_alone(self):
+    def test_the_staged_image_carries_the_raised_stack_reserve(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cmd = self._wrap(tmp, [sys.executable, "-c", "pass",
-                                   "/games/release/Minecraft.Windows.exe"])
-            wrapper = cmd[3]
+            recorder, argv = self._recorder(
+                tmp, 'os.environ["WINE_DLL_FILE_MAP"]')
+            cmd = self._wrap(tmp, argv)
+            fd = self._memfd()
 
-            fd = os.memfd_create("other-exe", 0)
-            try:
-                os.write(fd, _pe32plus_header())
-                os.set_inheritable(fd, True)
-                subprocess.run(
-                    [sys.executable, wrapper, "\\??\\Z:\\wanted.exe"],
-                    check=True, pass_fds=(fd,),
-                    env={**os.environ,
-                         "WINE_DLL_FILE_MAP": f"{fd}:\\??\\Z:\\other.exe"})
-                untouched = os.pread(fd, 0x400, 0)
-            finally:
-                os.close(fd)
+            self._run(cmd[3], self.NT, f"{fd}:{self.NT}", (fd,), check=True)
+            path = recorder.read_text().partition(":")[0]
 
-        self.assertEqual(_stack_reserve(untouched), 0x100000)
+        self.addCleanup(lambda: Path(path).unlink(missing_ok=True))
+        # A Store package has no on-disk header to edit, so the staged copy is
+        # the only place the settings/pause fix (#27) can land.
+        self.assertEqual(_stack_reserve(Path(path).read_bytes()), 0x1000000)
+        # The descriptor xodus handed over is left as it was.
+        self.assertEqual(_stack_reserve(os.pread(fd, 0x400, 0)), 0x100000)
 
-    def test_wrapper_still_launches_when_the_header_cannot_be_patched(self):
+    def test_a_broken_map_entry_still_launches_the_game(self):
         with tempfile.TemporaryDirectory() as tmp:
-            recorder = Path(tmp) / "ran.txt"
-            cmd = self._wrap(tmp, [
-                sys.executable, "-c",
-                f"import pathlib; pathlib.Path({str(recorder)!r}).write_text('ran')",
-                "/games/release/Minecraft.Windows.exe"])
-            wrapper = cmd[3]
+            recorder, argv = self._recorder(tmp, "'ran'")
+            cmd = self._wrap(tmp, argv)
 
-            # A game that starts with a 1 MB stack beats one that does not
-            # start at all, so a bad map entry must never be fatal.
-            subprocess.run(
-                [sys.executable, wrapper, "\\??\\Z:\\x.exe"], check=True,
-                env={**os.environ, "WINE_DLL_FILE_MAP": "notanfd:\\??\\Z:\\x.exe"})
+            # Nothing usable to stage: the game must still start, because one
+            # that starts without the fix beats one that does not start.
+            self._run(cmd[3], self.NT, f"notanfd:{self.NT}", (), check=True)
 
             self.assertEqual(recorder.read_text(), "ran")
 
-    def test_wrapper_refuses_to_run_without_an_executable_name(self):
+    def test_nothing_to_launch_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cmd = self._wrap(tmp, [sys.executable, "-c", "pass", "/x.exe"])
+            cmd = self._wrap(tmp, [sys.executable, "-c", "pass", self.EXE])
             result = subprocess.run([sys.executable, cmd[3]],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True,
+                                    env={**os.environ,
+                                         "WINE_DLL_FILE_MAP": ""})
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("NT executable name", result.stderr)

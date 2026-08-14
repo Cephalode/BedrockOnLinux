@@ -14,27 +14,30 @@ from .util import load_settings, save_settings
 
 
 _INSTALL_METADATA = ".bedrock-on-linux-install.json"
-# Bedrock updates are infrequent and the delta check costs only package
-# metadata, so re-check on the same cadence as the release-notes cache instead
-# of on every launch.
-_UPDATE_INTERVAL = 43200
 
 
 def list_editions(include_beta=True):
-    """The Minecraft editions available for installation.
+    """The Minecraft editions available for installation."""
+    return [entry for entry in xodus.list_editions()
+            if include_beta or not entry["beta"]]
 
-    The Xbox CDN serves only the current build of a product id — there is no
-    back catalogue — so this is Release and Preview rather than a list of
-    Bedrock versions. The installed build number is read from the game's own
-    manifest afterwards, which needs no authenticated round trip.
+
+def version_dir(edition_id, version):
+    return GAMES / edition_id / version
+
+
+def list_versions(edition_id):
+    """Installable builds for an edition, newest first.
+
+    Each entry gains ``installed``: whether that exact build is already on
+    disk, which is what lets switching back to a build you already have cost
+    nothing.
     """
     out = []
-    for entry in xodus.list_editions():
-        if entry["beta"] and not include_beta:
-            continue
-        entry["tag"] = entry["id"]
-        root = _game_root(GAMES / entry["id"])
-        entry["installed"] = mc_version_str(root) if root else None
+    for entry in xodus.version_catalogue(edition_id):
+        entry = dict(entry)
+        entry["installed"] = _game_root(
+            version_dir(edition_id, entry["version"])) is not None
         out.append(entry)
     return out
 
@@ -59,13 +62,15 @@ def _install_record(dest):
         return {}
 
 
-def _write_install_record(dest, edition):
+def _write_install_record(dest, edition, version, url):
     record = {
-        "schema": 1,
+        "schema": 2,
         "edition": edition["id"],
         "product": edition["product"],
+        "version": version,
+        "source_url": url,
         "xodus_rev": xodus.XODUS_REV,
-        "checked": int(time.time()),
+        "installed": int(time.time()),
     }
     target = Path(dest) / _INSTALL_METADATA
     staged = target.with_name("." + target.name + ".tmp")
@@ -76,34 +81,6 @@ def _write_install_record(dest, edition):
         staged.replace(target)
     finally:
         staged.unlink(missing_ok=True)
-
-
-def _touch_update_check(dest, record):
-    """Record a delta check that could not run, so it is retried on schedule
-    rather than on every single launch."""
-    if not record:
-        return
-    record = dict(record, checked=int(time.time()))
-    target = Path(dest) / _INSTALL_METADATA
-    staged = target.with_name("." + target.name + ".tmp")
-    try:
-        staged.write_text(
-            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8")
-        staged.replace(target)
-    except OSError:
-        pass
-    finally:
-        staged.unlink(missing_ok=True)
-
-
-def _update_due(dest, record):
-    checked = record.get("checked")
-    if not isinstance(checked, int):
-        return True
-    # A clock moved backwards must not park the install on a stale build
-    # forever, so treat a future timestamp as due rather than as fresh.
-    return not (0 <= time.time() - checked < _UPDATE_INTERVAL)
 
 
 def _configured_legacy_root():
@@ -127,75 +104,66 @@ def _configured_legacy_root():
     return _game_root(path)
 
 
-def install_game(edition, progress=None, force=False):
-    """Install or update one edition through Xodus.
+def install_game(edition, version=None, progress=None, force=False):
+    """Install one build of one edition through Xodus.
 
-    ``xodus-cli streaming`` is itself incremental and atomic: it compares the
-    local segment hashes against the published package, fetches only what
-    changed and commits its work package with a rename at the end. So this
-    calls straight into it rather than staging a second copy — a staging dance
-    would throw the delta away and re-download the whole package every time.
+    Each build lives in its own folder, so going back to a build already on
+    disk costs nothing and the delta cache Xodus keeps beside it stays valid.
+    ``xodus-cli streaming`` is itself incremental and atomic -- it compares
+    local segment hashes against the package, fetches only what changed and
+    commits with a rename -- so there is deliberately no staging dance here.
     """
-    GAMES.mkdir(parents=True, exist_ok=True)
-    dest = GAMES / edition["id"]
+    catalogue = list_versions(edition["id"])
+    if not catalogue:
+        raise BolError(
+            f"No {edition['name']} build is listed. Check the network "
+            "connection and try again.")
+    wanted = str(version or "").strip()
+    entry = next((c for c in catalogue if c["version"] == wanted), None)
+    if entry is None:
+        if wanted:
+            warn(f"{edition['name']} {wanted} is no longer listed; using "
+                 f"{catalogue[0]['version']} instead.")
+        entry = catalogue[0]
+
+    dest = version_dir(edition["id"], entry["version"])
+    dest.parent.mkdir(parents=True, exist_ok=True)
     root = _game_root(dest)
-    record = _install_record(dest)
-    # A scheduled delta check is a nicety; a missing, incomplete or mismatched
-    # install is not. Only the first may be skipped when Xodus cannot run.
-    optional = False
     if root and not force:
-        if record.get("product") != edition["product"]:
-            # The folder holds a different product than the one asked for;
-            # never leave a mismatched tree in place under this edition's name.
-            force = True
-        elif not _update_due(dest, record):
-            info(f"{edition['name']} already installed")
-            return root
-        else:
-            optional = True
+        info(f"{edition['name']} {entry['version']} already installed")
+        return root
 
-    # An installation made before the switch to the Store lives outside
-    # GAMES/<edition>/ and cannot be delta-updated, so the Store copy is
-    # preferred. It is still a complete, working game though, and it is the
-    # one the player has: keep it as the fallback rather than stranding them
-    # on an installation the launcher can no longer reach.
-    fallback = None
-    if not root:
-        fallback = _configured_legacy_root()
-        optional = optional or fallback is not None
+    # A build installed before the move to the Store lives outside
+    # GAMES/<edition>/<version>/ and cannot be reached by this path. It is
+    # still a complete, working game and it is the one the player has, so keep
+    # it as the fallback rather than stranding them with nothing to launch.
+    fallback = None if root else _configured_legacy_root()
 
-    info(f"{'Updating' if root else 'Installing'} {edition['name']} — this "
-         "downloads it from Microsoft with your own account …")
+    info(f"{'Reinstalling' if root else 'Installing'} {edition['name']} "
+         f"{entry['version']} — this downloads it from Microsoft with your "
+         "own account …")
+    url = entry["urls"][0]
     try:
-        xodus.install(edition["product"], dest, progress)
+        xodus.install(url, dest, progress)
     except xodus.NotSignedIn:
         # Actionable, and only the caller can act: never fold this into the
         # fallback below, or the launcher quietly keeps starting the old build
-        # instead of offering the sign-in that would update it.
+        # instead of offering the sign-in that would install this one.
         raise
     except BolError as exc:
-        if not optional:
+        if fallback is None:
             raise
-        # Being offline, signed out, or on a launcher whose downloader is not
-        # published yet must never stand between the player and a game that is
-        # already installed and complete.
-        if fallback is not None:
-            warn(f"Could not download {edition['name']} ({exc}) — starting "
-                 "the copy already installed. It predates the switch to the "
-                 "Microsoft Store, so it will not receive updates until the "
-                 "download works.")
-            return fallback
-        warn(f"Could not check {edition['name']} for updates ({exc}) — "
-             "starting the installed build.")
-        _touch_update_check(dest, record)
-        return root
+        warn(f"Could not download {edition['name']} {entry['version']} "
+             f"({exc}) — starting the copy already installed. It predates the "
+             "switch to the Microsoft Store, so it stays on its own build "
+             "until the download works.")
+        return fallback
     root = _game_root(dest)
     if not root:
         die(f"Minecraft.Windows.exe missing after installing "
-            f"{edition['name']}.")
-    _write_install_record(dest, edition)
-    version = mc_version_str(root)
-    ok(f"{edition['name']} installed{f' ({version})' if version else ''}")
+            f"{edition['name']} {entry['version']}.")
+    _write_install_record(dest, edition, entry["version"], url)
+    ok(f"{edition['name']} {entry['version']} installed")
     return root
 
 
@@ -216,20 +184,22 @@ def use_game_dir(folder):
     CONTENT.symlink_to(folder)
     s = load_settings()
     s["game_dir"] = str(folder)
-    # Remember which edition was selected so the picker and auto-select default
-    # to the one you last played. games/<id>/ names it outright; a folder from
-    # outside the managed tree has no edition, and keeping the previous choice
-    # there would silently reinstall over an imported copy.
+    # Remember what was selected so the picker and auto-select default to what
+    # you last played. games/<edition>/<version>/ names both outright; a folder
+    # from outside the managed tree names neither, and keeping the previous
+    # choice there would silently reinstall over an imported copy.
     try:
-        chosen = folder.relative_to(GAMES.resolve()).parts[0]
+        parts = folder.relative_to(GAMES.resolve()).parts
     except ValueError:
-        chosen = None
-    if chosen and xodus.edition(chosen):
-        s["mc_edition"] = chosen
-    # mc_version is the build actually on disk, for display and bug reports.
-    version = mc_version_str(folder)
-    if version:
-        s["mc_version"] = version
+        parts = ()
+    if len(parts) >= 2 and xodus.edition(parts[0]):
+        s["mc_edition"] = parts[0]
+        s["mc_version"] = parts[1]
+    else:
+        # An imported copy still reports its build, for display and bug reports.
+        version = mc_version_str(folder)
+        if version:
+            s["mc_version"] = version
     save_settings(s)
     return folder
 
@@ -258,12 +228,17 @@ def _vt(v):
         return (0,)
 
 
-def _auto_edition(s):
+def _auto_selection(s):
+    """The (edition, version) to install when the caller named neither.
+
+    An unset or no-longer-listed version falls through to the newest build,
+    which is what install_game() does with it.
+    """
     want = (s.get("mc_edition") or "").strip()
     chosen = xodus.edition(want) if want else None
-    if chosen:
-        return dict(chosen, tag=chosen["id"])
-    editions = list_editions(include_beta=False) or list_editions(True)
-    if not editions:
-        die("No Minecraft edition is available.")
-    return editions[0]
+    if chosen is None:
+        editions = list_editions(include_beta=False) or list_editions(True)
+        if not editions:
+            die("No Minecraft edition is available.")
+        chosen = editions[0]
+    return chosen, (s.get("mc_version") or "").strip() or None

@@ -9,7 +9,7 @@ from .auth import NativeAuth
 from .config import APP, PRETTY, VERSION
 from .content import cmd_import
 from .doctor import doctor
-from .games import list_editions
+from .games import list_editions, list_versions
 from .gamesetup import do_setup
 from .gui import gui
 from .launch import (
@@ -61,9 +61,12 @@ def main():
     sp = sub.add_parser("setup", help="download & prepare Minecraft")
     sp.add_argument("--mc", metavar="EDITION",
                     help="Minecraft edition to install: release or preview")
+    sp.add_argument("--version", metavar="BUILD",
+                    help="Bedrock build to install (default: the newest); "
+                         "see 'versions'")
     sp.add_argument("--beta", action="store_true", help="allow beta editions")
     sp.add_argument("--force", action="store_true", help="re-download / rebuild")
-    lv = sub.add_parser("versions", help="list installable Minecraft editions")
+    lv = sub.add_parser("versions", help="list installable Minecraft builds")
     lv.add_argument("--beta", action="store_true")
     sub.add_parser("login", help="sign in to a Microsoft account")
     sub.add_parser(
@@ -133,7 +136,7 @@ def main():
                     die(f"Unknown Minecraft edition '{a.mc}'; expected "
                         + " or ".join(v["id"] for v in list_editions(True))
                         + ".")
-            do_setup(mc_edition=mc, force=a.force)
+            do_setup(mc_edition=mc, mc_version=a.version, force=a.force)
             ok(f"Done. Run:  {APP} play")
         elif a.cmd == "play":
             launch()
@@ -151,13 +154,13 @@ def main():
             for pending in ([] if profile else direct_launch_readiness()):
                 warn(pending)
         elif a.cmd == "versions":
-            for v in list_editions(a.beta):
-                state = v["installed"] or "not installed"
-                print(f"  {v['id']:<10}{'beta' if v['beta'] else 'stable':>7}"
-                      f"   {v['name']}  ({state})")
-            info("Editions are downloaded from the Microsoft Store with your "
-                 "own account, which must own Minecraft. The store serves only "
-                 "the current build of each edition.")
+            for edition in list_editions(a.beta):
+                print(f"{edition['name']}  (--mc {edition['id']})")
+                for build in list_versions(edition["id"]):
+                    print(f"    {build['version']:<14}"
+                          f"{'installed' if build['installed'] else ''}")
+            info("Builds are downloaded from Microsoft's own CDN with your "
+                 "account, which must own Minecraft.")
         elif a.cmd == "store-login":
             from . import xodus as _xodus
             if _xodus.signed_in():

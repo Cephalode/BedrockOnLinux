@@ -91,8 +91,8 @@ WINEGDK_OUT = PROTON_DIR / "GDK-Proton-xuser"
 # match the reviewed pins below.
 WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
-WINEGDK_SOURCE_MANIFEST_SHA256 = "64110338d984b672402bdc46d6681894070cba8c4a3342769008aefed33bd9db"
-WINEGDK_BUILD_REV = "wow64-archs-native15"
+WINEGDK_SOURCE_MANIFEST_SHA256 = "0feb01ca058086eccf4f4a0e6895f541547ae89aa0d2ab86f08291224de5ed46"
+WINEGDK_BUILD_REV = "wow64-archs-native16"
 # native15 adds the ntdll mapped-fd loader (patch 0007), which the Microsoft
 # Store packages need: their game executable stays encrypted on disk. These two
 # pins can only come from a real build, so they are filled in from the
@@ -125,12 +125,25 @@ XODUS_BIN = XODUS_DIR / "xodus-cli"
 # Game Mode session or inside a Flatpak sandbox.
 XODUS_KEYRING = HOME / ".xodus-keyring.ron"
 
-# The Xbox CDN only serves the current build of a product id — there is no back
-# catalogue — so the launcher offers editions rather than Bedrock versions.
+# GetBasePackage only ever answers with the current build, but Microsoft's CDN
+# keeps the older ones reachable, and MinecraftBedrockArchiver/GdkLinks indexes
+# where they live. That index holds no game data: every URL points at
+# assets*.xboxlive.com, and Xodus still reads the package's own content id from
+# the downloaded header and asks Microsoft for that licence, so the account
+# still has to own Minecraft. It only restores the choice of build.
+GDK_LINKS_REPO = "MinecraftBedrockArchiver/GdkLinks"
+GDK_LINKS_URL = ("https://raw.githubusercontent.com/"
+                 "MinecraftBedrockArchiver/GdkLinks/master/urls.json")
+# The CDN serves these over plain HTTP only. The payload is AES-XTS encrypted
+# and worthless without the licence, so this costs no confidentiality; the
+# content id below is checked against every indexed URL so a bad or tampered
+# index cannot point the downloader at a different product.
 MC_PRODUCTS = (
-    {"id": "release", "product": "9NBLGGH2JHXJ",
+    {"id": "release", "product": "9NBLGGH2JHXJ", "channel": "release",
+     "content_id": "7792d9ce-355a-493c-afbd-768f4a77c3b0",
      "name": "Minecraft for Windows", "beta": False},
-    {"id": "preview", "product": "9P5X4QVLC2XR",
+    {"id": "preview", "product": "9P5X4QVLC2XR", "channel": "preview",
+     "content_id": "98bd2335-9b01-4e4c-bd05-ccc01614078b",
      "name": "Minecraft Preview for Windows", "beta": True},
 )
 

@@ -41,6 +41,9 @@ XSTORE_PATCH = (
 MAPPED_FD_PATCH = (
     DELTA / "0007-ntdll-load-main-image-from-a-mapped-fd.patch"
 )
+PATH_MAP_PATCH = (
+    DELTA / "0008-ntdll-accept-a-path-in-the-image-map.patch"
+)
 SOURCE_SUMS = DELTA / "SOURCE-SHA256SUMS"
 CHANGED_FILES = {
     "dlls/combase/combase.c",
@@ -134,6 +137,10 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             self._constant("VENDORED_MAPPED_FD_PATCH_SHA256"),
         )
         self.assertEqual(
+            hashlib.sha256(PATH_MAP_PATCH.read_bytes()).hexdigest(),
+            self._constant("VENDORED_PATH_MAP_PATCH_SHA256"),
+        )
+        self.assertEqual(
             hashlib.sha256(SOURCE_SUMS.read_bytes()).hexdigest(),
             self._constant("SOURCE_SHA256SUMS_SHA256"),
         )
@@ -153,7 +160,7 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         achievements = ACHIEVEMENTS_PATCH.read_text()
         context_callback = CONTEXT_CALLBACK_PATCH.read_text()
         xstore = XSTORE_PATCH.read_text()
-        mapped_fd = MAPPED_FD_PATCH.read_text()
+        mapped_fd = MAPPED_FD_PATCH.read_text() + PATH_MAP_PATCH.read_text()
         self.assertTrue(text.startswith(f"From {WINEGDK_SOURCE_COMMIT} "))
         changed = {
             left for left, right in re.findall(
@@ -586,6 +593,7 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             CLIENT_SURFACE_PATCH,
             XSTORE_PATCH,
             MAPPED_FD_PATCH,
+            PATH_MAP_PATCH,
         ):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             self.assertIn(digest, text, path.name)
