@@ -89,12 +89,7 @@ class InstallTests(unittest.TestCase):
     def test_stale_install_is_delta_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            _write_game(base / "release")
-            games._write_install_record(base / "release", self._edition())
-            record_path = base / "release" / games._INSTALL_METADATA
-            record = json.loads(record_path.read_text())
-            record["checked"] = int(time.time()) - games._UPDATE_INTERVAL - 1
-            record_path.write_text(json.dumps(record), encoding="utf-8")
+            self._stale(base)
 
             with mock.patch.object(games, "GAMES", base), \
                     mock.patch.object(games.xodus, "install") as install:
@@ -131,6 +126,54 @@ class InstallTests(unittest.TestCase):
                 games.install_game(self._edition())
 
             install.assert_called_once()
+
+    def _stale(self, base):
+        _write_game(base / "release")
+        games._write_install_record(base / "release", self._edition())
+        record_path = base / "release" / games._INSTALL_METADATA
+        record = json.loads(record_path.read_text())
+        record["checked"] = int(time.time()) - games._UPDATE_INTERVAL - 1
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        return record_path
+
+    def test_a_failed_update_check_still_starts_the_installed_game(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            record_path = self._stale(base)
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=BolError("no network")):
+                root = games.install_game(self._edition())
+
+            # Being offline or signed out must not stand between the player
+            # and a game that is already installed and complete.
+            self.assertTrue((root / "Minecraft.Windows.exe").exists())
+            # The check is rescheduled, not retried on every single launch.
+            self.assertFalse(games._update_due(
+                base / "release", json.loads(record_path.read_text())))
+
+    def test_a_failed_install_is_still_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=BolError("no network")), \
+                    self.assertRaises(BolError):
+                games.install_game(self._edition())
+
+    def test_a_forced_update_failure_is_still_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._stale(base)
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=BolError("no network")), \
+                    self.assertRaises(BolError):
+                games.install_game(self._edition(), force=True)
 
     def test_incomplete_tree_after_streaming_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

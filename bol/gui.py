@@ -1762,16 +1762,15 @@ def gui():
         done.wait()
         return bool(answer.get("yes"))
 
-    def _ensure_store_account():
-        """Link the Microsoft account Minecraft is downloaded with, if needed.
+    def _link_store_account():
+        """Link the Microsoft account Minecraft is downloaded with.
 
-        This is a different link from the in-game account chip: Minecraft is
-        downloaded from the Microsoft Store with the account that owns it, and
-        the Store needs its own device-bound session.
+        A different link from the in-game account chip: Minecraft is downloaded
+        from the Microsoft Store with the account that owns it, and the Store
+        needs its own device-bound session. Only called once a download has
+        actually asked for it, so an installed game never triggers this.
         """
         from . import xodus
-        if xodus.signed_in():
-            return
         if not _ask_on_main(
                 "Sign in to download Minecraft",
                 "Minecraft is downloaded from the Microsoft Store using your "
@@ -1783,6 +1782,14 @@ def gui():
         set_status("Waiting for the Microsoft sign-in…", T.FG)
         xodus.login()
 
+    def _setup_with_store_account(ver):
+        from . import xodus
+        try:
+            do_setup(mc_edition=ver, progress=set_progress)
+        except xodus.NotSignedIn:
+            _link_store_account()
+            do_setup(mc_edition=ver, progress=set_progress)
+
     def do_play():
         if ui["busy"]:
             return
@@ -1793,8 +1800,7 @@ def gui():
         def work():
             try:
                 ver = selected_version()
-                _ensure_store_account()
-                do_setup(mc_edition=ver, progress=set_progress)
+                _setup_with_store_account(ver)
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
                 try:

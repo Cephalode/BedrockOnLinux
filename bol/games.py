@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import xodus
 from .config import CONTENT, GAMES
-from .log import die, info, ok
+from .log import BolError, die, info, ok, warn
 from .util import load_settings, save_settings
 
 
@@ -78,6 +78,25 @@ def _write_install_record(dest, edition):
         staged.unlink(missing_ok=True)
 
 
+def _touch_update_check(dest, record):
+    """Record a delta check that could not run, so it is retried on schedule
+    rather than on every single launch."""
+    if not record:
+        return
+    record = dict(record, checked=int(time.time()))
+    target = Path(dest) / _INSTALL_METADATA
+    staged = target.with_name("." + target.name + ".tmp")
+    try:
+        staged.write_text(
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8")
+        staged.replace(target)
+    except OSError:
+        pass
+    finally:
+        staged.unlink(missing_ok=True)
+
+
 def _update_due(dest, record):
     checked = record.get("checked")
     if not isinstance(checked, int):
@@ -100,6 +119,9 @@ def install_game(edition, progress=None, force=False):
     dest = GAMES / edition["id"]
     root = _game_root(dest)
     record = _install_record(dest)
+    # A scheduled delta check is a nicety; a missing, incomplete or mismatched
+    # install is not. Only the first may be skipped when Xodus cannot run.
+    optional = False
     if root and not force:
         if record.get("product") != edition["product"]:
             # The folder holds a different product than the one asked for;
@@ -108,10 +130,23 @@ def install_game(edition, progress=None, force=False):
         elif not _update_due(dest, record):
             info(f"{edition['name']} already installed")
             return root
+        else:
+            optional = True
 
     info(f"{'Updating' if root else 'Installing'} {edition['name']} — this "
          "downloads it from Microsoft with your own account …")
-    xodus.install(edition["product"], dest, progress)
+    try:
+        xodus.install(edition["product"], dest, progress)
+    except BolError as exc:
+        if not optional:
+            raise
+        # Being offline, signed out, or on a launcher whose downloader is not
+        # published yet must never stand between the player and a game that is
+        # already installed and complete.
+        warn(f"Could not check {edition['name']} for updates ({exc}) — "
+             "starting the installed build.")
+        _touch_update_check(dest, record)
+        return root
     root = _game_root(dest)
     if not root:
         die(f"Minecraft.Windows.exe missing after installing "
