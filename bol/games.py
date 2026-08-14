@@ -168,6 +168,11 @@ def install_game(edition, progress=None, force=False):
          "downloads it from Microsoft with your own account …")
     try:
         xodus.install(edition["product"], dest, progress)
+    except xodus.NotSignedIn:
+        # Actionable, and only the caller can act: never fold this into the
+        # fallback below, or the launcher quietly keeps starting the old build
+        # instead of offering the sign-in that would update it.
+        raise
     except BolError as exc:
         if not optional:
             raise

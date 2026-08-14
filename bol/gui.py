@@ -1577,32 +1577,24 @@ def gui():
         done.wait()
         return bool(answer.get("yes"))
 
-    def _link_store_account():
-        """Link the Microsoft account Minecraft is downloaded with.
-
-        A different link from the in-game account chip: Minecraft is downloaded
-        from the Microsoft Store with the account that owns it, and the Store
-        needs its own device-bound session. Only called once a download has
-        actually asked for it, so an installed game never triggers this.
-        """
-        from . import xodus
-        if not _ask_on_main(
-                "Sign in to download Minecraft",
-                "Minecraft is downloaded from the Microsoft Store using your "
-                "own account, which has to own the game.\n\n"
-                "Sign in now? A Microsoft sign-in window will open."):
-            raise BolError(
-                "Minecraft cannot be downloaded without signing in to the "
-                "Microsoft account that owns it.")
-        set_status("Waiting for the Microsoft sign-in…", T.FG)
-        xodus.login()
-
     def _setup_with_store_account(ver):
         from . import xodus
         try:
             do_setup(mc_edition=ver, progress=set_progress)
         except xodus.NotSignedIn:
-            _link_store_account()
+            if not _ask_on_main(
+                    "Sign in to download Minecraft",
+                    "Minecraft is downloaded from the Microsoft Store using "
+                    "your own account, which has to own the game.\n\n"
+                    "Sign in now? A Microsoft sign-in window will open.\n"
+                    "Declining starts the version already installed, without "
+                    "checking for updates."):
+                # Without an edition to install, setup keeps whatever is
+                # already configured — so declining still gets you into a game.
+                do_setup(progress=set_progress)
+                return
+            set_status("Waiting for the Microsoft sign-in…", T.FG)
+            xodus.login()
             do_setup(mc_edition=ver, progress=set_progress)
 
     def do_play():

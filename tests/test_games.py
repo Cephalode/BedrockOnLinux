@@ -207,6 +207,22 @@ class InstallTests(unittest.TestCase):
                     self.assertRaises(BolError):
                 games.install_game(self._edition())
 
+    def test_being_signed_out_is_surfaced_not_swallowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            legacy = _write_game(base / "1.26.42.1" / "Microsoft.MinecraftUWP")
+            self.settings["game_dir"] = str(legacy)
+
+            # NotSignedIn is a BolError, so the inherited-copy fallback would
+            # otherwise eat it and the launcher would keep starting the old
+            # build instead of offering the sign-in that would update it.
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=games.xodus.NotSignedIn("sign in")), \
+                    self.assertRaises(games.xodus.NotSignedIn):
+                games.install_game(self._edition())
+
     def test_a_forced_update_failure_is_still_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
