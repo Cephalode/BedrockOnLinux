@@ -47,6 +47,16 @@ class EditionListingTests(unittest.TestCase):
 
 
 class InstallTests(unittest.TestCase):
+    def setUp(self):
+        # install_game() consults the configured game_dir to find a copy
+        # inherited from before the Store switch. Without this the tests would
+        # read whatever is installed on the machine running them.
+        self.settings = {}
+        patcher = mock.patch.object(
+            games, "load_settings", side_effect=lambda: dict(self.settings))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _edition(self):
         return {"id": "release", "product": "9NBLGGH2JHXJ",
                 "name": "Minecraft for Windows", "beta": False}
@@ -154,7 +164,40 @@ class InstallTests(unittest.TestCase):
             self.assertFalse(games._update_due(
                 base / "release", json.loads(record_path.read_text())))
 
-    def test_a_failed_install_is_still_an_error(self):
+    def test_an_install_from_before_the_store_switch_still_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            # The pre-Store layout is GAMES/<version-tag>/, not GAMES/<edition>/.
+            legacy = _write_game(base / "1.26.42.1" / "Microsoft.MinecraftUWP")
+            self.settings["game_dir"] = str(legacy)
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=BolError("downloader not published")):
+                root = games.install_game(self._edition())
+
+            # An upgrade must not strand a player on a game they already have.
+            self.assertEqual(root, legacy)
+
+    def test_a_store_install_is_preferred_over_the_inherited_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            legacy = _write_game(base / "1.26.42.1" / "Microsoft.MinecraftUWP")
+            self.settings["game_dir"] = str(legacy)
+
+            def fake_install(product, dest, progress=None):
+                _write_game(Path(dest))
+                return dest
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install",
+                                      side_effect=fake_install):
+                root = games.install_game(self._edition())
+
+            self.assertEqual(root, base / "release")
+
+    def test_a_failed_install_with_nothing_installed_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             with mock.patch.object(games, "GAMES", base), \

@@ -106,6 +106,27 @@ def _update_due(dest, record):
     return not (0 <= time.time() - checked < _UPDATE_INTERVAL)
 
 
+def _configured_legacy_root():
+    """A complete install configured before the move to the Store, or None.
+
+    Anything under GAMES/<edition>/ belongs to the new layout and is handled
+    by the ordinary path; this is only about the copy an upgrade inherits.
+    """
+    configured = (load_settings().get("game_dir") or "").strip()
+    if not configured:
+        return None
+    path = Path(configured)
+    try:
+        # Legacy installs also live under GAMES, as GAMES/<version-tag>/, so
+        # what marks the new layout is the edition id, not the parent.
+        owner = path.resolve().relative_to(GAMES.resolve()).parts[0]
+    except (ValueError, IndexError, OSError):
+        owner = None
+    if owner and xodus.edition(owner):
+        return None
+    return _game_root(path)
+
+
 def install_game(edition, progress=None, force=False):
     """Install or update one edition through Xodus.
 
@@ -133,6 +154,16 @@ def install_game(edition, progress=None, force=False):
         else:
             optional = True
 
+    # An installation made before the switch to the Store lives outside
+    # GAMES/<edition>/ and cannot be delta-updated, so the Store copy is
+    # preferred. It is still a complete, working game though, and it is the
+    # one the player has: keep it as the fallback rather than stranding them
+    # on an installation the launcher can no longer reach.
+    fallback = None
+    if not root:
+        fallback = _configured_legacy_root()
+        optional = optional or fallback is not None
+
     info(f"{'Updating' if root else 'Installing'} {edition['name']} — this "
          "downloads it from Microsoft with your own account …")
     try:
@@ -143,6 +174,12 @@ def install_game(edition, progress=None, force=False):
         # Being offline, signed out, or on a launcher whose downloader is not
         # published yet must never stand between the player and a game that is
         # already installed and complete.
+        if fallback is not None:
+            warn(f"Could not download {edition['name']} ({exc}) — starting "
+                 "the copy already installed. It predates the switch to the "
+                 "Microsoft Store, so it will not receive updates until the "
+                 "download works.")
+            return fallback
         warn(f"Could not check {edition['name']} for updates ({exc}) — "
              "starting the installed build.")
         _touch_update_check(dest, record)
