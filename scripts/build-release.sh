@@ -256,7 +256,7 @@ if command -v flatpak-builder >/dev/null \
     required_failures+=("Flatpak")
   fi
 else
-  echo "  – Flatpak skipped (no host or org.flatpak.Builder builder) — see flatpak/README.md"
+  echo "  – Flatpak skipped (no host or org.flatpak.Builder builder) — install it with: flatpak install flathub org.flatpak.Builder"
 fi
 
 if (( ${#required_failures[@]} )) \
