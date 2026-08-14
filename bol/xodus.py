@@ -1,0 +1,366 @@
+"""bol.xodus — Minecraft acquisition through the Xodus CLI.
+
+Xodus (https://github.com/xodus-gaming/xodus, GPL-3.0) is how the launcher gets
+Minecraft: it signs in to the user's own Microsoft account, asks Microsoft's
+licensing service for the title license — which carries the content key — then
+streams the MSIXVC package from the official Xbox CDN and decrypts it on the
+fly. It replaced a third-party repository that redistributed a DRM-stripped
+copy of the game, so the account now has to actually own Minecraft.
+
+Everything here shells out to the ``xodus-cli`` binary; no Xodus code is
+linked. See third_party/xodus/README.md for the pin and the licensing note.
+"""
+# SPDX-License-Identifier: MIT
+
+import hashlib
+import os
+import pty
+import re
+import select
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+from .archive import safe_extract_tar
+from .config import (
+    CACHE,
+    MC_PRODUCTS,
+    WINEGDK_PREBUILT_REPO,
+    XODUS_ARCHIVE_SHA256,
+    XODUS_BIN,
+    XODUS_DIR,
+    XODUS_KEYRING,
+    XODUS_REV,
+)
+from .log import BolError, info, ok
+from .util import asset_url, download, gh_releases
+
+
+class XodusError(BolError):
+    """Xodus could not do what was asked."""
+
+
+class NotSignedIn(XodusError):
+    """No Microsoft account is linked to Xodus."""
+
+
+class NotOwned(XodusError):
+    """The linked account does not own the requested edition."""
+
+
+# "Package was not found, is it owned by the user?" is what xodus prints when
+# GetBasePackage refuses; it is by far the most common real-world failure, and
+# it means something the user can act on rather than a bug.
+_NOT_OWNED = re.compile(r"package was not found|is it owned by the user", re.I)
+_NO_CREDENTIALS = re.compile(
+    r"unable to initialize credentials|invalid sts token|"
+    r"no user token|not logged in|didn't log in", re.I)
+
+# indicatif renders "  12.34 MiB/ 862.00 MiB"; the total bar is the one whose
+# message is the launcher-visible stage rather than a file name.
+_PROGRESS = re.compile(
+    r"^\s*(?P<msg>\S[^\d]*?)\s+"
+    r"(?P<done>[\d.]+)\s*(?P<du>[KMGT]?i?B)\s*/\s*"
+    r"(?P<total>[\d.]+)\s*(?P<tu>[KMGT]?i?B)")
+_UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30,
+          "TiB": 1 << 40}
+_TOTAL_BAR = re.compile(r"^(initializing|downloading)", re.I)
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def edition(edition_id):
+    """The MC_PRODUCTS entry for an edition id, or None."""
+    return next((e for e in MC_PRODUCTS if e["id"] == edition_id), None)
+
+
+def list_editions():
+    """The editions Xodus can install, newest-facing first.
+
+    The Xbox CDN only serves the current build of a product id, so this is a
+    fixed two-entry list rather than a version catalogue. The build number is
+    read from the installed game's manifest afterwards, which needs no extra
+    authenticated round trip.
+    """
+    return [dict(e) for e in MC_PRODUCTS]
+
+
+# ---------------------------------------------------------------- binary
+
+
+def cli_available():
+    return XODUS_BIN.is_file() and os.access(XODUS_BIN, os.X_OK)
+
+
+def ensure_cli():
+    """Fetch + unpack the pinned xodus-cli into XODUS_DIR on first use.
+
+    Mirrors fixups.ensure_openssl_xcurl_set(), except that a failure here is
+    fatal: without xodus-cli there is no way to install the game at all.
+    """
+    marker = XODUS_DIR / ".rev"
+    if cli_available() and marker.exists() and \
+            marker.read_text().strip() == XODUS_REV:
+        return XODUS_BIN
+
+    asset = f"xodus-cli-{XODUS_REV}.tar.gz"
+    # Unreleased candidates carry the reviewed asset beside the launcher, like
+    # the engine archive, so local testing needs nothing published.
+    anchors = []
+    appimage = os.environ.get("APPIMAGE", "").strip()
+    if appimage:
+        anchors.append(Path(appimage).expanduser().resolve().parent)
+    try:
+        anchors.append(Path(sys.argv[0]).expanduser().resolve().parent)
+    except (OSError, RuntimeError):
+        pass
+    tar = next((anchor / asset for anchor in anchors
+                if (anchor / asset).is_file()), None)
+    local_archive = tar is not None
+
+    if not local_archive:
+        try:
+            rels = gh_releases(WINEGDK_PREBUILT_REPO, 30)
+        except Exception as exc:
+            raise XodusError(
+                f"Could not look up the Xodus downloader ({exc}). Check the "
+                "network connection and try again."
+            ) from exc
+        url = None
+        for rel in rels or []:
+            url, _name, _ = asset_url(rel, lambda n: n == asset)
+            if url:
+                break
+        if not url:
+            raise XodusError(
+                f"The Xodus downloader '{asset}' has not been published yet.")
+        tar = CACHE / asset
+        if not tar.is_file():
+            info("Downloading the Minecraft downloader (one-time) …")
+            download(url, tar, "Xodus downloader")
+
+    expected = XODUS_ARCHIVE_SHA256.strip().lower()
+    if not expected:
+        raise XodusError(
+            "XODUS_ARCHIVE_SHA256 is unset, so the Xodus downloader cannot be "
+            "verified. Publish a build with .github/workflows/build-xodus.yml "
+            "and pin its SHA-256 in bol/config.py.")
+    actual = hashlib.sha256(tar.read_bytes()).hexdigest()
+    if actual != expected:
+        # Never keep bytes that failed the pin: a cached bad archive would make
+        # every later retry fail before download() could fetch a good one.
+        if not local_archive:
+            tar.unlink(missing_ok=True)
+        raise XodusError(
+            f"Xodus downloader SHA-256 mismatch (expected {expected}, got "
+            f"{actual}); it was not installed.")
+
+    XODUS_DIR.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".xodus-dl-", dir=XODUS_DIR.parent))
+    try:
+        with tarfile.open(tar) as archive:
+            safe_extract_tar(archive, staging)
+        binary = staging / "xodus-cli"
+        if not binary.is_file():
+            raise XodusError("The Xodus archive contains no xodus-cli binary.")
+        binary.chmod(0o755)
+        XODUS_DIR.mkdir(parents=True, exist_ok=True)
+        for item in staging.iterdir():
+            if item.is_file() and not item.is_symlink():
+                target = XODUS_DIR / item.name
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix="." + item.name + "-", dir=XODUS_DIR)
+                os.close(fd)
+                tmp = Path(tmp_name)
+                try:
+                    shutil.copy2(item, tmp)
+                    tmp.replace(target)
+                finally:
+                    tmp.unlink(missing_ok=True)
+        marker.write_text(XODUS_REV + "\n", encoding="utf-8")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    ok(f"Minecraft downloader ready (xodus {XODUS_REV})")
+    return XODUS_BIN
+
+
+# ---------------------------------------------------------------- account
+
+
+def signed_in():
+    """True when Xodus holds a usable Microsoft session.
+
+    Xodus is built with --features key-chain-file, so its tokens live in a
+    single RON file instead of a D-Bus secret service (which does not exist in
+    a Steam Deck Game Mode session or inside a Flatpak sandbox).
+    """
+    try:
+        return XODUS_KEYRING.is_file() and XODUS_KEYRING.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def login():
+    """Run the interactive Xodus sign-in.
+
+    This is a *separate* account link from bol.auth's device-code flow, which
+    stays as-is for the in-game sign-in: Xodus needs a device-bound legacy RPS
+    token to talk to the licensing service, which a device-code OAuth token
+    cannot stand in for. Opens Xodus's own webview window, so it needs
+    libwebkit2gtk-4.1 and a display.
+    """
+    binary = ensure_cli()
+    info("Sign in to the Microsoft account that owns Minecraft …")
+    proc = subprocess.run([str(binary), "login"], env=_env(),
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or not signed_in():
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise XodusError(
+            "Microsoft sign-in for the Minecraft download did not complete"
+            + (f": {detail[-1]}" if detail else ".")
+        )
+    ok("Microsoft account linked for the Minecraft download.")
+    return True
+
+
+def logout(device=False):
+    binary = ensure_cli()
+    cmd = [str(binary), "logout"] + (["--device"] if device else [])
+    subprocess.run(cmd, env=_env(), capture_output=True, text=True)
+
+
+def _env():
+    env = os.environ.copy()
+    # Xodus writes its file keyring under $HOME; keep it explicit so a launcher
+    # started with a scrubbed environment still finds the same session.
+    env.setdefault("HOME", str(Path.home()))
+    return env
+
+
+# ---------------------------------------------------------------- install
+
+
+def _bytes(value, unit):
+    try:
+        return int(float(value) * _UNITS.get(unit, 1))
+    except (TypeError, ValueError):
+        return 0
+
+
+def install(product, dest: Path, progress=None):
+    """Download + decrypt an edition into ``dest``.
+
+    ``xodus-cli streaming`` is incremental and commits atomically on its own:
+    it compares the local segment hashes against the remote package, fetches
+    only the changed files, and renames its work package into place at the end.
+    So there is deliberately no staging/rollback dance around it here — adding
+    one would defeat the delta and re-download the whole 800+ MiB every time.
+    """
+    binary = ensure_cli()
+    if not signed_in():
+        raise NotSignedIn(
+            "Minecraft is downloaded from Microsoft with your own account, so "
+            "you have to sign in before it can be installed.")
+    dest.mkdir(parents=True, exist_ok=True)
+    cmd = [str(binary), "streaming", product, str(dest)]
+    code, tail = _run_streaming(cmd, progress)
+    if code != 0:
+        text = "\n".join(tail)
+        if _NOT_OWNED.search(text):
+            raise NotOwned(
+                "The linked Microsoft account does not own this edition of "
+                "Minecraft. Buy or redeem it on the same account, then try "
+                "again.")
+        if _NO_CREDENTIALS.search(text):
+            raise NotSignedIn(
+                "The Microsoft session for the download expired. Sign in "
+                "again.")
+        last = next((line for line in reversed(tail) if line.strip()), "")
+        raise XodusError(
+            f"The Minecraft download failed{': ' + last if last else '.'}")
+    return dest
+
+
+def _run_streaming(cmd, progress=None):
+    """Run xodus-cli and translate its progress bars into progress(done, total).
+
+    indicatif hides its bars entirely when stderr is not a terminal, so the
+    child gets a pty; without one there would be no progress to report at all.
+    """
+    tail = []
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen(cmd, stdout=slave, stderr=slave, stdin=slave,
+                                env=_env(), close_fds=True)
+    except OSError as exc:
+        os.close(master)
+        os.close(slave)
+        raise XodusError(f"Could not start the Minecraft downloader: {exc}") \
+            from exc
+    os.close(slave)
+    buffer = ""
+    try:
+        while True:
+            ready, _, _ = select.select([master], [], [], 0.5)
+            if ready:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", "replace")
+                # indicatif redraws with \r and ANSI cursor moves rather than
+                # newlines, so split on both.
+                parts = re.split(r"[\r\n]", buffer)
+                buffer = parts.pop()
+                for line in parts:
+                    _consume(_ANSI.sub("", line), tail, progress)
+            elif proc.poll() is not None:
+                break
+    finally:
+        os.close(master)
+        proc.wait()
+    if buffer:
+        _consume(_ANSI.sub("", buffer), tail, progress)
+    return proc.returncode, tail
+
+
+def _consume(line, tail, progress):
+    line = line.rstrip()
+    if not line:
+        return
+    match = _PROGRESS.match(line)
+    if match:
+        # Only the total bar drives the launcher's progress; the per-file bars
+        # would make it jump backwards on every new file.
+        if progress and _TOTAL_BAR.match(match.group("msg").strip()):
+            done = _bytes(match.group("done"), match.group("du"))
+            total = _bytes(match.group("total"), match.group("tu"))
+            if total:
+                progress(min(done, total), total)
+        return
+    tail.append(line)
+    del tail[:-40]
+
+
+# ---------------------------------------------------------------- launching
+
+
+def exe_is_encrypted(exe: Path):
+    """True when the game executable is still ciphertext on disk.
+
+    Xodus keeps the segments the package flags KEEP_ENCRYPTED_ON_DISK — the
+    game executable on GDK titles — encrypted at rest, exactly like Windows,
+    and decrypts them into anonymous memory at launch. Whether that applies to
+    a given build is a property of the package, so detect it instead of
+    assuming: a plaintext PE starts with "MZ".
+    """
+    try:
+        with open(exe, "rb") as stream:
+            return stream.read(2) != b"MZ"
+    except OSError:
+        return False

@@ -39,7 +39,7 @@ class CliTests(unittest.TestCase):
                 mock.patch.object(cli, "ok"):
             cli.main()
 
-        setup.assert_called_once_with(mc_ver=None, force=True)
+        setup.assert_called_once_with(mc_edition=None, force=True)
 
     def test_profile_create_prints_profile_shortcut_and_command(self):
         profile = Path("/tmp/bol-profiles/family")

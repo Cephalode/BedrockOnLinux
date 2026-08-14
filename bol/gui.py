@@ -37,7 +37,7 @@ from .relocation import (
 )
 from .content import _mojang_dir, import_content
 from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
-from .games import list_mc_versions
+from .games import list_editions
 from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
@@ -1039,9 +1039,13 @@ def gui():
             s["ui_is_beta"] = is_beta
             changed = True
             
-        cur_mc_ver = lab.split('  ')[0]
-        if s.get("mc_version") != cur_mc_ver:
-            s["mc_version"] = cur_mc_ver
+        # The label names an edition; the build number on disk is written by
+        # games.use_game_dir() from the manifest, so don't overwrite it here.
+        chosen = next((v["id"] for v, x in zip(ui.get("versions") or [],
+                                               ui.get("labels") or [])
+                       if x == lab), None)
+        if chosen and s.get("mc_edition") != chosen:
+            s["mc_edition"] = chosen
             changed = True
             
         if changed:
@@ -1064,7 +1068,7 @@ def gui():
             if hasattr(play_btn, "_tooltip"):
                 is_kill = "Kill" in play_btn._tooltip.text
                 play_btn._tooltip.text = (
-                    f"{'Kill' if is_kill else 'Play'} {cur_mc_ver}")
+                    f"{'Kill' if is_kill else 'Play'} {lab.split('  ')[0]}")
         except Exception:
             pass
 
@@ -1242,7 +1246,7 @@ def gui():
     ver_lbl.pack(side="left", fill="x", expand=True, padx=(14, 0))
     ver_arrow = ctk.CTkLabel(ver_field, text="▾", text_color=T.SUB, font=font(16, "bold"))
     ver_arrow.pack(side="right", padx=(0, 12))
-    Tooltip(ver_field, "Change Version")
+    Tooltip(ver_field, "Change edition")
 
     def _ver_hover(on):
         _pick["hover"] = on
@@ -1635,23 +1639,30 @@ def gui():
                           height=32, font=font(16), corner_radius=8)
         copy_btn.pack(side="left", padx=(2, 0))
 
+    def _edition_label(entry):
+        # The Microsoft Store serves only the current build of an edition, so
+        # the picker names editions and shows the build that is on disk.
+        parts = [entry["name"].replace(" for Windows", "")]
+        if entry.get("installed"):
+            parts.append(entry["installed"])
+        if entry["beta"]:
+            parts.append("BETA")
+        return "  ·  ".join(parts)
+
     def refresh_versions():
         beta = load_settings().get("show_betas", False)
         try:
-            ui["versions"] = list_mc_versions(beta)
+            ui["versions"] = list_editions(beta)
         except Exception as e:
-            log._LOG_SINK(f"xx versions: {e}")
+            log._LOG_SINK(f"xx editions: {e}")
             return
-        from .util import format_display_version
-        labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
-                  for v in ui["versions"]]
+        labels = [_edition_label(v) for v in ui["versions"]]
 
         def ap():
             ui["labels"] = labels
-            cur = (load_settings().get("mc_version") or "")
-            pick = next((x for x in labels
-                         if x.split("  ")[0] == cur
-                         or x.split("  ")[0].startswith(cur + ".")),
+            cur = (load_settings().get("mc_edition") or "")
+            pick = next((label for label, v in zip(labels, ui["versions"])
+                         if v["id"] == cur),
                         labels[0] if labels else "")
             if labels:
                 mc_var.set(pick)
@@ -1661,9 +1672,7 @@ def gui():
     def selected_version():
         if not ui["versions"] or not mc_var.get():
             return None
-        from .util import format_display_version
-        labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
-                  for v in ui["versions"]]
+        labels = [_edition_label(v) for v in ui["versions"]]
         try:
             return ui["versions"][labels.index(mc_var.get())]
         except ValueError:
@@ -1739,6 +1748,41 @@ def gui():
                 pass
         root.after(0, show)
 
+    def _ask_on_main(title, message):
+        """Ask a yes/no question from a worker thread and wait for the answer."""
+        answer = {}
+        done = threading.Event()
+
+        def ask():
+            try:
+                answer["yes"] = messagebox.askyesno(title, message, parent=root)
+            finally:
+                done.set()
+        root.after(0, ask)
+        done.wait()
+        return bool(answer.get("yes"))
+
+    def _ensure_store_account():
+        """Link the Microsoft account Minecraft is downloaded with, if needed.
+
+        This is a different link from the in-game account chip: Minecraft is
+        downloaded from the Microsoft Store with the account that owns it, and
+        the Store needs its own device-bound session.
+        """
+        from . import xodus
+        if xodus.signed_in():
+            return
+        if not _ask_on_main(
+                "Sign in to download Minecraft",
+                "Minecraft is downloaded from the Microsoft Store using your "
+                "own account, which has to own the game.\n\n"
+                "Sign in now? A Microsoft sign-in window will open."):
+            raise BolError(
+                "Minecraft cannot be downloaded without signing in to the "
+                "Microsoft account that owns it.")
+        set_status("Waiting for the Microsoft sign-in…", T.FG)
+        xodus.login()
+
     def do_play():
         if ui["busy"]:
             return
@@ -1749,7 +1793,8 @@ def gui():
         def work():
             try:
                 ver = selected_version()
-                do_setup(mc_ver=ver, progress=set_progress)
+                _ensure_store_account()
+                do_setup(mc_edition=ver, progress=set_progress)
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
                 try:
@@ -1933,10 +1978,50 @@ def gui():
             save_settings(s2)
             threading.Thread(target=refresh_versions, daemon=True).start()
             load_changelogs(force=True)
-        ctk.CTkSwitch(tab_general, text="Show beta / preview versions",
+        ctk.CTkSwitch(tab_general, text="Show the Preview edition",
                       variable=beta_v, command=save_beta,
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=8, padx=4)
+
+        # Minecraft is downloaded from the Microsoft Store with the account
+        # that owns it. That is a separate, device-bound session from the
+        # in-game account chip, so it gets its own control.
+        store_row = ctk.CTkFrame(tab_general, fg_color="transparent")
+        store_row.pack(anchor="w", fill="x", pady=8, padx=4)
+        store_txt = tk.StringVar(value="")
+        ctk.CTkLabel(store_row, textvariable=store_txt, text_color=T.FG,
+                     font=font(13), anchor="w", justify="left"
+                     ).pack(side="left")
+        store_btn = None
+
+        def refresh_store_row():
+            from . import xodus
+            linked = xodus.signed_in()
+            store_txt.set("Microsoft Store account (downloads Minecraft): "
+                          + ("linked" if linked else "not linked"))
+            if store_btn is not None:
+                store_btn.configure(text="Unlink" if linked else "Link…")
+
+        def toggle_store_account():
+            from . import xodus
+
+            def work():
+                try:
+                    if xodus.signed_in():
+                        xodus.logout()
+                    else:
+                        xodus.login()
+                except BolError as exc:
+                    root.after(0, lambda e=exc: messagebox.showerror(
+                        "Microsoft Store account", str(e), parent=root))
+                finally:
+                    root.after(0, refresh_store_row)
+            threading.Thread(target=work, daemon=True).start()
+
+        store_btn = mkbtn(store_row, "Link…", toggle_store_account,
+                          kind="ghost", width=88, height=28, font=font(12))
+        store_btn.pack(side="left", padx=(10, 0))
+        refresh_store_row()
 
         confine_v = tk.BooleanVar(
             value=load_settings().get("confine_cursor", False))
@@ -2665,7 +2750,9 @@ def gui():
         from .util import format_display_version
         ui_sel = mc_var.get()
         ui_wants_beta = "BETA" in ui_sel if ui_sel else False
-        target_version = ui_sel.split('  ')[0].strip() if ui_sel else None
+        # The picker names an edition, not a build, so scroll to the release
+        # notes of the build actually installed.
+        target_version = (load_settings().get("mc_version") or "").strip() or None
         target_index = None
         
         filtered = []

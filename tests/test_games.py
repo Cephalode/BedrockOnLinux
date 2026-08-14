@@ -1,11 +1,10 @@
-"""Regression tests for Minecraft release-archive installation."""
+"""Regression tests for Minecraft edition installation through Xodus."""
 # SPDX-License-Identifier: MIT
 
-import hashlib
 import json
 import tempfile
+import time
 import unittest
-import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -13,694 +12,198 @@ from bol import games
 from bol.log import BolError
 
 
-def _write_game(root, marker):
+def _write_game(root, marker=b"MZ game"):
     root.mkdir(parents=True, exist_ok=True)
     (root / "Minecraft.Windows.exe").write_bytes(marker)
-    (root / "AppxManifest.xml").write_text("<Package />", encoding="utf-8")
+    (root / "AppxManifest.xml").write_text(
+        '<Package><Identity Version="1.26.3301.0" /></Package>',
+        encoding="utf-8")
     return root
 
 
-def _write_archive(path, marker):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("payload/Minecraft.Windows.exe", marker)
-        archive.writestr("payload/AppxManifest.xml", "<Package />")
+class EditionListingTests(unittest.TestCase):
+    def test_beta_edition_is_hidden_unless_requested(self):
+        with mock.patch.object(games, "GAMES", Path("/nonexistent")):
+            stable = games.list_editions(include_beta=False)
+            everything = games.list_editions(include_beta=True)
+
+        self.assertTrue(stable)
+        self.assertTrue(all(not e["beta"] for e in stable))
+        self.assertTrue(any(e["beta"] for e in everything))
+        self.assertGreater(len(everything), len(stable))
+
+    def test_listing_reports_the_installed_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release")
+            with mock.patch.object(games, "GAMES", base):
+                editions = games.list_editions(include_beta=True)
+
+        by_id = {e["id"]: e for e in editions}
+        # The store serves only the current build, so the number shown comes
+        # from the manifest of what is actually installed.
+        self.assertEqual(by_id["release"]["installed"], "1.26.33.1")
+        self.assertIsNone(by_id["preview"]["installed"])
 
 
-class GameArchiveTests(unittest.TestCase):
-    def _version(self):
-        return {
-            "tag": "1.26.33.1",
-            "url": "https://example.invalid/minecraft.zip",
-            "name": "Minecraft.zip",
-            "size": 1024,
-        }
+class InstallTests(unittest.TestCase):
+    def _edition(self):
+        return {"id": "release", "product": "9NBLGGH2JHXJ",
+                "name": "Minecraft for Windows", "beta": False}
 
-    def test_release_listing_keeps_identity_needed_for_same_tag_refresh(self):
-        release = {
-            "tag_name": "1.26.33.1",
-            "prerelease": False,
-            "assets": [{
-                "id": 12345,
-                "name": "Microsoft.Minecraft_1.26.33.1.zip",
-                "size": 4096,
-                "digest": "sha256:" + "a" * 64,
-                "updated_at": "2026-07-25T09:30:00Z",
-                "browser_download_url": "https://example.invalid/game.zip",
-            }],
-        }
-        with mock.patch.object(games, "gh_releases",
-                               return_value=[release]):
-            versions = games.list_mc_versions(include_beta=False)
+    def test_fresh_install_streams_and_records_the_product(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            edition = self._edition()
 
-        self.assertEqual(len(versions), 1)
-        self.assertEqual(versions[0]["asset_id"], 12345)
-        self.assertEqual(
-            versions[0]["asset_digest"], "sha256:" + "a" * 64)
-        self.assertEqual(
-            versions[0]["asset_updated_at"], "2026-07-25T09:30:00Z")
+            def fake_install(product, dest, progress=None):
+                _write_game(Path(dest))
+                return dest
 
-    def test_changed_same_tag_asset_refreshes_automatically(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            target = games_dir / "1.26.33.1"
-            _write_game(target / "payload", b"old-build")
-            (target / games._ASSET_METADATA).write_text(json.dumps({
-                "schema": 1,
-                "tag": "1.26.33.1",
-                "name": "Minecraft.zip",
-                "size": 1024,
-                "asset_id": "old-id",
-                "digest": "",
-                "updated_at": "2026-07-24T00:00:00Z",
-            }))
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"old-build")
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install",
+                                      side_effect=fake_install) as install:
+                root = games.install_game(edition)
 
-            fresh_archive = root / "fresh.zip"
-            _write_archive(fresh_archive, b"new-build")
-            expected = hashlib.sha256(fresh_archive.read_bytes()).hexdigest()
-            version = self._version() | {
-                "asset_id": 54321,
-                "asset_digest": "sha256:" + expected,
-                "asset_updated_at": "2026-07-25T09:30:00Z",
-            }
+            install.assert_called_once()
+            self.assertEqual(install.call_args[0][0], "9NBLGGH2JHXJ")
+            self.assertTrue((root / "Minecraft.Windows.exe").exists())
+            record = json.loads(
+                (base / "release" / games._INSTALL_METADATA).read_text())
+            self.assertEqual(record["product"], "9NBLGGH2JHXJ")
 
-            def fresh_download(_url, destination, _label, _progress):
-                Path(destination).write_bytes(fresh_archive.read_bytes())
+    def test_recent_install_is_not_restreamed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release")
+            games._write_install_record(base / "release", self._edition())
 
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(games, "download",
-                                      side_effect=fresh_download) as download, \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "ok"):
-                installed = games.download_game(version, force=False)
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install") as install:
+                games.install_game(self._edition())
 
-            download.assert_called_once()
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"new-build",
-            )
-            metadata = json.loads(
-                (target / games._ASSET_METADATA).read_text())
-            self.assertEqual(metadata["asset_id"], "54321")
-            self.assertEqual(metadata["digest"], "sha256:" + expected)
+            # Re-checking the CDN on every launch would cost package metadata
+            # for nothing; the delta check is on an interval.
+            install.assert_not_called()
 
-    def test_digest_mismatch_never_replaces_working_same_tag_game(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            installed = _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"working-build",
-            )
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"working-build")
-            cached_before = cached.read_bytes()
-            version = self._version() | {
-                "asset_id": 54321,
-                "asset_digest": "sha256:" + "0" * 64,
-                "asset_updated_at": "2026-07-25T09:30:00Z",
-            }
+    def test_stale_install_is_delta_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release")
+            games._write_install_record(base / "release", self._edition())
+            record_path = base / "release" / games._INSTALL_METADATA
+            record = json.loads(record_path.read_text())
+            record["checked"] = int(time.time()) - games._UPDATE_INTERVAL - 1
+            record_path.write_text(json.dumps(record), encoding="utf-8")
 
-            def wrong_download(_url, destination, _label, _progress):
-                _write_archive(Path(destination), b"wrong-build")
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install") as install:
+                games.install_game(self._edition())
 
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(games, "download",
-                                      side_effect=wrong_download), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaisesRegex(BolError, "SHA-256 mismatch"):
-                games.download_game(version, force=False)
+            install.assert_called_once()
 
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"working-build",
-            )
-            self.assertEqual(cached.read_bytes(), cached_before)
+    def test_clock_moving_backwards_does_not_freeze_the_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release")
+            games._write_install_record(base / "release", self._edition())
+            record_path = base / "release" / games._INSTALL_METADATA
+            record = json.loads(record_path.read_text())
+            record["checked"] = int(time.time()) + 10 * games._UPDATE_INTERVAL
+            record_path.write_text(json.dumps(record), encoding="utf-8")
 
-    def test_stale_same_name_cache_is_redownloaded_without_active_game(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"old-build")
-            fresh_archive = root / "fresh.zip"
-            _write_archive(fresh_archive, b"new-build")
-            expected = hashlib.sha256(fresh_archive.read_bytes()).hexdigest()
-            version = self._version() | {
-                "asset_id": 54321,
-                "asset_digest": "sha256:" + expected,
-                "asset_updated_at": "2026-07-25T09:30:00Z",
-            }
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install") as install:
+                games.install_game(self._edition())
 
-            def fresh_download(_url, destination, _label, _progress):
-                Path(destination).write_bytes(fresh_archive.read_bytes())
+            install.assert_called_once()
+
+    def test_a_different_product_in_the_folder_is_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release")
+            games._write_install_record(
+                base / "release",
+                {"id": "release", "product": "SOMETHINGELSE"})
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install") as install:
+                games.install_game(self._edition())
+
+            install.assert_called_once()
+
+    def test_incomplete_tree_after_streaming_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def truncated(product, dest, progress=None):
+                Path(dest).mkdir(parents=True, exist_ok=True)
+                (Path(dest) / "Minecraft.Windows.exe").write_bytes(b"MZ")
+                return dest
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install",
+                                      side_effect=truncated), \
+                    self.assertRaises(BolError):
+                games.install_game(self._edition())
+
+
+class SelectionTests(unittest.TestCase):
+    def test_managed_folder_records_edition_and_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            games_dir = base / "games"
+            root = _write_game(games_dir / "preview")
+            settings = {}
 
             with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=fresh_download
-                    ) as download, \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "ok"):
-                installed = games.download_game(version, force=False)
+                    mock.patch.object(games, "CONTENT", base / "content"), \
+                    mock.patch.object(games, "load_settings",
+                                      side_effect=lambda: dict(settings)), \
+                    mock.patch.object(games, "save_settings",
+                                      side_effect=settings.update):
+                games.use_game_dir(root)
 
-            download.assert_called_once()
-            self.assertEqual(cached.read_bytes(), fresh_archive.read_bytes())
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"new-build",
-            )
+        self.assertEqual(settings["mc_edition"], "preview")
+        self.assertEqual(settings["mc_version"], "1.26.33.1")
 
-    def test_bad_redownload_is_removed_so_next_retry_can_succeed(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"old-build")
-            fresh_archive = root / "fresh.zip"
-            _write_archive(fresh_archive, b"new-build")
-            wrong_archive = root / "wrong.zip"
-            _write_archive(wrong_archive, b"wrong-build")
-            expected = hashlib.sha256(fresh_archive.read_bytes()).hexdigest()
-            version = self._version() | {
-                "asset_id": 54321,
-                "asset_digest": "sha256:" + expected,
-                "asset_updated_at": "2026-07-25T09:30:00Z",
-            }
-            attempts = iter((wrong_archive, fresh_archive))
+    def test_imported_folder_leaves_the_edition_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = _write_game(base / "elsewhere")
+            settings = {"mc_edition": "release"}
 
-            def download_attempt(_url, destination, _label, _progress):
-                Path(destination).write_bytes(next(attempts).read_bytes())
+            with mock.patch.object(games, "GAMES", base / "games"), \
+                    mock.patch.object(games, "CONTENT", base / "content"), \
+                    mock.patch.object(games, "load_settings",
+                                      side_effect=lambda: dict(settings)), \
+                    mock.patch.object(games, "save_settings",
+                                      side_effect=settings.update):
+                games.use_game_dir(root)
 
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=download_attempt
-                    ) as download, \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "ok"):
-                with self.assertRaisesRegex(BolError, "SHA-256 mismatch"):
-                    games.download_game(version, force=False)
-                self.assertFalse(cached.exists())
-                installed = games.download_game(version, force=False)
+        # A copy from outside the managed tree is not an edition; keeping the
+        # previous choice would let the next setup reinstall over it.
+        self.assertEqual(settings["mc_edition"], "release")
+        self.assertEqual(settings["game_dir"], str(root.resolve()))
 
-            self.assertEqual(download.call_count, 2)
-            self.assertEqual(cached.read_bytes(), fresh_archive.read_bytes())
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"new-build",
-            )
+    def test_auto_edition_prefers_the_remembered_choice(self):
+        chosen = games._auto_edition({"mc_edition": "preview"})
+        self.assertEqual(chosen["id"], "preview")
 
-    def test_force_refreshes_cached_archive_before_reinstall(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"old-build",
-            )
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"old-build")
-            refresh_part = cache_dir / "Minecraft.zip.refresh.part"
-            refresh_part.write_bytes(b"stale-part")
+    def test_auto_edition_falls_back_to_the_stable_one(self):
+        with mock.patch.object(games, "GAMES", Path("/nonexistent")):
+            chosen = games._auto_edition({})
+        self.assertFalse(chosen["beta"])
 
-            def fresh_download(_url, destination, _label, _progress):
-                destination = Path(destination)
-                self.assertEqual(
-                    destination,
-                    cache_dir / "Minecraft.zip.refresh",
-                )
-                self.assertTrue(cached.exists())
-                self.assertFalse(refresh_part.exists())
-                _write_archive(destination, b"new-build")
-                return destination
 
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=fresh_download
-                    ) as download, \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "ok"):
-                installed = games.download_game(
-                    self._version(),
-                    progress="progress-callback",
-                    force=True,
-                )
-
-            download.assert_called_once_with(
-                self._version()["url"],
-                cache_dir / "Minecraft.zip.refresh",
-                "Minecraft 1.26.33.1",
-                "progress-callback",
-            )
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"new-build",
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh").exists()
-            )
-            self.assertFalse(refresh_part.exists())
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.refresh").exists()
-            )
-            self.assertFalse(
-                (cache_dir / ".Minecraft.zip.rollback").exists()
-            )
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.rollback").exists()
-            )
-            with zipfile.ZipFile(cached) as archive:
-                self.assertEqual(
-                    archive.read("payload/Minecraft.Windows.exe"),
-                    b"new-build",
-                )
-
-    def test_failed_force_refresh_keeps_cache_and_installed_game(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            game = _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"working-build",
-            )
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"working-build")
-            before = cached.read_bytes()
-
-            def failed_download(_url, destination, _label, _progress):
-                destination = Path(destination)
-                destination.write_bytes(b"incomplete")
-                destination.with_suffix(
-                    destination.suffix + ".part"
-                ).write_bytes(b"partial")
-                raise BolError("network failed")
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=failed_download
-                    ), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaisesRegex(BolError, "network failed"):
-                games.download_game(self._version(), force=True)
-
-            self.assertEqual(cached.read_bytes(), before)
-            self.assertEqual(
-                (game / "Minecraft.Windows.exe").read_bytes(),
-                b"working-build",
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh").exists()
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh.part").exists()
-            )
-
-    def test_recovery_after_download_before_staging_keeps_active_game(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            game = _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"working-build",
-            )
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"working-build")
-            cached_before = cached.read_bytes()
-
-            # Power loss immediately after download() has renamed its .part
-            # file leaves refresh present but no extraction staging directory.
-            _write_archive(
-                cache_dir / "Minecraft.zip.refresh",
-                b"unactivated-build",
-            )
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games,
-                        "download",
-                        side_effect=BolError("network failed on retry"),
-                    ), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaisesRegex(
-                        BolError, "network failed on retry"
-                    ):
-                games.download_game(self._version(), force=True)
-
-            self.assertEqual(cached.read_bytes(), cached_before)
-            self.assertEqual(
-                (game / "Minecraft.Windows.exe").read_bytes(),
-                b"working-build",
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh").exists()
-            )
-
-    def test_corrupt_force_refresh_preserves_cache_and_installed_game(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            game = _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"working-build",
-            )
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"working-build")
-            before = cached.read_bytes()
-
-            def corrupt_download(_url, destination, _label, _progress):
-                Path(destination).write_bytes(b"not-a-zip")
-                return destination
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=corrupt_download
-                    ), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaises(zipfile.BadZipFile):
-                games.download_game(self._version(), force=True)
-
-            self.assertEqual(cached.read_bytes(), before)
-            self.assertEqual(
-                (game / "Minecraft.Windows.exe").read_bytes(),
-                b"working-build",
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh").exists()
-            )
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.refresh").exists()
-            )
-            self.assertFalse(
-                (cache_dir / ".Minecraft.zip.rollback").exists()
-            )
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.rollback").exists()
-            )
-
-    def test_activation_failure_rolls_back_cache_and_installed_game(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            game = _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"working-build",
-            )
-            cached = cache_dir / "Minecraft.zip"
-            _write_archive(cached, b"working-build")
-            before = cached.read_bytes()
-            original_replace = Path.replace
-
-            def fresh_download(_url, destination, _label, _progress):
-                _write_archive(Path(destination), b"new-build")
-                return destination
-
-            def fail_archive_activation(source, target):
-                source = Path(source)
-                target = Path(target)
-                if (source == cache_dir / "Minecraft.zip.refresh"
-                        and target == cached):
-                    self.assertEqual(
-                        (games_dir / "1.26.33.1" / "payload"
-                         / "Minecraft.Windows.exe").read_bytes(),
-                        b"new-build",
-                    )
-                    self.assertTrue(
-                        (cache_dir / ".Minecraft.zip.rollback").exists()
-                    )
-                    raise OSError("simulated archive activation failure")
-                return original_replace(source, target)
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=fresh_download
-                    ), \
-                    mock.patch.object(Path, "replace",
-                                      new=fail_archive_activation), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaisesRegex(
-                        OSError, "simulated archive activation failure"
-                    ):
-                games.download_game(self._version(), force=True)
-
-            self.assertEqual(cached.read_bytes(), before)
-            self.assertEqual(
-                (game / "Minecraft.Windows.exe").read_bytes(),
-                b"working-build",
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh").exists()
-            )
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.refresh").exists()
-            )
-            self.assertFalse(
-                (cache_dir / ".Minecraft.zip.rollback").exists()
-            )
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.rollback").exists()
-            )
-
-    def test_next_run_recovers_when_immediate_rollback_cannot_remove_game(
-            self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            target = games_dir / "1.26.33.1"
-            old_game = _write_game(target / "payload", b"old-build")
-            archive = cache_dir / "Minecraft.zip"
-            _write_archive(archive, b"old-build")
-            original_replace = Path.replace
-            original_remove = games.remove_path
-
-            def fresh_download(_url, destination, _label, _progress):
-                _write_archive(Path(destination), b"new-build")
-                return destination
-
-            def fail_archive_activation(source, destination):
-                if (Path(source) == cache_dir / "Minecraft.zip.refresh"
-                        and Path(destination) == archive):
-                    raise OSError("simulated archive activation failure")
-                return original_replace(source, destination)
-
-            remove_failed = False
-
-            def fail_first_game_rollback(path):
-                nonlocal remove_failed
-                if Path(path) == target and not remove_failed:
-                    remove_failed = True
-                    raise PermissionError("simulated transient EACCES")
-                return original_remove(path)
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=fresh_download
-                    ), \
-                    mock.patch.object(
-                        Path, "replace", new=fail_archive_activation
-                    ), \
-                    mock.patch.object(
-                        games, "remove_path",
-                        side_effect=fail_first_game_rollback
-                    ), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaisesRegex(
-                        BolError, "rollback errors.*transient EACCES"
-                    ):
-                games.download_game(self._version(), force=True)
-
-            refresh = cache_dir / "Minecraft.zip.refresh"
-            game_backup = games_dir / ".1.26.33.1.rollback"
-            self.assertTrue(refresh.exists())
-            self.assertTrue(game_backup.exists())
-            self.assertEqual(
-                (target / "payload" / "Minecraft.Windows.exe").read_bytes(),
-                b"new-build",
-            )
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "download") as download:
-                installed = games.download_game(
-                    self._version(), force=False,
-                )
-
-            download.assert_not_called()
-            self.assertEqual(installed, old_game)
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"old-build",
-            )
-            with zipfile.ZipFile(archive) as cached:
-                self.assertEqual(
-                    cached.read("payload/Minecraft.Windows.exe"),
-                    b"old-build",
-                )
-            self.assertFalse(refresh.exists())
-            self.assertFalse(game_backup.exists())
-
-    def test_complete_rollback_without_old_cache_keeps_old_game_next_run(
-            self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            old_game = _write_game(
-                games_dir / "1.26.33.1" / "payload",
-                b"old-build",
-            )
-            archive = cache_dir / "Minecraft.zip"
-            original_replace = Path.replace
-
-            def fresh_download(_url, destination, _label, _progress):
-                _write_archive(Path(destination), b"new-build")
-                return destination
-
-            def fail_new_archive_activation(source, destination):
-                if (Path(source) == cache_dir / "Minecraft.zip.refresh"
-                        and Path(destination) == archive):
-                    raise OSError("simulated first archive activation failure")
-                return original_replace(source, destination)
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(
-                        games, "download", side_effect=fresh_download
-                    ), \
-                    mock.patch.object(
-                        Path, "replace", new=fail_new_archive_activation
-                    ), \
-                    mock.patch.object(games, "info"), \
-                    self.assertRaisesRegex(
-                        OSError, "first archive activation failure"
-                    ):
-                games.download_game(self._version(), force=True)
-
-            self.assertEqual(
-                (old_game / "Minecraft.Windows.exe").read_bytes(),
-                b"old-build",
-            )
-            self.assertFalse(
-                (cache_dir / "Minecraft.zip.refresh").exists()
-            )
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.rollback").exists()
-            )
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(
-                        games, "download",
-                        side_effect=BolError("offline")
-                    ) as download:
-                installed = games.download_game(
-                    self._version(), force=False,
-                )
-
-            download.assert_not_called()
-            self.assertEqual(installed, old_game)
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"old-build",
-            )
-
-    def test_next_run_rolls_back_process_interrupted_between_game_and_cache(
-            self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            target = games_dir / "1.26.33.1"
-            _write_game(target / "payload", b"new-build")
-            _write_game(
-                games_dir / ".1.26.33.1.rollback" / "payload",
-                b"old-build",
-            )
-            archive = cache_dir / "Minecraft.zip"
-            refresh = cache_dir / "Minecraft.zip.refresh"
-            _write_archive(archive, b"old-build")
-            _write_archive(refresh, b"new-build")
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "download") as download:
-                installed = games.download_game(
-                    self._version(), force=False,
-                )
-
-            download.assert_not_called()
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"old-build",
-            )
-            with zipfile.ZipFile(archive) as cached:
-                self.assertEqual(
-                    cached.read("payload/Minecraft.Windows.exe"),
-                    b"old-build",
-                )
-            self.assertFalse(refresh.exists())
-            self.assertFalse(
-                (games_dir / ".1.26.33.1.rollback").exists()
-            )
-
-    def test_next_run_commits_completed_activation_and_cleans_rollbacks(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            games_dir = root / "games"
-            cache_dir = root / "cache"
-            target = games_dir / "1.26.33.1"
-            _write_game(target / "payload", b"new-build")
-            game_backup = games_dir / ".1.26.33.1.rollback"
-            _write_game(game_backup / "payload", b"old-build")
-            archive = cache_dir / "Minecraft.zip"
-            archive_backup = cache_dir / ".Minecraft.zip.rollback"
-            _write_archive(archive, b"new-build")
-            _write_archive(archive_backup, b"old-build")
-
-            with mock.patch.object(games, "GAMES", games_dir), \
-                    mock.patch.object(games, "CACHE", cache_dir), \
-                    mock.patch.object(games, "info"), \
-                    mock.patch.object(games, "download") as download:
-                installed = games.download_game(
-                    self._version(), force=False,
-                )
-
-            download.assert_not_called()
-            self.assertEqual(
-                (installed / "Minecraft.Windows.exe").read_bytes(),
-                b"new-build",
-            )
-            with zipfile.ZipFile(archive) as cached:
-                self.assertEqual(
-                    cached.read("payload/Minecraft.Windows.exe"),
-                    b"new-build",
-                )
-            self.assertFalse(archive_backup.exists())
-            self.assertFalse(game_backup.exists())
+class ManifestVersionTests(unittest.TestCase):
+    def test_appx_third_field_is_split_back_into_minor_patch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "AppxManifest.xml").write_text(
+                '<Package><Identity Version="1.26.2004.0" /></Package>',
+                encoding="utf-8")
+            self.assertEqual(games.mc_version_str(root), "1.26.20.4")
 
 
 if __name__ == "__main__":

@@ -65,7 +65,6 @@ UMU_ARCHIVE_SHA256 = \
     "3f8fdc033f547afdb3408ea48ad07194769405148dcfa2b2f945b7fb368a33bb"
 UMU_RUN_SHA256 = \
     "577181dbff2eccdaa78b411c0fd1aa7fde574028449c3e0e99f508536a76870e"
-GAME_ARCHIVE_REPO = "bubbles-wow/mcbe-gdk-unpack-archive"
 MINGW_CURL = "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-curl-8.17.0-1-any.pkg.tar.zst"
 CACERT_URL = "https://curl.se/ca/cacert.pem"
 
@@ -99,6 +98,31 @@ WINEGDK_ARCHIVE_SHA256 = "dfab2adc204225441335c7ba0d19b7b7caa70bd69ffbc3b10e661c
 WINEGDK_PREFIX_SHA256 = "52be53d173068d2d79967022a886a9ace3368186ce435eb979a07bc38caced2c"
 
 SELF_REPO = WINEGDK_PREBUILT_REPO
+
+# Minecraft is acquired through Xodus (GPL-3.0), which signs in to the user's
+# own Microsoft account, obtains the title license and streams the MSIXVC
+# package from the official Xbox CDN. It replaced a third-party repository that
+# redistributed a DRM-stripped copy of the game. See third_party/xodus/README.md.
+XODUS_REPO = "xodus-gaming/xodus"
+XODUS_SOURCE_COMMIT = "4615749c6e02cc3b9acce2abbe9916fe8c376f9a"
+XODUS_REV = "4615749c6e02"
+# Integrity pin for the CI-built xodus-cli archive.
+XODUS_ARCHIVE_SHA256 = ""
+XODUS_DIR = DATA / "xodus"
+XODUS_BIN = XODUS_DIR / "xodus-cli"
+# Xodus keeps its tokens in a file keyring (built with --features
+# key-chain-file) instead of a D-Bus secret service, which does not exist in a
+# Game Mode session or inside a Flatpak sandbox.
+XODUS_KEYRING = HOME / ".xodus-keyring.ron"
+
+# The Xbox CDN only serves the current build of a product id — there is no back
+# catalogue — so the launcher offers editions rather than Bedrock versions.
+MC_PRODUCTS = (
+    {"id": "release", "product": "9NBLGGH2JHXJ",
+     "name": "Minecraft for Windows", "beta": False},
+    {"id": "preview", "product": "9P5X4QVLC2XR",
+     "name": "Minecraft Preview for Windows", "beta": True},
+)
 
 
 def _legacy_install_location_file() -> Path:
