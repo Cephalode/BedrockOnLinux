@@ -17,7 +17,7 @@
         customtkinter
         darkdetect
         packaging
-        xlib
+        python-xlib
         certifi
       ]);
     in
