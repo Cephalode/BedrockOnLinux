@@ -40,7 +40,7 @@ from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
 from .games import list_mc_versions
 from .gamesetup import do_setup
 from .inject import run_injector
-from .launch import direct_launch_readiness, launch
+from .launch import direct_launch_readiness, launch, single_window_session
 from . import log
 from .log import BolError, _LEVELS, desktop_notify, warn
 from .prefix import (
@@ -800,7 +800,11 @@ def gui():
     na = NativeAuth()
     ui = {"versions": [], "labels": [], "busy": False, "details": False,
           "launch_active": False, "changelog_active": False,
-          "changelogs_loaded": False, "changelog_head": None, "settings_head": None}
+          "changelogs_loaded": False, "changelog_head": None,
+          "settings_head": None,
+          # Probed once: it opens the X display to read Gamescope's own root
+          # properties, and the answer cannot change while the window lives.
+          "single_window": single_window_session(), "stepped_aside": False}
     tab_game = None
     tab_launcher = None
 
@@ -1697,6 +1701,44 @@ def gui():
                     cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
                     play_btn._tooltip.text = f"Play {cur_ver}"
 
+    def step_aside_for_game():
+        """Unmap the launcher window once the game process exists.
+
+        Gamescope — Steam Game Mode — presents one application window at a
+        time, so a mapped launcher window keeps the game's own off screen: the
+        game is audible but never appears (#130). Stepping aside for as long
+        as the game runs is what makes the launcher usable there; skipping the
+        launcher is not. A desktop session shows both windows, so nothing
+        moves.
+
+        Called from the launch thread, so the window work is handed to Tk.
+        """
+        if not ui.get("single_window") or ui.get("stepped_aside"):
+            return
+        ui["stepped_aside"] = True
+
+        def hide():
+            try:
+                root.withdraw()
+            except Exception:
+                pass
+        root.after(0, hide)
+
+    def come_back_from_game():
+        """Map the launcher window again, whether the game ran or failed."""
+        if not ui.get("stepped_aside"):
+            return
+        ui["stepped_aside"] = False
+
+        def show():
+            try:
+                root.deiconify()
+                root.lift()
+                root.focus_force()
+            except Exception:
+                pass
+        root.after(0, show)
+
     def do_play():
         if ui["busy"]:
             return
@@ -1710,7 +1752,12 @@ def gui():
                 do_setup(mc_ver=ver, progress=set_progress)
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
-                launch()
+                try:
+                    launch(on_started=step_aside_for_game)
+                finally:
+                    # Before the failure dialog below: it is a child of a
+                    # window that has to be on screen to carry it.
+                    come_back_from_game()
                 set_status("Minecraft closed.", T.SUB)
             except Exception as e:
                 message = str(e) or type(e).__name__
@@ -1737,6 +1784,9 @@ def gui():
                 root.after(0, lambda text=message: messagebox.showerror(
                     "Minecraft could not start", text[:2000], parent=root))
             finally:
+                # A launcher left unmapped would be unreachable, so restore it
+                # here too, on any path the inner handler could have missed.
+                come_back_from_game()
                 ui["launch_active"] = False
                 end_progress()
                 root.after(0, lambda: busy(False))

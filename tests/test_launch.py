@@ -11,11 +11,13 @@ from unittest import mock
 from bol import launch
 
 
-class GraphicsEngineLaunchTests(unittest.TestCase):
+class ReadyLaunchHarness:
+    """Runs one fully mocked `_launch_once`: no GPU, no Wine, no process."""
+
     def _exercise_ready_launch(self, root, popen, arm, disarm,
                                prefix_idle=True, mark=None, preauth=True,
                                lock_fds=(), managed_engine=True,
-                               umu_env=None, account=None):
+                               umu_env=None, account=None, on_started=None):
         content = root / "content"
         logs = root / "logs"
         data = root / "data"
@@ -83,13 +85,16 @@ class GraphicsEngineLaunchTests(unittest.TestCase):
                 for name in ("warn", "wine_reg_set_refresh_token",
                              "ensure_login_deps", "xbl_preauth")
             }
-            return launch._launch_once(lock_fds=lock_fds)
+            return launch._launch_once(lock_fds=lock_fds,
+                                       on_started=on_started)
 
     def _warnings(self):
         return [str(call.args[0])
                 for call in self.launch_mocks["warn"].call_args_list
                 if call.args]
 
+
+class GraphicsEngineLaunchTests(ReadyLaunchHarness, unittest.TestCase):
     def test_managed_install_finishes_before_graphics_validation(self):
         calls = []
         with mock.patch.object(launch, "active_prefix",
@@ -854,44 +859,107 @@ class DirectLaunchReadinessTests(unittest.TestCase):
         self.assertIn("No Minecraft version is installed", pending[0])
 
 
-class GameModeDirectLaunchTests(unittest.TestCase):
-    """Steam Game Mode shows one window, so the launcher's own hides the game."""
+class SingleWindowSessionTests(unittest.TestCase):
+    """Game Mode shows one window, so the launcher steps aside — never out."""
 
-    def _decide(self, env, gamescope=True, pending=()):
+    def test_gamescope_session_is_single_window(self):
         with mock.patch.object(launch, "in_gamescope_session",
-                               return_value=gamescope), \
-                mock.patch.object(launch, "direct_launch_readiness",
-                                  return_value=list(pending)):
-            return launch.game_mode_direct_launch(env)
+                               return_value=True) as probe:
+            self.assertTrue(launch.single_window_session({"DISPLAY": ":1"}))
+        probe.assert_called_once_with({"DISPLAY": ":1"})
 
-    def test_prepared_installation_in_game_mode_skips_the_window(self):
-        self.assertTrue(self._decide({}))
-
-    def test_ordinary_desktop_session_keeps_the_window(self):
-        self.assertFalse(self._decide({}, gamescope=False))
-
-    def test_first_run_work_still_needs_the_window(self):
-        self.assertFalse(self._decide(
-            {}, pending=["No Minecraft version is installed yet."]))
-
-    def test_forcing_the_gui_wins_over_game_mode(self):
-        for value in ("1", "yes", "on", "true", "TRUE"):
-            with self.subTest(value=value):
-                self.assertFalse(self._decide({"BOL_FORCE_GUI": value}))
-
-    def test_unset_or_falsey_force_variable_is_ignored(self):
-        for value in ("", "0", "no", " "):
-            with self.subTest(value=value):
-                self.assertTrue(self._decide({"BOL_FORCE_GUI": value}))
-
-    def test_readiness_is_not_consulted_outside_game_mode(self):
+    def test_ordinary_desktop_session_is_not(self):
         with mock.patch.object(launch, "in_gamescope_session",
-                               return_value=False), \
+                               return_value=False):
+            self.assertFalse(launch.single_window_session({}))
+
+    def test_first_run_state_is_never_consulted(self):
+        # Whether a version is installed decided the old skip-the-window
+        # behaviour. Nothing about the session depends on it any more.
+        with mock.patch.object(launch, "in_gamescope_session",
+                               return_value=True), \
                 mock.patch.object(
                     launch, "direct_launch_readiness",
                     side_effect=AssertionError(
-                        "a desktop session must not probe first-run state")):
-            self.assertFalse(launch.game_mode_direct_launch({}))
+                        "the session shape does not depend on first-run "
+                        "state")):
+            self.assertTrue(launch.single_window_session({}))
+
+
+class LaunchStartedHookTests(ReadyLaunchHarness, unittest.TestCase):
+    """A launcher window steps aside once the game process exists."""
+
+    def _play(self, hook="stepped aside", popen_fails=False):
+        """Run one launch, recording the order of spawn, hook and wait.
+
+        `hook` is the marker the started-hook records, ``None`` for no hook,
+        or an exception for a hook that fails.
+        """
+        # Reachable after a raising launch, which never returns the list.
+        self.events = events = []
+
+        def popen(*_a, **_kw):
+            events.append("spawned")
+            if popen_fails:
+                raise OSError("no such file")
+            proc = mock.Mock()
+            proc.wait.side_effect = lambda timeout=None: (
+                events.append("waited") or 0)
+            return proc
+
+        if hook is None:
+            on_started = None
+        elif isinstance(hook, BaseException):
+            def on_started():
+                events.append("hook failed")
+                raise hook
+        else:
+            def on_started():
+                events.append(hook)
+
+        with tempfile.TemporaryDirectory() as td:
+            rc = self._exercise_ready_launch(
+                Path(td), popen,
+                arm=lambda: "owned-token",
+                disarm=lambda _token: True,
+                on_started=on_started,
+            )
+        return rc, events
+
+    def test_hook_runs_after_the_spawn_and_before_the_wait(self):
+        rc, events = self._play()
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["spawned", "stepped aside", "waited"])
+
+    def test_no_hook_is_the_launcher_free_launch(self):
+        rc, events = self._play(hook=None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["spawned", "waited"])
+
+    def test_a_failing_hook_never_aborts_a_running_game(self):
+        rc, events = self._play(hook=RuntimeError("Tk went away"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["spawned", "hook failed", "waited"])
+        self.assertTrue(any("could not step aside" in warning
+                            for warning in self._warnings()))
+
+    def test_a_spawn_that_fails_never_moves_the_window(self):
+        with self.assertRaises(OSError):
+            self._play(hook="stepped aside", popen_fails=True)
+        self.assertEqual(self.events, ["spawned"])
+
+    def test_launch_forwards_the_hook_through_the_launch_lock(self):
+        hook = object()
+        with mock.patch.object(launch, "launch_lock") as lock, \
+                mock.patch.object(launch, "_launch_once",
+                                  return_value=0) as once:
+            lock.return_value.__enter__.return_value = (71, 72)
+            self.assertEqual(launch.launch(on_started=hook), 0)
+        once.assert_called_once_with((71, 72), on_started=hook)
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

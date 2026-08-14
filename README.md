@@ -220,13 +220,13 @@ directly — no extra shortcut needed. In the Flatpak, where host-visible
 shortcuts cannot be written from the sandbox, use that action or add
 `flatpak run io.github.wyze3306.BedrockOnLinux play` to Steam by hand.
 
-Adding the launcher itself to Steam works too: in Game Mode it starts the game
-directly rather than opening its window, because Game Mode shows one window at
-a time and the launcher's own would stand between Steam and the game. Set
-`BOL_FORCE_GUI=1` in the shortcut's launch options to open the window there
-anyway — for changing a setting from the Deck, say. A first run still opens
-the window, since installing a version and signing in cannot be done without
-it.
+Adding the launcher itself to Steam works too, and starting it opens the
+launcher — in Game Mode as on the desktop. Game Mode shows one application
+window at a time, so **▶ PLAY** there hands the screen over: the launcher
+window disappears while Minecraft runs and comes back when the game closes.
+Choosing between the two entries is therefore a choice, not a workaround —
+the launcher for installing, signing in and changing settings from the Deck,
+the *Minecraft Bedrock* shortcut for going straight into the game.
 
 A launcher-free launch performs no first-run work: it cannot show the Microsoft
 device code or pick a version, so install and sign in from the launcher once

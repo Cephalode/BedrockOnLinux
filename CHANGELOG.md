@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Open the launcher again. 2.1.4 made starting the launcher in a Gamescope
+  session start Minecraft directly instead of showing its window, to get past
+  Steam Deck Game Mode showing one window at a time. That took the launcher
+  away from the people who wanted it: in Game Mode nothing appeared at all,
+  and the session probe matched on the reporter's desktop session too, where
+  the game started the moment the launcher was opened
+  ([#127](https://github.com/Wyze3306/BedrockOnLinux/issues/127),
+  [#130](https://github.com/Wyze3306/BedrockOnLinux/issues/130)). Starting the
+  launcher now opens the launcher, in every session. The launcher-free launch
+  stays available where it is asked for explicitly: `bedrock-on-linux play`,
+  the **Play without the launcher** app-menu action, and the *Minecraft
+  Bedrock* shortcut that `shortcut` writes. `BOL_FORCE_GUI` no longer has
+  anything to override and can be dropped from Steam launch options.
+
+- Reach the game from the launcher in Game Mode. Gamescope presents a single
+  application window, so the launcher's own kept Minecraft's off screen — the
+  game was audible but never appeared
+  ([#130](https://github.com/Wyze3306/BedrockOnLinux/issues/130)). **▶ PLAY**
+  now unmaps the launcher window as soon as the game process exists and maps
+  it back when the game closes, so the launcher is usable there rather than
+  bypassed. A failure
+  brings the window back first, so its error dialog has a window to appear in.
+  Desktop sessions show both windows and are unchanged.
+
 ## 2.1.4 — 2026-08-11
 
 ### Fixed

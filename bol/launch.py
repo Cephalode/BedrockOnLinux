@@ -295,7 +295,7 @@ def _prepare_launch_engine():
     return _prepare_graphics_engine()
 
 
-def _launch_once(lock_fds=()):
+def _launch_once(lock_fds=(), on_started=None):
     s = load_settings()
     gd = s.get("game_dir")
     if not gd or not Path(gd, "Minecraft.Windows.exe").exists():
@@ -518,6 +518,14 @@ def _launch_once(lock_fds=()):
                      "GPU safety marker failed (%s)." %
                      type(marker_error).__name__)
             raise
+        if on_started is not None:
+            # The caller owns a window that may have to step aside for the
+            # game's own; never let that bookkeeping abort a running launch.
+            try:
+                on_started()
+            except Exception as hook_error:
+                warn("The launcher could not step aside for the game window "
+                     "(%s)." % type(hook_error).__name__)
         started = time.time()
         announced = False
         while True:
@@ -589,10 +597,15 @@ def _launch_once(lock_fds=()):
     return rc
 
 
-def launch():
-    """Run exactly one guarded launch for each user action."""
+def launch(on_started=None):
+    """Run exactly one guarded launch for each user action.
+
+    ``on_started`` is called once the game process exists, before the wait on
+    it. A launcher window uses it to get out of the game's way in a session
+    that shows one window at a time.
+    """
     with launch_lock() as lock_fds:
-        return _launch_once(lock_fds)
+        return _launch_once(lock_fds, on_started=on_started)
 
 
 def direct_launch_readiness():
@@ -618,25 +631,13 @@ def direct_launch_readiness():
     return pending
 
 
-def game_mode_direct_launch(environ=None):
-    """Whether starting the launcher should go straight to the game instead.
+def single_window_session(environ=None):
+    """Whether the session shows one application window at a time.
 
-    Steam Game Mode is a single-window session: Gamescope shows one
-    application window at a time, so the launcher's own window stands between
-    Steam and the game. Its dialogs are then unreachable, which leaves the
-    interface looking dead (#127), and the game window never becomes the one
-    on screen even though the game is audibly running (#130). The supported
-    answer there is the launcher-free launch, so take it automatically rather
-    than requiring a second, hand-made Steam entry for it.
-
-    Only when the installation can start on its own: first-run work still
-    needs the window, and there it is better to show one that is awkward to
-    drive than to fail with nothing on screen. BOL_FORCE_GUI=1 keeps the
-    window in every case.
+    Steam Game Mode is that session: Gamescope presents a single window, so
+    the launcher's own stands between Steam and the game — the game stays
+    audible but never appears (#130). The answer is for the launcher to step
+    aside while the game runs, not for it to be skipped: starting the
+    launcher must open the launcher, in Game Mode as everywhere else.
     """
-    source = os.environ if environ is None else environ
-    if env_flag(source.get("BOL_FORCE_GUI")):
-        return False
-    if not in_gamescope_session(source):
-        return False
-    return not direct_launch_readiness()
+    return in_gamescope_session(os.environ if environ is None else environ)
