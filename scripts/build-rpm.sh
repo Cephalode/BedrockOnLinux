@@ -132,6 +132,8 @@ Requires:       xdg-utils
 Requires:       /usr/bin/xrandr
 Requires:       ca-certificates
 Requires:       (curl or wget)
+# xodus-cli opens the Microsoft Store sign-in in an embedded webview.
+Requires:       webkit2gtk4.1
 Recommends:     mesa-vulkan-drivers
 
 %description

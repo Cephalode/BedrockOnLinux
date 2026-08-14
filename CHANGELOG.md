@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### Changed
+
+- **Minecraft is now downloaded from the Microsoft Store with your own
+  account.** Until now the launcher fetched a repackaged, DRM-stripped copy of
+  the game from a third-party GitHub repository. That redistributed Minecraft,
+  and it let anyone install it without owning it. The launcher now uses
+  [Xodus](https://github.com/xodus-gaming/xodus), which signs in to your
+  Microsoft account, asks Microsoft's licensing service for the title licence
+  and streams the package straight from the Xbox CDN, decrypting it as it goes
+  — the same path Windows takes.
+
+  What this changes for you:
+
+  - **You must own Minecraft on the account you link.** This is now true for
+    installing, not only for playing online.
+  - **There is a second sign-in.** The Store account authorises the download;
+    the existing in-game account is unchanged. They can be the same account,
+    but they are separate links, because the Store needs a device-bound
+    session that the in-game sign-in cannot provide.
+  - **The version picker is now an edition picker** — *Minecraft* or
+    *Minecraft Preview*. The Xbox CDN only serves the current build of each,
+    so there is no back catalogue and no way to pin an older build to match a
+    frozen server. Updates arrive on their own; the launcher re-checks for a
+    delta every twelve hours and downloads only what changed.
+  - **WebKitGTK is a new dependency** (`libwebkit2gtk-4.1-0`), for the Store
+    sign-in window. The `.deb` and `.rpm` pull it in and `doctor` reports it.
+    The Flatpak cannot yet: its runtime does not ship WebKitGTK, so the
+    Flatpak cannot install the game until that runtime changes.
+
+  A copy of the game you already have keeps working: point the launcher at it
+  as before.
+
+- Load the game executable from memory when the Store package keeps it
+  encrypted. Store packages leave the segments they flag
+  `KEEP_ENCRYPTED_ON_DISK` — the game executable on GDK titles — encrypted at
+  rest, exactly as on Windows, so there is no executable on disk for Wine to
+  open. The engine gained a loader that can map the main image from an open
+  file descriptor, and the launcher decrypts into anonymous memory and hands
+  that descriptor over, so the decrypted game never touches the disk. The
+  settings/pause stack-reserve fix now lands on that memory instead of the
+  file. Packages that ship a plaintext executable are detected and take the
+  previous path unchanged.
+
+  One consequence worth knowing: an encrypted package needs the licence at
+  every launch, so starting the game requires the network and a valid Store
+  session even for single-player. Nothing else about offline play changes.
+
 ### Fixed
 
 - Stop the crash that hit the main menu as soon as an account was signed in.

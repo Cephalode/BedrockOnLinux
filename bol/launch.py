@@ -20,6 +20,7 @@ from .auth import (
     xbl_preauth_diagnostic,
     xbl_preauth_error_message,
 )
+from . import xodus
 from .config import CONTENT, DATA, HOME, LOGS, WINEGDK_BUILD_REV
 from .deps import ensure_login_deps
 from .dgc import dgc_warning_message, intel_dgpus_on_legacy_driver
@@ -370,7 +371,12 @@ def _launch_once(lock_fds=(), on_started=None):
                 + " Minecraft starts in " + _OFFLINE_MODE_NOTICE
             )
     exe = str(CONTENT / "Minecraft.Windows.exe")
-    bump_stack_reserve(Path(exe))
+    # A Microsoft Store package keeps the executable encrypted at rest, so
+    # there is no PE header on disk to edit and no image for Wine to open. Both
+    # are handled after Xodus decrypts it into anonymous memory, below.
+    encrypted_exe = xodus.exe_is_encrypted(Path(exe))
+    if not encrypted_exe:
+        bump_stack_reserve(Path(exe))
     cmd, env = proton_umu_cmd(exe)
     # Required by the menu's indirect root-CBV updates (#27/#29/#30).
     _require_vkd3d_config(env, "force_raw_va_cbv")
@@ -468,6 +474,10 @@ def _launch_once(lock_fds=(), on_started=None):
         elif wl:
             warn("Wayland session without X DISPLAY — install XWayland (or set "
                  "BOL_INPUT=wayland to use winewayland).")
+    if encrypted_exe:
+        # Must wrap before gamescope: gamescope has to stay outermost so it
+        # owns the compositor the game renders into.
+        cmd = xodus.wrap_encrypted_launch(cmd, Path(gd), DATA / "run")
     if use_gamescope:
         if gs_opt and not env_flag(gs_opt):
             gs_argv = ["gamescope"] + shlex.split(gs_opt)

@@ -20,11 +20,19 @@ Friends, servers and Realms.**
 
 ## How it works
 
-BedrockOnLinux downloads the Minecraft version you pick, prepares a Wine prefix
-for it, and runs the game on a GDK-Proton engine built from a WineGDK fork. You
-never need a compiler, a Windows install or a second machine.
+BedrockOnLinux downloads Minecraft from the Microsoft Store with your own
+account, prepares a Wine prefix for it, and runs the game on a GDK-Proton
+engine built from a WineGDK fork. You never need a compiler, a Windows install
+or a second machine.
 
-The point of that engine is that the Xbox side is **implemented, not faked**:
+The download is the real one. [Xodus](https://github.com/xodus-gaming/xodus)
+signs in to your Microsoft account, asks Microsoft's licensing service for the
+title licence, and streams the MSIXVC package straight from the Xbox CDN,
+decrypting it as it goes — the same path Windows takes. **Your account has to
+own Minecraft.** Earlier releases pulled a repackaged copy of the game from a
+third-party repository instead; that is gone.
+
+The point of the engine is that the Xbox side is **implemented, not faked**:
 
 - **Real Microsoft identity.** XGame configuration, XUser, request signing,
   gamertags, privileges and the XSAPI context are native code inside the
@@ -126,7 +134,10 @@ drop the override.
    route to Xbox Live, the game starts in offline mode: single-player worlds
    and LAN play work, and only Realms, servers, the Marketplace and Xbox
    friends stay out of reach.
-3. Pick a Minecraft version and hit **▶ PLAY**.
+3. Pick an edition — **Minecraft** or **Minecraft Preview** — and hit
+   **▶ PLAY**. The first PLAY asks you to link the Microsoft account that owns
+   the game, in a separate Store sign-in window; this one is not optional,
+   because it is what authorises the download.
 4. Use Minecraft's **Friends**, **Servers** and **Realms** tabs as usual.
 
 The first run downloads Minecraft, then the engine and its online/TLS payload,
@@ -134,15 +145,20 @@ and verifies both. Later runs reuse them. Your credentials live in the private
 BedrockOnLinux data folder and are seeded into the stopped Wine prefix just
 before launch.
 
-To re-download a version whose tag has not changed instead of reusing the
-cache:
+If the Store package keeps the game executable encrypted — which is what
+Windows gets too — the licence is fetched at every launch, so starting the game
+needs the network and a valid Store session even for a single-player world.
+Packages that ship a plaintext executable start offline as before.
+
+There is no version list. The Xbox CDN serves only the current build of each
+edition, so you get whatever Microsoft is shipping today — exactly as on
+Windows. There is no way to install an older build to match a server frozen on
+one. Updates arrive on their own; the launcher re-checks for a delta every
+twelve hours and downloads only what changed:
 
 ```bash
-bedrock-on-linux setup --mc <version> --force
+bedrock-on-linux setup --mc release --force   # check for a delta right now
 ```
-
-That still cannot produce an internal build the community archive never
-published.
 
 ### Steam, Steam Deck and the app menu
 
@@ -258,10 +274,15 @@ layouts, not in the Flatpak sandbox.
 - **Room to spare.** Game, compressed engine and a temporary extraction all
   need space. `No space left on device` is harmless: free some and press PLAY
   again.
-- **A Microsoft account that owns Minecraft**, for anything online. Friends,
-  multiplayer and Realms also depend on that account's privacy settings, any
-  Realms subscription or invitation, and Microsoft's services being up.
-  Single-player and LAN need none of it.
+- **A Microsoft account that owns Minecraft.** This is now required to install
+  the game at all, not only to play online: the download comes from the
+  Microsoft Store under your own licence. Friends, multiplayer and Realms
+  additionally depend on that account's privacy settings, any Realms
+  subscription or invitation, and Microsoft's services being up. Single-player
+  and LAN need none of *those*.
+- **WebKitGTK** (`libwebkit2gtk-4.1-0`), for the Store sign-in window. The
+  `.deb` and `.rpm` pull it in; `bedrock-on-linux doctor` reports it if it is
+  missing. The Flatpak cannot provide it yet — see the note in the manifest.
 
 GPUs stuck on Vulkan 1.2 can try **Settings ▸ Advanced ▸ Legacy compatibility
 renderer**, but treat it as a last resort: it swaps the entire Direct3D stack —
@@ -339,12 +360,13 @@ bedrock-on-linux doctor                    # host dependencies and GPU safety
 bedrock-on-linux doctor --network          # DNS/TLS, clock and VPN observations
 bedrock-on-linux doctor --host 192.0.2.10  # plus the route to one LAN IP
 bedrock-on-linux repair                    # rebuild the managed Wine prefix
-bedrock-on-linux versions [--beta]         # what you can install
-bedrock-on-linux setup --mc <version>      # download and prepare one version
+bedrock-on-linux versions [--beta]         # editions you can install
+bedrock-on-linux setup --mc release        # download and prepare an edition
 bedrock-on-linux import <files…>           # worlds, add-ons, packs, skins
 bedrock-on-linux profiles list             # isolated local Xbox profiles
-bedrock-on-linux login                     # link a Microsoft account
-bedrock-on-linux play                      # launch the selected version
+bedrock-on-linux store-login               # link the account that owns the game
+bedrock-on-linux login                     # link a Microsoft account (in-game)
+bedrock-on-linux play                      # launch the selected edition
 bedrock-on-linux shortcut                  # desktop/Steam entry, no GUI
 bedrock-on-linux update                    # check for a launcher update
 bedrock-on-linux changelog                 # what the latest release changed
@@ -441,11 +463,15 @@ the full test suite and smoke-test the exact candidate before publishing.
 
 ## Legal
 
-BedrockOnLinux ships **no Minecraft game files**. Packages come from the
-community-maintained
-[`bubbles-wow/mcbe-gdk-unpack-archive`](https://github.com/bubbles-wow/mcbe-gdk-unpack-archive),
-or from a local source you choose. You must own Minecraft and follow the terms
-that come with it.
+BedrockOnLinux ships **no Minecraft game files**, and no longer redistributes
+them by proxy either. The game is downloaded from Microsoft's own CDN, under
+your own account's licence, by [Xodus](https://github.com/xodus-gaming/xodus) —
+so you must own Minecraft, and you must follow the terms that come with it. A
+local copy you already have can be used instead.
+
+Xodus is GPL-3.0. The launcher never links it: `xodus-cli` is executed as a
+separate program, and the release that ships the binary also publishes the
+matching source. See [`third_party/xodus/README.md`](third_party/xodus/README.md).
 
 WineGDK, GDK-Proton, vkd3d-proton and the bundled dependencies keep their own
 licences, and the engine carries their notices and provenance. BedrockOnLinux

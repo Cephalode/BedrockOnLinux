@@ -4,6 +4,9 @@
 import hashlib
 import io
 import os
+import struct
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -186,6 +189,134 @@ class EncryptedExeTests(unittest.TestCase):
         # A missing exe is a broken install, handled elsewhere; claiming it is
         # encrypted would send the launcher down the memfd path for nothing.
         self.assertFalse(xodus.exe_is_encrypted(Path("/nonexistent/x.exe")))
+
+
+def _pe32plus_header(stack_reserve=0x100000):
+    """The smallest PE32+ header carrying a SizeOfStackReserve field."""
+    head = bytearray(0x400)
+    head[0:2] = b"MZ"
+    struct.pack_into("<I", head, 0x3C, 0x80)          # e_lfanew
+    head[0x80:0x84] = b"PE\0\0"
+    opt = 0x80 + 4 + 20
+    struct.pack_into("<H", head, opt, 0x20B)          # PE32+ magic
+    struct.pack_into("<Q", head, opt + 72, stack_reserve)
+    return bytes(head)
+
+
+def _stack_reserve(data):
+    opt = struct.unpack_from("<I", data, 0x3C)[0] + 4 + 20
+    return struct.unpack_from("<Q", data, opt + 72)[0]
+
+
+class WrapEncryptedLaunchTests(unittest.TestCase):
+    def _wrap(self, tmp, argv):
+        with mock.patch.object(xodus, "ensure_cli",
+                               return_value=Path("/opt/xodus-cli")):
+            return xodus.wrap_encrypted_launch(argv, Path(tmp) / "game",
+                                               Path(tmp) / "run")
+
+    def test_command_runs_xodus_and_names_the_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = self._wrap(
+                tmp, ["/usr/bin/python3", "/opt/umu-run",
+                      "/games/release/Minecraft.Windows.exe"])
+
+        self.assertEqual(cmd[:2], ["/opt/xodus-cli", "run"])
+        self.assertEqual(cmd[3], str(Path(tmp) / "run"
+                                     / "xodus-launch-wrapper.py"))
+        # Naming the executable matters: xodus otherwise takes whichever
+        # keep_encrypted entry its hash map yields first.
+        self.assertEqual(cmd[-2:], ["--exe", "\\Minecraft.Windows.exe"])
+
+    def test_wrapper_appends_the_nt_name_to_the_launch_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = Path(tmp) / "argv.txt"
+            cmd = self._wrap(tmp, [
+                sys.executable, "-c",
+                "import sys, pathlib; "
+                f"pathlib.Path({str(recorder)!r}).write_text('\\n'.join(sys.argv[1:]))",
+                "/games/release/Minecraft.Windows.exe"])
+            wrapper = cmd[3]
+
+            nt_name = "\\??\\Z:\\games\\release\\Minecraft.Windows.exe"
+            subprocess.run([sys.executable, wrapper, nt_name], check=True,
+                           env={**os.environ, "WINE_DLL_FILE_MAP": ""})
+
+            # The launcher's own command survives; only the executable
+            # argument is replaced by the name xodus assigned.
+            self.assertEqual(recorder.read_text().splitlines()[-1], nt_name)
+
+    def test_wrapper_raises_the_stack_reserve_of_the_mapped_descriptor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = self._wrap(tmp, [sys.executable, "-c", "pass",
+                                   "/games/release/Minecraft.Windows.exe"])
+            wrapper = cmd[3]
+
+            fd = os.memfd_create("test-exe", 0)
+            try:
+                os.write(fd, _pe32plus_header())
+                os.set_inheritable(fd, True)
+                nt_name = "\\??\\Z:\\games\\Minecraft.Windows.exe"
+                subprocess.run(
+                    [sys.executable, wrapper, nt_name], check=True,
+                    pass_fds=(fd,),
+                    env={**os.environ,
+                         "WINE_DLL_FILE_MAP": f"{fd}:{nt_name}"})
+                patched = os.pread(fd, 0x400, 0)
+            finally:
+                os.close(fd)
+
+        # The loader reads SizeOfStackReserve when it maps the image, and a
+        # Store package has no on-disk header to edit, so the memfd is the only
+        # place the settings/pause fix (#27) can land.
+        self.assertEqual(_stack_reserve(patched), 0x1000000)
+
+    def test_wrapper_leaves_other_descriptors_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = self._wrap(tmp, [sys.executable, "-c", "pass",
+                                   "/games/release/Minecraft.Windows.exe"])
+            wrapper = cmd[3]
+
+            fd = os.memfd_create("other-exe", 0)
+            try:
+                os.write(fd, _pe32plus_header())
+                os.set_inheritable(fd, True)
+                subprocess.run(
+                    [sys.executable, wrapper, "\\??\\Z:\\wanted.exe"],
+                    check=True, pass_fds=(fd,),
+                    env={**os.environ,
+                         "WINE_DLL_FILE_MAP": f"{fd}:\\??\\Z:\\other.exe"})
+                untouched = os.pread(fd, 0x400, 0)
+            finally:
+                os.close(fd)
+
+        self.assertEqual(_stack_reserve(untouched), 0x100000)
+
+    def test_wrapper_still_launches_when_the_header_cannot_be_patched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = Path(tmp) / "ran.txt"
+            cmd = self._wrap(tmp, [
+                sys.executable, "-c",
+                f"import pathlib; pathlib.Path({str(recorder)!r}).write_text('ran')",
+                "/games/release/Minecraft.Windows.exe"])
+            wrapper = cmd[3]
+
+            # A game that starts with a 1 MB stack beats one that does not
+            # start at all, so a bad map entry must never be fatal.
+            subprocess.run(
+                [sys.executable, wrapper, "\\??\\Z:\\x.exe"], check=True,
+                env={**os.environ, "WINE_DLL_FILE_MAP": "notanfd:\\??\\Z:\\x.exe"})
+
+            self.assertEqual(recorder.read_text(), "ran")
+
+    def test_wrapper_refuses_to_run_without_an_executable_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = self._wrap(tmp, [sys.executable, "-c", "pass", "/x.exe"])
+            result = subprocess.run([sys.executable, cmd[3]],
+                                    capture_output=True, text=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NT executable name", result.stderr)
 
 
 if __name__ == "__main__":

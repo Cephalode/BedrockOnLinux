@@ -17,6 +17,24 @@ from .ntsync import inproc_sync_problem, inproc_sync_summary
 from .util import custom_env_map, load_settings
 
 
+def _have_webkitgtk():
+    """Whether the WebKitGTK the Store sign-in webview needs is installed.
+
+    ctypes rather than pkg-config: the runtime library is what matters, and
+    the development package is not installed on a user's machine.
+    """
+    import ctypes.util
+
+    if ctypes.util.find_library("webkit2gtk-4.1"):
+        return True
+    # find_library needs ldconfig or a compiler; fall back to the soname.
+    try:
+        ctypes.CDLL("libwebkit2gtk-4.1.so.0")
+        return True
+    except OSError:
+        return False
+
+
 def gpu_crash_acknowledgement_status():
     """Return structured acknowledgement state for CLI or GUI callers."""
 
@@ -96,6 +114,14 @@ def doctor(acknowledge_gpu_crash=False):
           f"{'OK (login)' if cr_ok else 'MANQUANT (login)'}")
     if not cr_ok:
         miss.append("python3-cryptography")
+    # Minecraft is downloaded from the Microsoft Store, and xodus-cli opens
+    # that sign-in in an embedded WebKitGTK webview. Without the library it
+    # cannot even start, so name it here rather than at the first download.
+    webkit_ok = _have_webkitgtk()
+    print(f"  {'webkit2gtk':12} : "
+          f"{'OK (store sign-in)' if webkit_ok else 'MANQUANT (store sign-in)'}")
+    if not webkit_ok:
+        miss.append("libwebkit2gtk-4.1-0")
     gpu_problem = graphics_safety_problem()
     print(f"  {'graphics':12} : "
           f"{'BLOQUÉ' if gpu_problem else 'OK (no unsafe state found)'}")

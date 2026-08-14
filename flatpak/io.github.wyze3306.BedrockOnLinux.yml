@@ -10,6 +10,13 @@
 # Local test build: scripts/build-flatpak.sh (swaps the app source for the
 # working tree); add --release to build this manifest as published.
 app-id: io.github.wyze3306.BedrockOnLinux
+# KNOWN GAP: Minecraft is downloaded from the Microsoft Store, and xodus-cli
+# opens that sign-in in a WebKitGTK webview. org.freedesktop.Platform does not
+# ship WebKitGTK, so the sign-in cannot run inside this sandbox and the Flatpak
+# cannot install the game yet. Moving to org.gnome.Platform (which bundles it)
+# is the intended fix and is deliberately a separate change: it swaps the whole
+# runtime under a launcher whose Tk, Steam Linux Runtime and GPU paths are all
+# validated against this one.
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
