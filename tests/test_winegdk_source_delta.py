@@ -605,6 +605,19 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
                 self.assertIn(path.name, text, f"{path.name} is never applied")
                 self.assertIn(digest, text, f"{path.name} is not pinned")
 
+    def test_no_build_script_line_ends_in_a_doubled_backslash(self):
+        """A doubled continuation silently truncates a command's arguments.
+
+        Generating one of these turned `verify_sha256 \\` into a call with a
+        literal backslash and no arguments, which `bash -n` accepts happily --
+        the package job died on "$2: unbound variable" instead.
+        """
+        for script in (SCRIPT, CONTAINER_SCRIPT, PACKAGER):
+            for number, line in enumerate(
+                    script.read_text().splitlines(), start=1):
+                if line.rstrip().endswith("\\\\"):
+                    self.fail(f"{script.name}:{number} ends in '\\\\'")
+
     def test_every_packager_pin_matches_the_file_it_names(self):
         """Each verify_sha256 pin must be the digest of its own file.
 

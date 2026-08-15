@@ -384,9 +384,9 @@ verify_winegdk_source_provenance() {
     "$native_root/0007-ntdll-load-main-image-from-a-mapped-fd.patch" \
     "0ebb25f67183b0bb052b9cbb76f6a0aca02be89fc7be448ff94702b178e9ffc6" \
     "WineGDK ntdll mapped-fd main-image loader"
-  verify_sha256 \\
-    "$native_root/0008-ntdll-accept-a-path-in-the-image-map.patch" \\
-    "7510e707abf9869d40b855754d58c025e1bd98cec455bef3dbec79e9d14461a3" \\
+  verify_sha256 \
+    "$native_root/0008-ntdll-accept-a-path-in-the-image-map.patch" \
+    "7510e707abf9869d40b855754d58c025e1bd98cec455bef3dbec79e9d14461a3" \
     "WineGDK ntdll image-map path support"
 }
 
