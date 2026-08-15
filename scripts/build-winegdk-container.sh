@@ -35,6 +35,10 @@ readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native
 readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
 readonly VENDORED_XSTORE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0006-xgameruntime-stop-faking-xstore-answers.patch"
 readonly VENDORED_XSTORE_PATCH_SHA256="0ae38358531a81af9b20a997d73f07b383db68afcd14cf89107dd9442f101fd1"
+readonly VENDORED_MAPPED_FD_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0007-ntdll-load-main-image-from-a-mapped-fd.patch"
+readonly VENDORED_MAPPED_FD_PATCH_SHA256="0ebb25f67183b0bb052b9cbb76f6a0aca02be89fc7be448ff94702b178e9ffc6"
+readonly VENDORED_PATH_MAP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0008-ntdll-accept-a-path-in-the-image-map.patch"
+readonly VENDORED_PATH_MAP_PATCH_SHA256="7510e707abf9869d40b855754d58c025e1bd98cec455bef3dbec79e9d14461a3"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
 readonly NTSYNC_UAPI_HEADER="$PROJECT_ROOT/third_party/linux-uapi/ntsync.h"
 readonly NTSYNC_UAPI_HEADER_SHA256="006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262"
@@ -147,6 +151,26 @@ echo "== Applying the XStore honest-failure fix"
 git -C "$SRC" apply --check "$VENDORED_XSTORE_PATCH" \
   || { echo "!! XStore patch does not apply" >&2; exit 1; }
 git -C "$SRC" apply "$VENDORED_XSTORE_PATCH"
+
+echo "== Applying the ntdll mapped-fd main-image loader"
+[ -f "$VENDORED_MAPPED_FD_PATCH" ] \
+  || { echo "!! missing ntdll mapped-fd patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_MAPPED_FD_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_MAPPED_FD_PATCH_SHA256" ] \
+  || { echo "!! ntdll mapped-fd patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_MAPPED_FD_PATCH" \
+  || { echo "!! ntdll mapped-fd patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_MAPPED_FD_PATCH"
+
+echo "== Applying the ntdll image-map path support"
+[ -f "$VENDORED_PATH_MAP_PATCH" ] \
+  || { echo "!! missing ntdll image-map path patch" >&2; exit 1; }
+[ "$(sha256sum "$VENDORED_PATH_MAP_PATCH" | cut -d' ' -f1)" = \
+  "$VENDORED_PATH_MAP_PATCH_SHA256" ] \
+  || { echo "!! ntdll image-map path patch hash mismatch" >&2; exit 1; }
+git -C "$SRC" apply --check "$VENDORED_PATH_MAP_PATCH" \
+  || { echo "!! ntdll image-map path patch does not apply" >&2; exit 1; }
+git -C "$SRC" apply "$VENDORED_PATH_MAP_PATCH"
 
 echo "== Verifying reviewed source hashes"
 [ -f "$SOURCE_SHA256SUMS" ] || { echo "!! missing SOURCE-SHA256SUMS" >&2; exit 1; }

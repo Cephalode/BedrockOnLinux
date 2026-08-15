@@ -581,6 +581,30 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
                 self.assertIn(f"! -e {path}", text)
                 self.assertIn(f"! -L {path}", text)
 
+    def test_the_container_builder_applies_every_vendored_patch(self):
+        """The container script is what CI actually runs.
+
+        Wiring a patch into the Bullseye script alone left CI exporting the
+        source without it, and the build died on the source-hash check with
+        nothing pointing at the omission.
+        """
+        text = CONTAINER_SCRIPT.read_text()
+        # 0001 and the r12 base are already inside the commit the container
+        # exports; every follow-up has to be applied on top of it by name.
+        for path in (
+            FOLLOWUP_PATCH,
+            ACHIEVEMENTS_PATCH,
+            CONTEXT_CALLBACK_PATCH,
+            CLIENT_SURFACE_PATCH,
+            XSTORE_PATCH,
+            MAPPED_FD_PATCH,
+            PATH_MAP_PATCH,
+        ):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.subTest(patch=path.name):
+                self.assertIn(path.name, text, f"{path.name} is never applied")
+                self.assertIn(digest, text, f"{path.name} is not pinned")
+
     def test_packager_pins_current_native_source_provenance(self):
         text = PACKAGER.read_text()
         for path in (
