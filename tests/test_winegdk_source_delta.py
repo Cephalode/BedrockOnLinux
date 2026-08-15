@@ -605,6 +605,30 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
                 self.assertIn(path.name, text, f"{path.name} is never applied")
                 self.assertIn(digest, text, f"{path.name} is not pinned")
 
+    def test_every_packager_pin_matches_the_file_it_names(self):
+        """Each verify_sha256 pin must be the digest of its own file.
+
+        Re-pinning one delta with a shell substitution once overwrote the
+        r12 README's pin with the native5 README's digest. Nothing caught it
+        until a CI package job refused the staged tree.
+        """
+        text = PACKAGER.read_text()
+        roots = {"r12_root": ROOT / "third_party/winegdk-r12",
+                 "native_root": DELTA}
+        pins = re.findall(
+            r'verify_sha256 "\$(\w+)/([^"]+)" \\\n\s*"([0-9a-f]{64})"',
+            text)
+        self.assertTrue(pins, "no verify_sha256 pins found")
+        for variable, relative, digest in pins:
+            root = roots.get(variable)
+            if root is None:
+                continue
+            path = root / relative
+            with self.subTest(file=f"{variable}/{relative}"):
+                self.assertTrue(path.is_file(), f"{path} is pinned but absent")
+                self.assertEqual(
+                    hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
     def test_packager_pins_current_native_source_provenance(self):
         text = PACKAGER.read_text()
         for path in (

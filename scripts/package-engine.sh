@@ -342,7 +342,7 @@ verify_reviewed_provenance() {
 verify_winegdk_source_provenance() {
   local r12_root="$1" native_root="$2"
   verify_sha256 "$r12_root/README.md" \
-    "25c573a9b1cec66ae26b5bb1fbf1d0fb38d0fbdeb665d4c370485c1d19483408" \
+    "754aca14f0622ba8e40f5572488e8b9a6408b5c1619d0a5d67800f7fddb0017b" \
     "WineGDK r12 source-delta README"
   verify_sha256 "$r12_root/SOURCE-SHA256SUMS" \
     "2c70a6922132746a3de6cc282ac7cd96ac4a1c8bbd3c326f86696569e43a2da1" \
