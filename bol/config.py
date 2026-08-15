@@ -98,9 +98,9 @@ WINEGDK_BUILD_REV = "wow64-archs-native16"
 # the Steam Linux Runtime container. Their game executable stays encrypted on
 # disk, so an engine without them cannot start the game -- which is why an
 # unset pin here makes _verify_engine_archive() refuse every candidate rather
-# than fall back. It is filled in from the build-engine.yml run that produces
-# this revision.
-WINEGDK_ARCHIVE_SHA256 = ""
+# than fall back. Produced by the reviewed build-engine.yml run of this branch,
+# which refuses any archive that does not reproduce these bytes.
+WINEGDK_ARCHIVE_SHA256 = "55f29ad109dbb28e5b4f1fd3b527ff886b75bbd4169f89ac6c7bcdbe503c4ec5"
 # Build workflows verify this deterministic intermediate before reusing it.
 WINEGDK_PREFIX_SHA256 = "eeb5079fa9736f2d5b71d95d72d64fd56fe51b5be7df220d0a535d2897165dde"
 
