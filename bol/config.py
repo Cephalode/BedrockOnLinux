@@ -93,12 +93,13 @@ WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
 WINEGDK_SOURCE_MANIFEST_SHA256 = "0feb01ca058086eccf4f4a0e6895f541547ae89aa0d2ab86f08291224de5ed46"
 WINEGDK_BUILD_REV = "wow64-archs-native16"
-# native15 adds the ntdll mapped-fd loader (patch 0007), which the Microsoft
-# Store packages need: their game executable stays encrypted on disk. These two
-# pins can only come from a real build, so they are filled in from the
-# build-winegdk.yml / build-engine.yml run that publishes this revision. Until
-# then _verify_engine_archive() refuses every candidate, which is the intended
-# behaviour: an engine without 0007 cannot start the game.
+# native16 carries the ntdll loader patches the Microsoft Store packages need:
+# 0007 maps the main image from a descriptor, 0008 from a path so it survives
+# the Steam Linux Runtime container. Their game executable stays encrypted on
+# disk, so an engine without them cannot start the game -- which is why an
+# unset pin here makes _verify_engine_archive() refuse every candidate rather
+# than fall back. It is filled in from the build-engine.yml run that produces
+# this revision.
 WINEGDK_ARCHIVE_SHA256 = ""
 # Build workflows verify this deterministic intermediate before reusing it.
 WINEGDK_PREFIX_SHA256 = "eeb5079fa9736f2d5b71d95d72d64fd56fe51b5be7df220d0a535d2897165dde"
