@@ -101,7 +101,7 @@ WINEGDK_BUILD_REV = "wow64-archs-native16"
 # behaviour: an engine without 0007 cannot start the game.
 WINEGDK_ARCHIVE_SHA256 = ""
 # Build workflows verify this deterministic intermediate before reusing it.
-WINEGDK_PREFIX_SHA256 = ""
+WINEGDK_PREFIX_SHA256 = "eeb5079fa9736f2d5b71d95d72d64fd56fe51b5be7df220d0a535d2897165dde"
 
 SELF_REPO = WINEGDK_PREBUILT_REPO
 
