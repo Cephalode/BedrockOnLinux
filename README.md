@@ -291,6 +291,18 @@ D3D9 through D3D12 — to WineD3D, dropping both DXVK and vkd3d-proton. Minecraf
 renders purely through D3D12, so this replaces exactly the renderer it uses.
 Artifacts are common, ray tracing is gone, and performance may not improve.
 
+**Settings ▸ Advanced ▸ Ray tracing** decides whether Minecraft is handed DXR at
+all. It is on by default, because the bundled vkd3d-proton reports the ray
+tracing tier by itself on any driver exposing the Vulkan ray tracing extensions
+— on an RTX 4060 the game sees `RaytracingTier 1.1` and full DirectX 12
+Ultimate. The switch's job is therefore to keep a `VKD3D_CONFIG=nodxr` inherited
+from your session from quietly removing that, and to put `nodxr` back when you
+would rather have the video memory. What it cannot do is satisfy the rest of
+Minecraft's own conditions: **Settings ▸ Video ▸ Graphics Mode ▸ Ray Traced**
+stays uneditable without a ray-tracing-capable world on top of a capable GPU,
+and the game says so in its own tooltip. *Vibrant Visuals* is deferred
+rendering rather than ray tracing, and this switch does not touch it.
+
 BedrockOnLinux is an independent compatibility project, not affiliated with or
 supported by Mojang or Microsoft. Minecraft updates can move private game
 interfaces without warning; when a new version regresses, pick a known-good one

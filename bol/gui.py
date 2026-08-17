@@ -2001,6 +2001,24 @@ def gui():
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=(4, 12), padx=4)
 
+        ray_tracing_v = tk.BooleanVar(
+            value=load_settings().get("ray_tracing", True))
+
+        def save_ray_tracing():
+            s2 = load_settings()
+            s2["ray_tracing"] = ray_tracing_v.get()
+            save_settings(s2)
+
+        ctk.CTkSwitch(
+            tab_advanced,
+            text="Ray tracing\n"
+                 "(hands DXR to Minecraft for its Ray Traced mode — needs\n"
+                 "an RTX-class GPU and a ray-tracing-capable world;\n"
+                 "turn it off to hide the mode and save video memory)",
+            variable=ray_tracing_v, command=save_ray_tracing,
+            progress_color=T.THEME_ACCENT, font=font(13),
+        ).pack(anchor="w", pady=(0, 12), padx=4)
+
         legacy_renderer_v = tk.BooleanVar(
             value=load_settings().get("renderer", "auto") == "opengl")
 

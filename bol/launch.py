@@ -92,14 +92,49 @@ def _prepare_graphics_engine():
     return variant
 
 
+def _vkd3d_config_options(env):
+    """The vkd3d options currently declared, in their declared order."""
+    return [item.strip() for item in
+            env.get("VKD3D_CONFIG", "").replace(";", ",").split(",")
+            if item.strip()]
+
+
 def _require_vkd3d_config(env, option):
     """Add one vkd3d option without discarding user-provided options."""
-    options = [item.strip() for item in
-               env.get("VKD3D_CONFIG", "").replace(";", ",").split(",")
-               if item.strip()]
+    options = _vkd3d_config_options(env)
     if option not in options:
         options.append(option)
     env["VKD3D_CONFIG"] = ",".join(options)
+
+
+def _forbid_vkd3d_config(env, option):
+    """Drop one vkd3d option without discarding user-provided options."""
+    options = [item for item in _vkd3d_config_options(env) if item != option]
+    if options:
+        env["VKD3D_CONFIG"] = ",".join(options)
+    else:
+        env.pop("VKD3D_CONFIG", None)
+
+
+def _configure_ray_tracing(env, settings):
+    """Hand DXR to Minecraft, or hide it, per the Settings switch.
+
+    vkd3d-proton reports the ray tracing tier by itself once the driver
+    exposes the Vulkan ray tracing extensions, so "on" is not something to
+    declare: it is making sure nothing declares the opposite, an inherited
+    ``VKD3D_CONFIG=nodxr`` in particular. Only "off" needs a positive
+    statement, which is why the vkd3d option exists in that direction alone.
+
+    Turning it off hides Minecraft's *Ray Traced* graphics mode. It leaves
+    *Vibrant Visuals* alone: that pipeline is deferred rendering, not ray
+    tracing, and runs on GPUs that have no DXR at all.
+    """
+    if settings.get("ray_tracing", True):
+        _forbid_vkd3d_config(env, "nodxr")
+        return
+    _require_vkd3d_config(env, "nodxr")
+    info("Ray tracing is off in Settings — Minecraft's Ray Traced graphics "
+         "mode stays unavailable this launch.")
 
 
 def _steam_input_available(environ=None):
@@ -380,6 +415,7 @@ def _launch_once(lock_fds=(), on_started=None):
     cmd, env = proton_umu_cmd(exe)
     # Required by the menu's indirect root-CBV updates (#27/#29/#30).
     _require_vkd3d_config(env, "force_raw_va_cbv")
+    _configure_ray_tracing(env, s)
     diag = (s.get("diagnostics", False) or os.environ.get("BOL_DIAG") == "1")
     xlog = os.environ.get("BOL_XCURL_LOG")
     if xlog == "1" or (xlog is None and diag):

@@ -208,6 +208,33 @@ class GraphicsEngineLaunchTests(ReadyLaunchHarness, unittest.TestCase):
         self.assertEqual(env["VKD3D_CONFIG"],
                          "force_raw_va_cbv,breadcrumbs")
 
+    def test_ray_tracing_is_on_unless_settings_say_otherwise(self):
+        env = {"VKD3D_CONFIG": "force_raw_va_cbv"}
+        launch._configure_ray_tracing(env, {})
+        self.assertEqual(env["VKD3D_CONFIG"], "force_raw_va_cbv")
+
+    def test_ray_tracing_clears_an_inherited_nodxr(self):
+        # A VKD3D_CONFIG exported by the session must not quietly hide the
+        # Ray Traced graphics mode the switch says is available.
+        env = {"VKD3D_CONFIG": "nodxr;breadcrumbs"}
+        launch._configure_ray_tracing(env, {"ray_tracing": True})
+        self.assertEqual(env["VKD3D_CONFIG"], "breadcrumbs")
+
+    def test_ray_tracing_off_leaves_no_empty_vkd3d_config(self):
+        env = {"VKD3D_CONFIG": "nodxr"}
+        launch._configure_ray_tracing(env, {"ray_tracing": True})
+        self.assertNotIn("VKD3D_CONFIG", env)
+
+    def test_disabled_ray_tracing_keeps_the_other_vkd3d_options(self):
+        env = {"VKD3D_CONFIG": "force_raw_va_cbv"}
+        launch._configure_ray_tracing(env, {"ray_tracing": False})
+        self.assertEqual(env["VKD3D_CONFIG"], "force_raw_va_cbv,nodxr")
+
+    def test_disabled_ray_tracing_is_idempotent(self):
+        env = {"VKD3D_CONFIG": "nodxr,force_raw_va_cbv"}
+        launch._configure_ray_tracing(env, {"ray_tracing": False})
+        self.assertEqual(env["VKD3D_CONFIG"], "nodxr,force_raw_va_cbv")
+
     def test_x11_neutralises_inherited_winewayland_and_enables_noopwr(self):
         env = {"PROTON_ENABLE_WAYLAND": "1"}
         launch._configure_runtime_compat(
@@ -674,6 +701,30 @@ class GraphicsEngineLaunchTests(ReadyLaunchHarness, unittest.TestCase):
             self.assertEqual(
                 observed["env"]["DXVK_SHADER_CACHE_PATH"], str(cache))
             self.assertTrue(cache.is_dir())
+
+    def test_launch_hands_ray_tracing_to_the_game_by_default(self):
+        """An inherited nodxr cannot silently remove the Ray Traced mode."""
+        observed = {}
+
+        class Process:
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        def popen(*_args, **kwargs):
+            observed.update(kwargs)
+            return Process()
+
+        with tempfile.TemporaryDirectory() as td:
+            self._exercise_ready_launch(
+                Path(td),
+                popen,
+                lambda: "owned-token",
+                lambda _token: True,
+                umu_env={"VKD3D_CONFIG": "nodxr"},
+            )
+
+        self.assertEqual(observed["env"]["VKD3D_CONFIG"], "force_raw_va_cbv")
 
     @staticmethod
     def _successful_popen(observed):

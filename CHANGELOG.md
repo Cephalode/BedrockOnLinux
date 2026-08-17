@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **A ray tracing switch, in Settings ▸ Advanced.** It is on by default and
+  matches what already happened: the bundled vkd3d-proton reports the ray
+  tracing tier on its own wherever the driver exposes the Vulkan ray tracing
+  extensions, so Minecraft is offered DXR 1.1 and full DirectX 12 Ultimate
+  without anyone asking for it. The switch makes that explicit in two
+  directions — it drops a `VKD3D_CONFIG=nodxr` inherited from the session,
+  which would otherwise remove the game's *Ray Traced* graphics mode with no
+  trace anywhere, and it sets `nodxr` when you would rather keep the video
+  memory. Minecraft's own conditions are unchanged: *Ray Traced* stays
+  uneditable outside a ray-tracing-capable world, and *Vibrant Visuals*, being
+  deferred rendering, is unaffected either way.
+
 ### Changed
 
 - **Minecraft is now downloaded from the Microsoft Store with your own
