@@ -780,29 +780,40 @@ def gui():
         def _show(self):
             if self.win is not None:
                 return
-            widget_y = self.widget.winfo_rooty() - root.winfo_rooty()
-            x = self.widget.winfo_rootx() - root.winfo_rootx() + self.widget.winfo_width() // 2
-            
-            if widget_y > root.winfo_height() // 2:
-                y = widget_y - 8
-                anchor = "s"
-            else:
-                y = widget_y + self.widget.winfo_height() + 8
-                anchor = "n"
-            
-            self.win = ctk.CTkFrame(root, fg_color=T.CARD_3, corner_radius=6)
-            lab = ctk.CTkLabel(self.win, text=self.text, fg_color="transparent", text_color=T.FG,
-                               font=font(10))
-            lab.pack(padx=8, pady=4)
-            self.win.place(x=x, y=y, anchor=anchor)
-            self.win.lift()
+            try:
+                if not self.widget.winfo_exists():
+                    return
+                widget_y = self.widget.winfo_rooty() - root.winfo_rooty()
+                x = self.widget.winfo_rootx() - root.winfo_rootx() + self.widget.winfo_width() // 2
+                
+                if widget_y > root.winfo_height() // 2:
+                    y = widget_y - 8
+                    anchor = "s"
+                else:
+                    y = widget_y + self.widget.winfo_height() + 8
+                    anchor = "n"
+                
+                self.win = ctk.CTkFrame(root, fg_color=T.CARD_3, corner_radius=6)
+                lab = ctk.CTkLabel(self.win, text=self.text, fg_color="transparent", text_color=T.FG,
+                                   font=font(10))
+                lab.pack(padx=8, pady=4)
+                self.win.place(x=x, y=y, anchor=anchor)
+                self.win.lift()
+            except Exception:
+                pass
 
         def _hide(self, _e=None):
             if self._job:
-                root.after_cancel(self._job)
+                try:
+                    root.after_cancel(self._job)
+                except Exception:
+                    pass
                 self._job = None
             if self.win is not None:
-                self.win.destroy()
+                try:
+                    self.win.destroy()
+                except Exception:
+                    pass
                 self.win = None
 
     na = NativeAuth()
