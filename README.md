@@ -286,8 +286,8 @@ layouts, not in the Flatpak sandbox.
   subscription or invitation, and Microsoft's services being up. Single-player
   and LAN need none of *those*.
 - **WebKitGTK** (`libwebkit2gtk-4.1-0`), for the Store sign-in window. The
-  `.deb` and `.rpm` pull it in; `bedrock-on-linux doctor` reports it if it is
-  missing. The Flatpak cannot provide it yet — see the note in the manifest.
+  `.deb` and `.rpm` pull it in, the Flatpak gets it from its runtime, and
+  `bedrock-on-linux doctor` reports it if it is missing.
 
 GPUs stuck on Vulkan 1.2 can try **Settings ▸ Advanced ▸ Legacy compatibility
 renderer**, but treat it as a last resort: it swaps the entire Direct3D stack —
