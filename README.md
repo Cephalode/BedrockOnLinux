@@ -151,14 +151,18 @@ Windows gets too — the licence is fetched at every launch, so starting the gam
 needs the network and a valid Store session even for a single-player world.
 Packages that ship a plaintext executable start offline as before.
 
-There is no version list. The Xbox CDN serves only the current build of each
-edition, so you get whatever Microsoft is shipping today — exactly as on
-Windows. There is no way to install an older build to match a server frozen on
-one. Updates arrive on their own; the launcher re-checks for a delta every
-twelve hours and downloads only what changed:
+You pick the build. Microsoft's own service only ever offers the current one,
+but its CDN keeps the older builds reachable and
+[GdkLinks](https://github.com/MinecraftBedrockArchiver/GdkLinks) indexes where
+they live, so the picker lists every build of the edition you chose — which is
+what lets you match a server frozen on one. That index holds no game data: it
+only says where on `assets*.xboxlive.com` a build sits, and the licence still
+comes from Microsoft for your account. Each build installs into its own folder,
+so switching back to one you already have costs nothing.
 
 ```bash
-bedrock-on-linux setup --mc release --force   # check for a delta right now
+bedrock-on-linux versions                          # every build, per edition
+bedrock-on-linux setup --mc release --version 1.26.44.3
 ```
 
 ### Steam, Steam Deck and the app menu
