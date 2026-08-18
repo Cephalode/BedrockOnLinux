@@ -413,6 +413,28 @@ easier to act on with the launcher version, engine revision, Minecraft version,
 distribution, GPU and driver, plus the relevant logs — never post account
 tokens or the private authentication folder.
 
+### If the game runs slowly
+
+`doctor` and every launch report the causes of poor frame rates that are not
+the engine. None of them leaves anything in a Wine or vkd3d log, which is why
+they get reported as engine or GPU faults:
+
+- **the host is out of memory**, so the kernel pages the game out and every
+  chunk comes back through a disk fault — the freezes usually blamed on the
+  GPU;
+- **the data directory is nearly full**, so vkd3d cannot keep its shader cache
+  and recompiles pipelines every session;
+- **the render distance is set past what Bedrock's main thread can feed** —
+  that ring is built on one thread and the work grows with the square of the
+  distance, so a fast GPU simply idles;
+- **vsync is on while the game runs in a window**, on a desktop that
+  composites every window, which stacks a second frame queue on the game's own.
+
+These are advisories: nothing is blocked and none of your settings is changed.
+`BOL_SKIP_PERF_CHECK=1` silences them. Two neighbours work the same way —
+`BOL_SKIP_NTSYNC_CHECK=1` for Wine's synchronization fast path, and
+`BOL_SKIP_DGC_CHECK=1` for the Intel discrete GPU notice.
+
 ## Engine integrity
 
 The engine is not built on your computer. Maintainers build it from pinned

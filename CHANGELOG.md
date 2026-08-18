@@ -16,6 +16,23 @@
   uneditable outside a ray-tracing-capable world, and *Vibrant Visuals*, being
   deferred rendering, is unaffected either way.
 
+- **The launcher now names why the game is slow, before it starts.** "It lags"
+  has always arrived as an engine or GPU report, because the ordinary causes
+  leave nothing in any Wine, Proton or vkd3d log: a host with no memory left,
+  where the kernel pages the game out and every chunk the player walks into
+  comes back through a disk fault; a data directory too full for vkd3d to keep
+  its shader cache, so pipelines are recompiled every session instead of
+  reused; a render distance set past what Bedrock's main thread can feed, which
+  leaves even a fast GPU idle, since that ring is built on one thread and the
+  work grows with the square of the distance; and vsync left on while the game
+  runs in a window on a desktop that composites every window, which stacks a
+  second frame queue on the game's own. Each is now reported before launch and
+  summarised by `doctor`, together with what to change. They are advisories —
+  nothing is blocked and no setting of yours is touched — and
+  `BOL_SKIP_PERF_CHECK=1` silences them. Detection costs two `/proc/meminfo`
+  fields, one `statvfs` and a read of Minecraft's own options.txt: no Wine
+  process is started and no GPU is opened, so it can run on every launch.
+
 ### Changed
 
 - **Minecraft is now downloaded from the Microsoft Store with your own

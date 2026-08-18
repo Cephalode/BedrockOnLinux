@@ -5,7 +5,7 @@ import shutil
 import sys
 
 from . import deps
-from .config import PRETTY, VERSION
+from .config import DATA, PRETTY, VERSION
 from .gpu_safety import (
     GpuSafetyAcknowledgementStatus,
     acknowledge_gpu_safety_incident,
@@ -14,6 +14,7 @@ from .gpu_safety import (
 )
 from .log import BolError, info, ok, warn
 from .ntsync import inproc_sync_problem, inproc_sync_summary
+from .perfcheck import performance_problems, performance_summary
 from .util import custom_env_map, load_settings
 
 
@@ -142,6 +143,15 @@ def doctor(acknowledge_gpu_crash=False):
     sync_problem = inproc_sync_problem(engine, environ=custom)
     if sync_problem:
         warn(sync_problem)
+    # The same "it lags" report, from causes outside the engine entirely:
+    # no memory, no disk, windowed vsync, a render distance past the main
+    # thread. Prefix-scoped, so it is imported next to the other Wine module.
+    from .prefix import active_prefix
+
+    prefix = active_prefix()
+    print(f"  {'performance':12} : {performance_summary(prefix, DATA)}")
+    for perf_problem in performance_problems(prefix, DATA):
+        warn(perf_problem)
     if miss:
         warn("To install: " + hint.format(" ".join(sorted(set(miss)))))
         return False

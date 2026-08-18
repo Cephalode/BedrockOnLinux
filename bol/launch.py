@@ -38,6 +38,7 @@ from .gpu_safety import (
 )
 from .log import BolError, die, info, ok, warn
 from .ntsync import inproc_sync_problem
+from .perfcheck import performance_problems
 from .prefix import (
     active_prefix,
     boot_prefix,
@@ -222,6 +223,23 @@ def _warn_if_inproc_sync_unavailable(settings, environ=None):
         warn(problem)
 
 
+def _warn_if_performance_degraded(environ=None):
+    """Pre-launch heads-up for the ordinary causes of "the game lags".
+
+    Exhausted memory, a full data directory, windowed vsync on a compositing
+    desktop and an extreme render distance all cost frame rate without
+    leaving anything in a Wine or vkd3d log, so they get reported as engine
+    or GPU faults. Naming them here costs two /proc reads, one statvfs and a
+    parse of Minecraft's own options.txt — no Wine process, no GPU.
+    Advisory, not a block; BOL_SKIP_PERF_CHECK=1 silences it.
+    """
+    source = os.environ if environ is None else environ
+    if source.get("BOL_SKIP_PERF_CHECK") == "1":
+        return
+    for problem in performance_problems(active_prefix(), DATA, environ=source):
+        warn(problem)
+
+
 def _configure_runtime_compat(env, settings, backend, host_wayland,
                               diagnostics=False, host_env=None,
                               steam_deck=None):
@@ -346,6 +364,9 @@ def _launch_once(lock_fds=(), on_started=None):
     # Same idea for the synchronization fast path: name the cause of the
     # "runs on one thread" stutter before the game starts, not after.
     _warn_if_inproc_sync_unavailable(s)
+    # And for the causes that are not the engine at all: no memory left, no
+    # disk left, windowed vsync, a render distance past the main thread.
+    _warn_if_performance_degraded()
     # Only completed, idle wrappers can retire a current-boot marker.
     retire_idle_current_boot_marker()
     require_safe_graphics_session()

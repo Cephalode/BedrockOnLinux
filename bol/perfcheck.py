@@ -1,0 +1,288 @@
+"""bol.perfcheck — name the conditions behind "the game lags" before launch.
+
+Every check here answers the same report, and none of them leaves a trace in
+a Wine, Proton or vkd3d log, which is why they get blamed on the GPU:
+
+* the host has no memory left, so the kernel pages the game out and every
+  chunk the player walks into comes back through a major fault;
+* the data directory is nearly full, so the shader cache cannot grow and
+  vkd3d recompiles pipelines that should have been reused;
+* Minecraft presents with vsync into a window, so a compositing desktop adds
+  a frame of latency on top of the game's own and the pacing wobbles;
+* the render distance is set past what the main thread can feed — by a wide
+  margin the largest frame-time cost in Bedrock, since the chunk ring the
+  main thread walks grows with the square of the distance.
+
+Detection is cheap and side-effect free, in the same spirit as bol.ntsync and
+bol.dgc: two ``/proc/meminfo`` fields, one ``statvfs``, and Minecraft's own
+options.txt parsed out of the prefix. No Wine process is started, no Vulkan
+or GPU is touched and nothing is written, so this can run before every
+launch.
+
+Every threshold below is deliberately set past the values people actually
+play at: an advisory that fires on a healthy machine is one users learn to
+ignore, and then it is worth nothing on the machine that really is starved.
+"""
+# SPDX-License-Identifier: MIT
+
+import os
+import re
+import shutil
+from pathlib import Path
+
+MEMINFO = "/proc/meminfo"
+
+# Minecraft settles near 2.5 GiB resident at an ordinary render distance, and
+# the prefix and umu container want a few hundred MiB more. Below this the
+# game still starts — it starts and then spends the session fighting the page
+# cache, which is what the player feels.
+LOW_MEMORY_MIB = 3072
+
+# One game update is ~2.5 GiB, and the prefix, the world saves and the shader
+# caches all grow on top of it. Under this, writes begin to fail at the least
+# convenient moment.
+LOW_DISK_MIB = 5120
+
+# Bedrock stores the render distance in blocks; its slider moves in chunks.
+CHUNK_BLOCKS = 16
+
+# Past this the main thread is the frame limiter on any CPU. Set well above
+# the 16-24 chunks most people play at so this only ever names extreme values.
+EXTREME_RENDER_CHUNKS = 32
+
+# Desktops that composite unconditionally in their shipped configuration.
+# XFCE, MATE and LXQt are deliberately absent: there the compositor is a
+# setting, so the honest answer for them is "cannot tell" rather than a guess.
+_ALWAYS_COMPOSITED_DESKTOPS = (
+    "cinnamon", "gnome", "kde", "plasma", "deepin", "pantheon", "cosmic",
+    "unity",
+)
+
+# Minecraft has kept its settings in the Roaming path since the GDK build; the
+# Local/Packages path is where a UWP-layout install of the same game puts it.
+_OPTIONS_GLOBS = (
+    "drive_c/users/*/AppData/Roaming/Minecraft Bedrock/Users/*/games/"
+    "com.mojang/minecraftpe/options.txt",
+    "drive_c/users/*/AppData/Local/Packages/"
+    "Microsoft.MinecraftUWP_8wekyb3d8bbwe/LocalState/games/com.mojang/"
+    "minecraftpe/options.txt",
+)
+
+_SILENCE = "Silence this notice with BOL_SKIP_PERF_CHECK=1."
+
+
+def _meminfo_mib(field, meminfo_path=None):
+    """One /proc/meminfo field in MiB, or None when it cannot be read."""
+    path = Path(meminfo_path) if meminfo_path is not None else Path(MEMINFO)
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"^%s:\s+(\d+)\s+kB\s*$" % re.escape(field),
+                      text, re.MULTILINE)
+    return int(match.group(1)) // 1024 if match else None
+
+
+def available_memory_mib(meminfo_path=None):
+    """What the kernel says a new workload can take without swapping.
+
+    MemAvailable, not MemFree: reclaimable page cache is available to the
+    game, and reading MemFree instead would fire on every healthy machine.
+    """
+    return _meminfo_mib("MemAvailable", meminfo_path)
+
+
+def swap_used_mib(meminfo_path=None):
+    """How much has already been pushed to swap, or None if unreadable."""
+    total = _meminfo_mib("SwapTotal", meminfo_path)
+    free = _meminfo_mib("SwapFree", meminfo_path)
+    if total is None or free is None:
+        return None
+    return max(0, total - free)
+
+
+def low_memory_problem(meminfo_path=None, threshold_mib=LOW_MEMORY_MIB):
+    """Actionable message when the host cannot hold the game in memory."""
+    available = available_memory_mib(meminfo_path)
+    if available is None or available >= threshold_mib:
+        return None
+    swapped = swap_used_mib(meminfo_path)
+    detail = ""
+    if swapped:
+        detail = (" %.1f GiB is already in swap, which is where the game's "
+                  "own pages go next." % (swapped / 1024.0))
+    return (
+        "Only %d MiB of memory is available, and Minecraft settles around "
+        "%d MiB once a world is loaded.%s The game will start and then stall "
+        "every time the kernel has to fetch a paged-out chunk back from disk "
+        "— the freezes and lag spikes that get blamed on the GPU. Close what "
+        "you are not using before playing (browsers and Electron apps are "
+        "usually the largest holders), or lower the render distance to "
+        "shrink the game's own footprint. %s"
+        % (available, threshold_mib, detail, _SILENCE))
+
+
+def free_disk_problem(path, threshold_mib=LOW_DISK_MIB):
+    """Actionable message when the data directory has no room left."""
+    if not path:
+        return None
+    try:
+        usage = shutil.disk_usage(str(path))
+    except OSError:
+        return None
+    free_mib = usage.free // (1 << 20)
+    if free_mib >= threshold_mib:
+        return None
+    used_percent = (100.0 * (usage.total - usage.free) / usage.total
+                    if usage.total else 0.0)
+    return (
+        "Only %d MiB is free where the game lives (%s, %.0f%% full). The "
+        "shader cache cannot grow there, so vkd3d recompiles pipelines every "
+        "session instead of reusing them — that is stutter on first sight of "
+        "each new effect, every time you play — and a world save or a game "
+        "update can fail outright. Free a few GiB before playing. %s"
+        % (free_mib, path, used_percent, _SILENCE))
+
+
+def find_options_file(prefix):
+    """The most recently written Minecraft options.txt inside a prefix.
+
+    Returns None when the game has never written one, which is the normal
+    state before the first launch and must stay silent.
+    """
+    if not prefix:
+        return None
+    root = Path(prefix)
+    found = []
+    for pattern in _OPTIONS_GLOBS:
+        try:
+            found.extend(item for item in root.glob(pattern) if item.is_file())
+        except OSError:
+            continue
+    if not found:
+        return None
+    try:
+        return max(found, key=lambda item: item.stat().st_mtime)
+    except OSError:
+        return found[0]
+
+
+def read_game_options(path):
+    """Minecraft's options.txt as a mapping; empty when it cannot be read.
+
+    The format is one ``key:value`` per line. Values holding a colon of their
+    own keep it, since only the first separator delimits the key.
+    """
+    options = {}
+    if not path:
+        return options
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return options
+    for line in text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip():
+            options[key.strip()] = value.strip()
+    return options
+
+
+def _option_int(options, key):
+    """One options.txt value as an int, or None when absent or malformed."""
+    try:
+        return int(str(options.get(key, "")).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def render_distance_chunks(options):
+    """The configured render distance in chunks, or None when unset."""
+    blocks = _option_int(options, "gfx_viewdistance")
+    if blocks is None or blocks <= 0:
+        return None
+    return blocks // CHUNK_BLOCKS
+
+
+def render_distance_problem(options, threshold_chunks=EXTREME_RENDER_CHUNKS):
+    """Actionable message when the render distance outruns the main thread."""
+    chunks = render_distance_chunks(options)
+    if chunks is None or chunks <= threshold_chunks:
+        return None
+    return (
+        "Minecraft's render distance is set to %d chunks. Bedrock builds and "
+        "streams that ring on its main thread, and the work grows with the "
+        "square of the distance, so past roughly %d chunks the main thread "
+        "becomes the frame limiter and the GPU idles no matter how fast it "
+        "is. If the game feels slow, this is the first setting to lower — "
+        "16 to 24 chunks costs little to look at and gives most of the frame "
+        "rate back. %s" % (chunks, threshold_chunks, _SILENCE))
+
+
+def session_is_composited(environ=None):
+    """Whether the desktop certainly composites; None when it cannot be told.
+
+    Environment only, no X11 round-trip: a compositing manager owns the
+    ``_NET_WM_CM_S0`` selection, which cannot be queried without an X
+    connection, and guessing from a process list would be worse than saying
+    nothing. Wayland always composites, and the desktops listed above ship a
+    compositor that cannot be turned off; everything else answers None and
+    stays silent.
+    """
+    source = os.environ if environ is None else environ
+    session = (source.get("XDG_SESSION_TYPE") or "").strip().lower()
+    if session == "wayland" or source.get("WAYLAND_DISPLAY"):
+        return True
+    desktop = (source.get("XDG_CURRENT_DESKTOP") or "").strip().lower()
+    if any(name in desktop for name in _ALWAYS_COMPOSITED_DESKTOPS):
+        return True
+    return None
+
+
+def windowed_vsync_problem(options, environ=None):
+    """Actionable message when vsync and a window stack two frame queues.
+
+    A fullscreen window is normally handed straight to the display, bypassing
+    the compositor; a windowed one is not, so the game waits on its own vsync
+    and then on the desktop's. Silent unless the desktop is known to
+    composite, since on a bare window manager the pairing is harmless.
+    """
+    vsync = _option_int(options, "gfx_vsync")
+    fullscreen = _option_int(options, "gfx_fullscreen")
+    if vsync != 1 or fullscreen != 0:
+        return None
+    if not session_is_composited(environ):
+        return None
+    return (
+        "Minecraft has vsync on while running in a window, and this desktop "
+        "composites every window. The game waits for its own vsync and the "
+        "desktop then holds the frame for its next refresh, which adds "
+        "latency and makes the frame times uneven — it reads as lag even "
+        "when the frame rate is fine. Play fullscreen, so the window goes "
+        "straight to the display, or turn vsync off. %s" % _SILENCE)
+
+
+def performance_problems(prefix=None, data_dir=None, environ=None,
+                         meminfo_path=None):
+    """Every frame-rate condition found, worst cost first.
+
+    Returns a list of ready-to-print messages, empty when nothing is wrong or
+    nothing could be determined, so a caller can treat any entry as worth
+    telling the user about.
+    """
+    options = read_game_options(find_options_file(prefix))
+    candidates = (
+        low_memory_problem(meminfo_path),
+        render_distance_problem(options),
+        free_disk_problem(data_dir),
+        windowed_vsync_problem(options, environ),
+    )
+    return [problem for problem in candidates if problem]
+
+
+def performance_summary(prefix=None, data_dir=None, environ=None,
+                        meminfo_path=None):
+    """One short status word for Doctor's aligned report."""
+    problems = performance_problems(prefix, data_dir, environ, meminfo_path)
+    if not problems:
+        return "OK (nothing found)"
+    return "%d notice%s" % (len(problems), "" if len(problems) == 1 else "s")
