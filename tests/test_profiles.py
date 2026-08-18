@@ -15,11 +15,16 @@ import pytest
 from bol.log import BolError
 from bol.profiles import (
     create_profile,
+    current_profile_info,
+    current_profile_name,
+    delete_profile,
     launcher_executable,
     list_profiles,
     play_launch_command,
     profile_launch_command,
     profile_slug,
+    relaunch_with_profile,
+    rename_profile,
     require_profile_shortcuts_supported,
     require_shortcuts_supported,
     write_play_shortcut,
@@ -119,10 +124,11 @@ def test_invalid_profile_name_is_rejected(name):
 
 
 def test_profiles_are_listed_from_metadata(tmp_path):
-    create_profile("Second", tmp_path)
-    create_profile("First", tmp_path)
+    create_profile("Zeta", tmp_path)
+    create_profile("alpha", tmp_path)
+    create_profile("Beta", tmp_path)
     items = list_profiles(tmp_path)
-    assert {item["name"] for item in items} == {"First", "Second"}
+    assert [item["name"] for item in items] == ["alpha", "Beta", "Zeta"]
     assert all(Path(item["path"]).is_dir() for item in items)
 
 
@@ -333,3 +339,66 @@ def test_flatpak_play_shortcut_is_refused_with_a_runnable_alternative(
     assert "cannot be written from the Flatpak sandbox" in message
     # A refusal with no way forward is what sends users to the issue tracker.
     assert "flatpak run io.github.wyze3306.BedrockOnLinux play" in message
+
+
+def test_delete_profile_removes_folder_and_shortcuts(tmp_path):
+    base = tmp_path / "data"
+    profile = create_profile("To Delete", base)
+    assert profile.is_dir()
+    assert (profile / "games").is_symlink()
+
+    delete_profile("To Delete", base)
+    assert not profile.exists()
+    assert (base / "games").is_dir()  # Shared assets must remain intact
+
+
+def test_rename_profile_updates_metadata_name(tmp_path):
+    base = tmp_path / "data"
+    profile = create_profile("Old Name", base)
+    rename_profile("Old Name", "New Name", base)
+
+    meta = json.loads((profile / "profile.json").read_text(encoding="utf-8"))
+    assert meta["name"] == "New Name"
+    assert meta["slug"] == "old-name"
+
+
+def test_current_profile_info_on_default_data(tmp_path):
+    with mock.patch("bol.profiles.DATA", tmp_path / "default_data"):
+        info = current_profile_info()
+        assert info["name"] == "Default"
+        assert info["slug"] == "default"
+        assert info["path"] is None
+        assert current_profile_name() == "Default"
+
+
+def test_current_profile_info_in_managed_profile(tmp_path):
+    base = tmp_path / "data"
+    alice = create_profile("Alice", base)
+    with mock.patch("bol.profiles.DATA", alice):
+        info = current_profile_info()
+        assert info["name"] == "Alice"
+        assert info["slug"] == "alice"
+        assert info["path"] == str(alice)
+        assert current_profile_name() == "Alice"
+
+
+def test_relaunch_with_profile_sets_bol_home_and_execs(tmp_path):
+    profile = tmp_path / "custom_profile"
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch("os.execv") as mock_execv, \
+             mock.patch("bol.profiles.launcher_executable", return_value="/bin/bol"):
+            relaunch_with_profile(profile)
+            mock_execv.assert_called_once()
+            args = mock_execv.call_args[0]
+            assert os.environ["BOL_HOME"] == str(profile.resolve())
+            assert args[1] == ["/bin/bol", "gui"]
+
+    # When switching to Default with a custom base root (e.g. dev sandbox)
+    custom_root = tmp_path / "sandbox"
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch("os.execv") as mock_execv, \
+             mock.patch("bol.profiles.launcher_executable", return_value="/bin/bol"):
+            relaunch_with_profile(None, base_data=custom_root)
+            mock_execv.assert_called_once()
+            assert os.environ["BOL_HOME"] == str(custom_root.resolve())
+

@@ -141,7 +141,7 @@ def list_profiles(base_data=None):
     if not root.is_dir():
         return []
     found = []
-    for metadata in sorted(root.glob("*/profile.json")):
+    for metadata in root.glob("*/profile.json"):
         try:
             item = json.loads(metadata.read_text(encoding="utf-8"))
             item["path"] = str(metadata.parent)
@@ -149,7 +149,56 @@ def list_profiles(base_data=None):
                 found.append(item)
         except Exception:
             continue
+    found.sort(key=lambda p: str(p.get("name", "")).lower())
     return found
+
+
+def delete_profile(name, base_data=None):
+    """Delete an isolated profile directory and its shortcuts."""
+    display = str(name).strip()
+    slug = profile_slug(display)
+    base = _profile_base(base_data)
+    root = profiles_root(base)
+    profile_dir = root / slug
+    if not profile_dir.is_dir():
+        raise BolError(f"Profile '{display}' does not exist.")
+
+    for item in profile_dir.iterdir():
+        if item.is_symlink():
+            try:
+                item.unlink()
+            except OSError:
+                pass
+
+    shutil.rmtree(profile_dir)
+
+    apps = XDG_DATA_HOME / "applications"
+    for pattern in (f"{APP}-profile-{slug}.desktop", f"{APP}-play-{slug}.desktop"):
+        (apps / pattern).unlink(missing_ok=True)
+    return True
+
+
+def rename_profile(old_name, new_name, base_data=None):
+    """Rename the display name of an existing profile."""
+    old_display = str(old_name).strip()
+    old_slug = profile_slug(old_display)
+    new_display = str(new_name).strip()
+    profile_slug(new_display)
+
+    base = _profile_base(base_data)
+    root = profiles_root(base)
+    profile_dir = root / old_slug
+    if not profile_dir.is_dir():
+        raise BolError(f"Profile '{old_display}' does not exist.")
+
+    meta_path = _metadata_path(profile_dir)
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {"slug": old_slug}
+    data["name"] = new_display
+    meta_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return profile_dir
 
 
 def _desktop_quote(value):
@@ -305,3 +354,59 @@ def profile_launch_command(profile_dir, executable=None):
 def play_launch_command(profile_dir=None, executable=None):
     """Shell-display form of the launcher-free launch, for Steam."""
     return _shell_command("play", profile_dir, executable)
+
+
+def current_profile_info(base_data=None):
+    """Return metadata for the active profile, or 'Default' for the main root."""
+    base = Path(DATA if base_data is None else base_data).expanduser().resolve()
+    if base.parent.name == "profiles":
+        try:
+            metadata = json.loads(_metadata_path(base).read_text(encoding="utf-8"))
+            if metadata.get("name") and metadata.get("slug") == base.name:
+                return {
+                    "name": metadata["name"],
+                    "slug": metadata["slug"],
+                    "path": str(base),
+                }
+        except (OSError, ValueError, TypeError):
+            pass
+    return {
+        "name": "Default",
+        "slug": "default",
+        "path": None,
+    }
+
+
+def current_profile_name(base_data=None):
+    """Return the display name of the currently active profile."""
+    return current_profile_info(base_data)["name"]
+
+
+def relaunch_with_profile(profile_path=None, base_data=None, executable=None):
+    """Relaunch the launcher GUI in the target profile's environment."""
+    from .config import DEFAULT_DATA
+    base_root = _profile_base(base_data)
+    env = dict(os.environ)
+    if profile_path:
+        env["BOL_HOME"] = str(Path(profile_path).expanduser().resolve())
+    else:
+        if base_root.resolve() != DEFAULT_DATA.resolve():
+            env["BOL_HOME"] = str(base_root.resolve())
+        else:
+            env.pop("BOL_HOME", None)
+
+    exe = launcher_executable(explicit=executable)
+    if exe.endswith(".py") or Path(exe).name == APP:
+        args = [sys.executable, exe, "gui"]
+    else:
+        args = [exe, "gui"]
+
+    os.environ.clear()
+    os.environ.update(env)
+
+    try:
+        os.execv(args[0], args)
+    except OSError:
+        import subprocess
+        subprocess.Popen(args, env=env)
+        sys.exit(0)
