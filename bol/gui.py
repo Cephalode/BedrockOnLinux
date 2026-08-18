@@ -59,6 +59,7 @@ from .profiles import (
     profile_launch_command,
     profile_shortcuts_supported,
     relaunch_with_profile,
+    open_profile_window,
     rename_profile,
     require_profile_shortcuts_supported,
     require_shortcuts_supported,
@@ -925,7 +926,7 @@ def gui():
 
     def _open_profile_manager():
         close_profile_menu()
-        d = dialog("Manage Profiles", 540, 440)
+        d = dialog("Manage Profiles", 620, 440)
 
         ctk.CTkLabel(
             d, text="Account Profiles", font=font(18, "bold"), text_color=T.FG
@@ -933,7 +934,7 @@ def gui():
         ctk.CTkLabel(
             d,
             text="Each profile maintains an isolated Xbox sign-in, Wine prefix, worlds, and settings.",
-            font=font(12), text_color=T.SUB, wraplength=500, justify="left"
+            font=font(12), text_color=T.SUB, wraplength=580, justify="left"
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
         sf = ctk.CTkScrollableFrame(d, fg_color=T.CARD_2, corner_radius=10)
@@ -959,11 +960,15 @@ def gui():
 
             def_right = ctk.CTkFrame(def_row, fg_color="transparent")
             def_right.pack(side="right", padx=8, pady=6)
+
+            win_btn = mkbtn(def_right, "New Window", lambda: open_profile_window(None), kind="ghost", height=28, width=90)
+            win_btn.pack(side="right", padx=(4, 0))
+
             if is_def_active:
                 ctk.CTkLabel(def_right, text="Active", text_color=T.GREEN, font=font(12, "bold")).pack(side="right", padx=6)
             else:
-                sw_btn = mkbtn(def_right, "Switch", lambda: (_switch_profile_target(None), d.destroy()), kind="ghost", height=28, width=70)
-                sw_btn.pack(side="right")
+                sw_btn = mkbtn(def_right, "Switch", lambda: (_switch_profile_target(None), d.destroy()), kind="ghost", height=28, width=64)
+                sw_btn.pack(side="right", padx=(4, 0))
 
             # Custom profile rows
             for p in profs:
@@ -1003,8 +1008,8 @@ def gui():
                             parent=d,
                         )
                         return
-                    del_msg = f"Are you sure you want to delete profile \x27{name}\x27?\n\nThis will permanently remove its worlds, settings, and player data."
-                    del_msg = (f"Are you sure you want to delete profile \x27{name}\x27?\n\n" + "This will permanently remove its worlds, settings, and player data.")
+                    del_msg = (f"Are you sure you want to delete profile '{name}'?\n\n" +
+                               "This will permanently remove its worlds, settings, and player data.")
                     if not messagebox.askyesno("Delete Profile", del_msg, parent=d):
                         return
                     try:
@@ -1020,19 +1025,22 @@ def gui():
                         stderr=subprocess.DEVNULL,
                     )
 
-                del_btn = mkbtn(r_right, "Delete", lambda n=p_name, a=is_p_active: do_delete(n, a), kind="danger" if not is_p_active else "ghost", height=28, width=64)
+                del_btn = mkbtn(r_right, "Delete", lambda n=p_name, a=is_p_active: do_delete(n, a), kind="danger" if not is_p_active else "ghost", height=28, width=60)
                 del_btn.pack(side="right", padx=(4, 0))
 
-                ren_btn = mkbtn(r_right, "Rename", lambda n=p_name: do_rename(n), kind="ghost", height=28, width=64)
+                ren_btn = mkbtn(r_right, "Rename", lambda n=p_name: do_rename(n), kind="ghost", height=28, width=60)
                 ren_btn.pack(side="right", padx=(4, 0))
 
-                folder_btn = mkbtn(r_right, "Folder", lambda p=p_path: do_open_folder(p), kind="ghost", height=28, width=60)
+                folder_btn = mkbtn(r_right, "Folder", lambda p=p_path: do_open_folder(p), kind="ghost", height=28, width=54)
                 folder_btn.pack(side="right", padx=(4, 0))
+
+                win_btn = mkbtn(r_right, "New Window", lambda p=p_path: open_profile_window(p), kind="ghost", height=28, width=90)
+                win_btn.pack(side="right", padx=(4, 0))
 
                 if is_p_active:
                     ctk.CTkLabel(r_right, text="Active", text_color=T.GREEN, font=font(12, "bold")).pack(side="right", padx=(0, 6))
                 else:
-                    sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: (_switch_profile_target(p), d.destroy()), kind="ghost", height=28, width=64)
+                    sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: (_switch_profile_target(p), d.destroy()), kind="ghost", height=28, width=60)
                     sw_btn.pack(side="right", padx=(0, 6))
 
         refresh_manager()
@@ -1045,10 +1053,10 @@ def gui():
         profiles = list_profiles()
         x = (prof_card.winfo_rootx() - root.winfo_rootx()) / _ui_scale
         y = (prof_card.winfo_rooty() - root.winfo_rooty() + prof_card.winfo_height()) / _ui_scale
-        w = max(210, prof_card.winfo_width() / _ui_scale)
+        w = max(230, prof_card.winfo_width() / _ui_scale)
 
         total_items = 1 + len(profiles) + 2
-        h = min(300, 20 + 34 * total_items + 14)
+        h = min(320, 20 + 36 * total_items + 14)
 
         win = ctk.CTkFrame(
             root, width=w, height=h, fg_color=T.CARD_2, bg_color=T.CARD,
@@ -1077,29 +1085,13 @@ def gui():
         sf = ctk.CTkScrollableFrame(win, fg_color="transparent", corner_radius=8)
         sf.pack(fill="both", expand=True, padx=4, pady=4)
 
-        is_default = cur_prof_info["path"] is None
-        def_btn = ctk.CTkButton(
-            sf,
-            text="Default",
-            anchor="w",
-            height=30,
-            corner_radius=6,
-            font=font(12, "bold" if is_default else "normal"),
-            fg_color=T.THEME_DIM if is_default else "transparent",
-            hover_color=T.THEME_DIM if is_default else T.CARD_3,
-            text_color=T.THEME_ACCENT if is_default else T.FG,
-            command=lambda: _switch_profile_target(None),
-        )
-        def_btn.pack(fill="x", pady=(2, 2))
+        def _add_menu_row(name, path, is_active):
+            row = ctk.CTkFrame(sf, fg_color="transparent")
+            row.pack(fill="x", pady=1)
 
-        for p in profiles:
-            p_name = p.get("name", "")
-            p_path = p.get("path")
-            is_active = (cur_prof_info["path"] is not None
-                         and Path(cur_prof_info["path"]).resolve() == Path(p_path).resolve())
             btn = ctk.CTkButton(
-                sf,
-                text=p_name,
+                row,
+                text=name,
                 anchor="w",
                 height=30,
                 corner_radius=6,
@@ -1107,9 +1099,34 @@ def gui():
                 fg_color=T.THEME_DIM if is_active else "transparent",
                 hover_color=T.THEME_DIM if is_active else T.CARD_3,
                 text_color=T.THEME_ACCENT if is_active else T.FG,
-                command=lambda path=p_path: _switch_profile_target(path),
+                command=lambda: _switch_profile_target(path),
             )
-            btn.pack(fill="x", pady=2)
+            btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+            win_btn = ctk.CTkButton(
+                row,
+                text="⧉",
+                width=28,
+                height=30,
+                corner_radius=6,
+                font=font(12),
+                fg_color="transparent",
+                hover_color=T.CARD_3,
+                text_color=T.SUB,
+                command=lambda: (open_profile_window(path), close_profile_menu()),
+            )
+            win_btn.pack(side="right")
+            Tooltip(win_btn, f"Open {name} in a new window")
+
+        is_default = cur_prof_info["path"] is None
+        _add_menu_row("Default", None, is_default)
+
+        for p in profiles:
+            p_name = p.get("name", "")
+            p_path = p.get("path")
+            is_active = (cur_prof_info["path"] is not None
+                         and Path(cur_prof_info["path"]).resolve() == Path(p_path).resolve())
+            _add_menu_row(p_name, p_path, is_active)
 
         divider = ctk.CTkFrame(sf, height=1, fg_color=T.BORDER)
         divider.pack(fill="x", padx=4, pady=(4, 4))

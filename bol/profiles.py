@@ -410,3 +410,25 @@ def relaunch_with_profile(profile_path=None, base_data=None, executable=None):
         import subprocess
         subprocess.Popen(args, env=env)
         sys.exit(0)
+
+def open_profile_window(profile_path=None, base_data=None, executable=None):
+    """Spawn a new launcher GUI window for the target profile without closing the current one."""
+    import subprocess
+    from .config import DEFAULT_DATA
+    base_root = _profile_base(base_data)
+    env = dict(os.environ)
+    if profile_path:
+        env["BOL_HOME"] = str(Path(profile_path).expanduser().resolve())
+    else:
+        if base_root.resolve() != DEFAULT_DATA.resolve():
+            env["BOL_HOME"] = str(base_root.resolve())
+        else:
+            env.pop("BOL_HOME", None)
+
+    exe = launcher_executable(explicit=executable)
+    if exe.endswith(".py") or Path(exe).name == APP:
+        args = [sys.executable, exe, "gui"]
+    else:
+        args = [exe, "gui"]
+
+    return subprocess.Popen(args, env=env)

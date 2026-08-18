@@ -24,6 +24,7 @@ from bol.profiles import (
     profile_launch_command,
     profile_slug,
     relaunch_with_profile,
+    open_profile_window,
     rename_profile,
     require_profile_shortcuts_supported,
     require_shortcuts_supported,
@@ -402,3 +403,12 @@ def test_relaunch_with_profile_sets_bol_home_and_execs(tmp_path):
             mock_execv.assert_called_once()
             assert os.environ["BOL_HOME"] == str(custom_root.resolve())
 
+def test_open_profile_window_spawns_process(tmp_path):
+    profile = tmp_path / "custom_profile"
+    with mock.patch("subprocess.Popen") as mock_popen, \
+         mock.patch("bol.profiles.launcher_executable", return_value="/bin/bol"):
+        open_profile_window(profile)
+        mock_popen.assert_called_once()
+        args, kwargs = mock_popen.call_args
+        assert args[0] == ["/bin/bol", "gui"]
+        assert kwargs["env"]["BOL_HOME"] == str(profile.resolve())
