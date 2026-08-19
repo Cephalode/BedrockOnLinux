@@ -353,14 +353,76 @@ def test_delete_profile_removes_folder_and_shortcuts(tmp_path):
     assert (base / "games").is_dir()  # Shared assets must remain intact
 
 
-def test_rename_profile_updates_metadata_name(tmp_path):
+def test_rename_profile_renames_folder_and_shortcuts(tmp_path):
     base = tmp_path / "data"
+    apps = tmp_path / "applications"
     profile = create_profile("Old Name", base)
-    rename_profile("Old Name", "New Name", base)
+    write_profile_shortcut("Old Name", profile_dir=profile, applications_dir=apps)
+    write_play_shortcut("Old Name", profile_dir=profile, applications_dir=apps)
 
-    meta = json.loads((profile / "profile.json").read_text(encoding="utf-8"))
+    new_profile = rename_profile("Old Name", "New Name", base, applications_dir=apps)
+    assert not profile.exists()
+    assert new_profile.exists()
+    assert new_profile.name == "new-name"
+
+    meta = json.loads((new_profile / "profile.json").read_text(encoding="utf-8"))
     assert meta["name"] == "New Name"
-    assert meta["slug"] == "old-name"
+    assert meta["slug"] == "new-name"
+
+    assert not (apps / "bedrock-on-linux-profile-old-name.desktop").exists()
+    assert not (apps / "bedrock-on-linux-play-old-name.desktop").exists()
+    assert (apps / "bedrock-on-linux-profile-new-name.desktop").exists()
+    assert (apps / "bedrock-on-linux-play-new-name.desktop").exists()
+
+
+def test_create_profile_reserved_default_rejected(tmp_path):
+    with pytest.raises(BolError) as err:
+        create_profile("Default", tmp_path)
+    assert "reserved" in str(err.value)
+
+
+def test_rename_profile_reserved_default_rejected(tmp_path):
+    base = tmp_path / "data"
+    create_profile("Player", base)
+    with pytest.raises(BolError) as err:
+        rename_profile("Player", "Default", base)
+    assert "reserved" in str(err.value)
+
+
+def test_rename_profile_duplicate_name_rejected(tmp_path):
+    base = tmp_path / "data"
+    create_profile("Alice", base)
+    create_profile("Bob", base)
+    with pytest.raises(BolError) as err:
+        rename_profile("Alice", "Bob", base)
+    assert "already exists" in str(err.value)
+
+
+def test_delete_profile_reserved_default_rejected(tmp_path):
+    with pytest.raises(BolError) as err:
+        delete_profile("Default", tmp_path)
+    assert "cannot be deleted" in str(err.value)
+
+
+def test_delete_profile_blocked_when_active_processes(tmp_path):
+    base = tmp_path / "data"
+    profile = create_profile("Active Player", base)
+    with mock.patch("bol.profiles.profile_processes", return_value=[12345]):
+        with pytest.raises(BolError) as err:
+            delete_profile("Active Player", base)
+        assert "launcher window(s) are currently open" in str(err.value)
+    assert profile.exists()
+
+
+def test_rename_profile_blocked_when_active_processes(tmp_path):
+    base = tmp_path / "data"
+    profile = create_profile("Active Player", base)
+    with mock.patch("bol.profiles.profile_processes", return_value=[12345]):
+        with pytest.raises(BolError) as err:
+            rename_profile("Active Player", "New Player", base)
+        assert "launcher window(s) are currently open" in str(err.value)
+    assert profile.exists()
+
 
 
 def test_current_profile_info_on_default_data(tmp_path):

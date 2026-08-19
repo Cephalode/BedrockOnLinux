@@ -76,10 +76,70 @@ def _ensure_shared_link(profile_dir, base_data, name):
     link.symlink_to(target, target_is_directory=True)
 
 
+def _environ_uses_profile_home(environ, profile_dir):
+    """Match an exact NUL-delimited BOL_HOME entry."""
+    target = b"BOL_HOME=" + os.fsencode(str(Path(profile_dir).resolve()))
+    return target in environ.split(b"\0")
+
+
+def profile_processes(profile_dir):
+    """Return live PIDs running BedrockOnLinux with this exact BOL_HOME."""
+    found = []
+    for pdir in Path("/proc").glob("[0-9]*"):
+        try:
+            if _environ_uses_profile_home(
+                    pdir.joinpath("environ").read_bytes(), profile_dir):
+                pid = int(pdir.name)
+                if pid != os.getpid():
+                    found.append(pid)
+        except Exception:
+            continue
+    return sorted(set(found))
+
+
+def require_profile_idle(profile_dir, action="modify profile"):
+    """Fail before a profile mutation while game or launcher processes are live."""
+    p_dir = Path(profile_dir)
+    pfx = p_dir / "compatdata" / "pfx"
+    if pfx.is_dir():
+        from .prefix import prefix_processes
+        live_wine = prefix_processes(pfx)
+        if live_wine:
+            raise BolError(
+                f"Cannot {action}: {len(live_wine)} Wine/Proton process(es) still "
+                "use this profile. Close Minecraft or use 'Force stop Minecraft' first."
+            )
+
+    lock_path = p_dir / ".launch.lock"
+    if lock_path.exists():
+        try:
+            lock_fd = os.open(lock_path, os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise BolError(
+                    f"Cannot {action}: a game session or preparation task is "
+                    "currently active in this profile. Close Minecraft first."
+                ) from exc
+            finally:
+                os.close(lock_fd)
+        except OSError:
+            pass
+
+    live_gui = profile_processes(p_dir)
+    if live_gui:
+        raise BolError(
+            f"Cannot {action}: {len(live_gui)} launcher window(s) are currently "
+            "open for this profile. Close those windows first."
+        )
+
+
 def create_profile(name, base_data=None):
     """Create an account/prefix-isolated profile while sharing large assets."""
     display = str(name).strip()
     slug = profile_slug(display)
+    if slug == "default":
+        raise BolError("The name 'Default' is reserved for the main installation root.")
     base = _profile_base(base_data)
     root = profiles_root(base)
     profile_dir = root / slug
@@ -92,27 +152,31 @@ def create_profile(name, base_data=None):
         except OSError:
             pass
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if profile_dir.exists():
+            metadata_path = _metadata_path(profile_dir)
+            if metadata_path.exists():
+                try:
+                    existing = json.loads(
+                        metadata_path.read_text(encoding="utf-8")
+                    )
+                    if existing.get("name") == display:
+                        return profile_dir
+                    existing_name = existing.get("name", "another profile")
+                except Exception:
+                    existing_name = "another profile"
+                raise BolError(
+                    f"Profile identifier '{slug}' is already used by "
+                    f"'{existing_name}'."
+                )
+            raise BolError(
+                f"A profile named '{display}' already exists."
+            )
+
         profile_dir.mkdir(mode=0o700, exist_ok=True)
         try:
             os.chmod(profile_dir, 0o700)
         except OSError:
             pass
-
-        metadata_path = _metadata_path(profile_dir)
-        if metadata_path.exists():
-            try:
-                existing = json.loads(
-                    metadata_path.read_text(encoding="utf-8")
-                )
-            except Exception as exc:
-                raise BolError(
-                    f"Profile metadata is unreadable: {metadata_path}"
-                ) from exc
-            if existing.get("name") != display:
-                raise BolError(
-                    f"Profile identifier '{slug}' is already used by "
-                    f"'{existing.get('name', 'another profile')}'."
-                )
 
         for directory in _SHARED_DIRS:
             _ensure_shared_link(profile_dir, base, directory)
@@ -128,7 +192,7 @@ def create_profile(name, base_data=None):
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(staged, 0o600)
-            os.replace(staged, metadata_path)
+            os.replace(staged, _metadata_path(profile_dir))
         finally:
             staged.unlink(missing_ok=True)
         return profile_dir
@@ -153,15 +217,19 @@ def list_profiles(base_data=None):
     return found
 
 
-def delete_profile(name, base_data=None):
+def delete_profile(name, base_data=None, applications_dir=None):
     """Delete an isolated profile directory and its shortcuts."""
     display = str(name).strip()
     slug = profile_slug(display)
+    if slug == "default":
+        raise BolError("The main 'Default' profile cannot be deleted.")
     base = _profile_base(base_data)
     root = profiles_root(base)
     profile_dir = root / slug
     if not profile_dir.is_dir():
         raise BolError(f"Profile '{display}' does not exist.")
+
+    require_profile_idle(profile_dir, f"delete profile '{display}'")
 
     for item in profile_dir.iterdir():
         if item.is_symlink():
@@ -172,33 +240,101 @@ def delete_profile(name, base_data=None):
 
     shutil.rmtree(profile_dir)
 
-    apps = XDG_DATA_HOME / "applications"
+    apps = Path(applications_dir or (XDG_DATA_HOME / "applications"))
     for pattern in (f"{APP}-profile-{slug}.desktop", f"{APP}-play-{slug}.desktop"):
         (apps / pattern).unlink(missing_ok=True)
     return True
 
 
-def rename_profile(old_name, new_name, base_data=None):
-    """Rename the display name of an existing profile."""
+def rename_profile(old_name, new_name, base_data=None, applications_dir=None):
+    """Rename the display name and directory of an existing profile."""
     old_display = str(old_name).strip()
     old_slug = profile_slug(old_display)
+    if old_slug == "default":
+        raise BolError("The main 'Default' profile cannot be renamed.")
+
     new_display = str(new_name).strip()
-    profile_slug(new_display)
+    new_slug = profile_slug(new_display)
+    if new_slug == "default":
+        raise BolError("The name 'Default' is reserved for the main installation root.")
 
     base = _profile_base(base_data)
     root = profiles_root(base)
-    profile_dir = root / old_slug
-    if not profile_dir.is_dir():
+    old_dir = root / old_slug
+    new_dir = root / new_slug
+
+    if not old_dir.is_dir():
         raise BolError(f"Profile '{old_display}' does not exist.")
 
-    meta_path = _metadata_path(profile_dir)
+    if new_slug != old_slug and new_dir.exists():
+        raise BolError(f"A profile named '{new_display}' already exists.")
+
+    require_profile_idle(old_dir, f"rename profile '{old_display}'")
+
+    if new_slug != old_slug:
+        old_dir.rename(new_dir)
+        target_dir = new_dir
+    else:
+        target_dir = old_dir
+
+    fd, staged_name = tempfile.mkstemp(
+        prefix=".profile-", suffix=".json", dir=target_dir
+    )
+    staged = Path(staged_name)
     try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        data = {"slug": old_slug}
-    data["name"] = new_display
-    meta_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return profile_dir
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"name": new_display, "slug": new_slug}, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(staged, 0o600)
+        os.replace(staged, _metadata_path(target_dir))
+    finally:
+        staged.unlink(missing_ok=True)
+
+    apps = Path(applications_dir or (XDG_DATA_HOME / "applications"))
+    old_prof_desktop = apps / f"{APP}-profile-{old_slug}.desktop"
+    old_play_desktop = apps / f"{APP}-play-{old_slug}.desktop"
+
+    if new_slug != old_slug:
+        had_prof_desktop = old_prof_desktop.exists()
+        had_play_desktop = old_play_desktop.exists()
+        old_prof_desktop.unlink(missing_ok=True)
+        old_play_desktop.unlink(missing_ok=True)
+        if had_prof_desktop and profile_shortcuts_supported():
+            try:
+                write_profile_shortcut(
+                    new_display, profile_dir=target_dir, applications_dir=apps
+                )
+            except Exception:
+                pass
+        if had_play_desktop and profile_shortcuts_supported():
+            try:
+                write_play_shortcut(
+                    profile_name=new_display, profile_dir=target_dir,
+                    applications_dir=apps
+                )
+            except Exception:
+                pass
+    else:
+        if old_prof_desktop.exists() and profile_shortcuts_supported():
+            try:
+                write_profile_shortcut(
+                    new_display, profile_dir=target_dir, applications_dir=apps
+                )
+            except Exception:
+                pass
+        if old_play_desktop.exists() and profile_shortcuts_supported():
+            try:
+                write_play_shortcut(
+                    profile_name=new_display, profile_dir=target_dir,
+                    applications_dir=apps
+                )
+            except Exception:
+                pass
+
+    return target_dir
+
 
 
 def _desktop_quote(value):

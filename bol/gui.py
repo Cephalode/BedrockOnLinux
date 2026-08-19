@@ -1054,11 +1054,16 @@ def gui():
                     if not new_n or not new_n.strip() or new_n.strip() == name:
                         return
                     try:
-                        rename_profile(name, new_n.strip())
+                        new_dir = rename_profile(name, new_n.strip())
+                        if is_act and active_path is not None and Path(new_dir).resolve() != Path(active_path).resolve():
+                            _switch_profile_target(new_dir)
+                            d.destroy()
+                            return
                         refresh_manager()
                         prof_var.set(f"Profile: {current_profile_name()}")
                     except Exception as ex:
                         messagebox.showerror("Rename Profile", str(ex), parent=d)
+
 
                 def do_delete(name=p_name, is_act=is_p_active):
                     if is_act:
