@@ -581,6 +581,55 @@ def _create_kill_icon(size=16, fg_color="white", bg_color="black"):
     img.put(data)
     return img
 
+
+def _gpu_incident_safety_instruction(ack_status):
+    """What must have been checked before one incident can be acknowledged."""
+    if ack_status.previous_boot_fault:
+        return ("Continue only after repairing/updating the graphics driver "
+                "and rebooting.")
+    return ("No fatal driver event was detected for this marker. Continue "
+            "only after checking why the previous session or machine "
+            "stopped.")
+
+
+def _offer_gpu_incident_acknowledgement(
+        messagebox, parent, ack_status, prefix="",
+        title="Acknowledge previous GPU incident"):
+    """Confirm and record one previous-boot GPU incident, where it is met.
+
+    The block is refused at PLAY, so that is where clearing it belongs: the
+    same confirmation used to live in Settings ▸ Tools only, which left the
+    failure dialog telling players to go and find it. Nothing about the
+    safety decision changes — the same eligibility is re-checked under the
+    launch lock by ``acknowledge_gpu_crash`` before anything is written, and
+    a current-boot marker or a live prefix is still refused.
+
+    The themed message box is owned by ``gui()``, so it is passed in rather
+    than looked up here.
+
+    Returns True only when the incident was actually acknowledged.
+    """
+    if not messagebox.askyesno(
+            title,
+            prefix + ack_status.message + "\n\n"
+            + _gpu_incident_safety_instruction(ack_status)
+            + " Acknowledge now?",
+            parent=parent):
+        return False
+    if acknowledge_gpu_crash():
+        messagebox.showinfo(
+            "GPU safety",
+            "The previous-boot incident was acknowledged. PLAY will still "
+            "run all current graphics safety checks.",
+            parent=parent,
+        )
+        return True
+    messagebox.showerror(
+        "GPU safety", gpu_crash_acknowledgement_status().message,
+        parent=parent)
+    return False
+
+
 def gui():
     if (os.environ.get("WAYLAND_DISPLAY")
             and not os.environ.get("DISPLAY")
@@ -1776,24 +1825,21 @@ def gui():
                     ack = gpu_crash_acknowledgement_status()
                 except Exception:
                     ack = None
-                if ack and ack.can_acknowledge:
-                    if ack.previous_boot_fault:
-                        message += (
-                            "\n\nAfter repairing/updating the graphics driver "
-                            "and rebooting, open Settings → Tools to "
-                            "acknowledge this verified previous-boot fault."
-                        )
-                    else:
-                        message += (
-                            "\n\nThis interrupted launch belongs to a previous "
-                            "boot and no fatal driver event was detected. "
-                            "After checking why it stopped, open Settings → "
-                            "Tools to acknowledge it."
-                        )
                 log._LOG_SINK(f"xx {message}")
                 set_status("Minecraft could not start.", T.RED)
-                root.after(0, lambda text=message: messagebox.showerror(
-                    "Minecraft could not start", text[:2000], parent=root))
+                if ack and ack.can_acknowledge:
+                    # Offer the acknowledgement in the dialog that reports the
+                    # block, rather than sending the player to look for it in
+                    # Settings ▸ Tools. Same guarded action, one step from
+                    # where it is needed.
+                    root.after(0, lambda text=message, status=ack:
+                               _offer_gpu_incident_acknowledgement(
+                                   messagebox, root, status,
+                                   prefix=text[:2000] + "\n\n",
+                                   title="Minecraft could not start"))
+                else:
+                    root.after(0, lambda text=message: messagebox.showerror(
+                        "Minecraft could not start", text[:2000], parent=root))
             finally:
                 # A launcher left unmapped would be unreachable, so restore it
                 # here too, on any path the inner handler could have missed.
@@ -2546,36 +2592,9 @@ def gui():
             ack_status = None
         if ack_status and ack_status.can_acknowledge:
             def do_ack_gpu():
-                if ack_status.previous_boot_fault:
-                    safety_instruction = (
-                        "Continue only after repairing/updating the graphics "
-                        "driver and rebooting."
-                    )
-                else:
-                    safety_instruction = (
-                        "No fatal driver event was detected for this marker. "
-                        "Continue only after checking why the previous session "
-                        "or machine stopped."
-                    )
-                if not messagebox.askyesno(
-                        "Acknowledge previous GPU incident",
-                        ack_status.message
-                        + "\n\n" + safety_instruction
-                        + " Acknowledge now?",
-                        parent=d):
-                    return
-                if acknowledge_gpu_crash():
-                    messagebox.showinfo(
-                        "GPU safety",
-                        "The previous-boot incident was acknowledged. PLAY "
-                        "will still run all current graphics safety checks.",
-                        parent=d,
-                    )
+                if _offer_gpu_incident_acknowledgement(
+                        messagebox, d, ack_status):
                     gpu_ack_btn.pack_forget()
-                else:
-                    current = gpu_crash_acknowledgement_status()
-                    messagebox.showerror(
-                        "GPU safety", current.message, parent=d)
 
             tool_actions.insert(
                 0,

@@ -35,6 +35,19 @@
 
 ### Changed
 
+- **A GPU safety block can be acknowledged from the dialog that reports it.**
+  PLAY refuses the launch, and the failure dialog then told you to open
+  Settings ▸ Tools and find the acknowledgement there. That is a long way
+  round for the most common case by far: rebooting the machine while
+  Minecraft is still open leaves an interrupted-launch marker behind, because
+  the launcher is killed before it can clear its own marker, and nothing can
+  tell that apart from a graphics driver that locked the machine up. The
+  confirmation is now offered where the block is met. Nothing about the
+  safety decision changes — the same eligibility is still re-evaluated under
+  the launch lock before anything is written, a marker from the running boot
+  is still refused, and every current graphics check still runs on the next
+  PLAY.
+
 - **Minecraft is now downloaded from the Microsoft Store with your own
   account.** Until now the launcher fetched a repackaged, DRM-stripped copy of
   the game from a third-party GitHub repository. That redistributed Minecraft,
@@ -52,15 +65,21 @@
     the existing in-game account is unchanged. They can be the same account,
     but they are separate links, because the Store needs a device-bound
     session that the in-game sign-in cannot provide.
-  - **The version picker is now an edition picker** — *Minecraft* or
-    *Minecraft Preview*. The Xbox CDN only serves the current build of each,
-    so there is no back catalogue and no way to pin an older build to match a
-    frozen server. Updates arrive on their own; the launcher re-checks for a
-    delta every twelve hours and downloads only what changed.
+  - **The picker gained an edition, and kept its builds.** You choose
+    *Minecraft* or *Minecraft Preview*, then a build. Microsoft's own service
+    only ever offers the current build, so the list of older ones comes from
+    [GdkLinks](https://github.com/MinecraftBedrockArchiver/GdkLinks), an index
+    of where each build sits on Microsoft's CDN — it holds no game data, and
+    the licence still comes from Microsoft for your account. Each build lives
+    in its own folder, so going back to one you already have costs nothing.
   - **WebKitGTK is a new dependency** (`libwebkit2gtk-4.1-0`), for the Store
     sign-in window. The `.deb` and `.rpm` pull it in and `doctor` reports it.
-    The Flatpak cannot yet: its runtime does not ship WebKitGTK, so the
-    Flatpak cannot install the game until that runtime changes.
+    The Flatpak moved to the GNOME runtime to get it: `org.freedesktop.Platform`
+    ships no WebKitGTK and no Flathub extension provides one, so the sign-in —
+    and with it installing the game at all — could not run in the sandbox. Both
+    runtimes share the same freedesktop base and the same GL extension point,
+    and this manifest already built its own Tcl, Tk and Python, so nothing else
+    about the Flatpak changes.
 
   A copy of the game you already have keeps working: point the launcher at it
   as before.
@@ -69,11 +88,14 @@
   encrypted. Store packages leave the segments they flag
   `KEEP_ENCRYPTED_ON_DISK` — the game executable on GDK titles — encrypted at
   rest, exactly as on Windows, so there is no executable on disk for Wine to
-  open. The engine gained a loader that can map the main image from an open
-  file descriptor, and the launcher decrypts into anonymous memory and hands
-  that descriptor over, so the decrypted game never touches the disk. The
-  settings/pause stack-reserve fix now lands on that memory instead of the
-  file. Packages that ship a plaintext executable are detected and take the
+  open. The engine gained a loader that can map the main image from a
+  descriptor or a path, and the launcher decrypts it into `/dev/shm`, which is
+  RAM: the copy is private, the loader unlinks it the instant it opens it, and
+  nothing reaches durable storage. It goes through a file rather than anonymous
+  memory for one reason — the game runs inside the Steam Linux Runtime
+  container, where a descriptor number from outside means nothing. The
+  settings/pause stack-reserve fix now lands on that copy instead of the file
+  on disk. Packages that ship a plaintext executable are detected and take the
   previous path unchanged.
 
   One consequence worth knowing: an encrypted package needs the licence at
