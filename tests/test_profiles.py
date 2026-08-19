@@ -403,6 +403,7 @@ def test_relaunch_with_profile_sets_bol_home_and_execs(tmp_path):
             mock_execv.assert_called_once()
             assert os.environ["BOL_HOME"] == str(custom_root.resolve())
 
+
 def test_open_profile_window_spawns_process(tmp_path):
     profile = tmp_path / "custom_profile"
     with mock.patch("subprocess.Popen") as mock_popen, \
@@ -412,3 +413,23 @@ def test_open_profile_window_spawns_process(tmp_path):
         args, kwargs = mock_popen.call_args
         assert args[0] == ["/bin/bol", "gui"]
         assert kwargs["env"]["BOL_HOME"] == str(profile.resolve())
+        assert kwargs.get("start_new_session") is True
+        assert kwargs.get("stdout") == subprocess.DEVNULL
+        assert kwargs.get("stderr") == subprocess.DEVNULL
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+
+
+def test_open_profile_window_with_default_profile(tmp_path):
+    custom_root = tmp_path / "sandbox"
+    with mock.patch("subprocess.Popen") as mock_popen, \
+         mock.patch("bol.profiles.launcher_executable", return_value="/bin/bol"):
+        open_profile_window(None, base_data=custom_root)
+        mock_popen.assert_called_once()
+        args, kwargs = mock_popen.call_args
+        assert args[0] == ["/bin/bol", "gui"]
+        assert kwargs["env"]["BOL_HOME"] == str(custom_root.resolve())
+        assert kwargs.get("start_new_session") is True
+        assert kwargs.get("stdout") == subprocess.DEVNULL
+        assert kwargs.get("stderr") == subprocess.DEVNULL
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+

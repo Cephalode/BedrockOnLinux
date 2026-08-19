@@ -411,8 +411,9 @@ def relaunch_with_profile(profile_path=None, base_data=None, executable=None):
         subprocess.Popen(args, env=env)
         sys.exit(0)
 
+
 def open_profile_window(profile_path=None, base_data=None, executable=None):
-    """Spawn a new launcher GUI window for the target profile without closing the current one."""
+    """Spawn a new launcher GUI window for the target profile."""
     import subprocess
     from .config import DEFAULT_DATA
     base_root = _profile_base(base_data)
@@ -431,4 +432,13 @@ def open_profile_window(profile_path=None, base_data=None, executable=None):
     else:
         args = [exe, "gui"]
 
-    return subprocess.Popen(args, env=env)
+    return subprocess.Popen(
+        args,
+        env=env,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+

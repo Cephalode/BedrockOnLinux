@@ -908,13 +908,42 @@ def gui():
             prof_arrow.configure(text="▾", text_color=T.SUB)
             prof_txt_lbl.configure(text_color=T.FG)
 
-    def _switch_profile_target(profile_path):
+    def _profile_switch_blocked(parent=root):
+        if ui.get("launch_active") or _mc_running():
+            messagebox.showwarning(
+                "Minecraft is running",
+                "Close Minecraft first and wait for the game to exit before switching "
+                "profiles.\n\nTo use multiple profiles simultaneously, open them in a "
+                "new window using the (⧉) button.",
+                parent=parent,
+            )
+            return True
+        if ui.get("busy"):
+            messagebox.showwarning(
+                "Operation in progress",
+                "Wait for the current preparation task to finish before switching profiles.",
+                parent=parent,
+            )
+            return True
+        return False
+
+    def _switch_profile_target(profile_path, parent=root):
         close_profile_menu()
+        if _profile_switch_blocked(parent=parent):
+            return False
         root.destroy()
         relaunch_with_profile(profile_path)
+        return True
 
     def _prompt_create_profile():
         close_profile_menu()
+        if ui.get("busy") and not (ui.get("launch_active") or _mc_running()):
+            messagebox.showwarning(
+                "Operation in progress",
+                "Wait for the current preparation task to finish before creating a profile.",
+                parent=root,
+            )
+            return
         from tkinter import simpledialog
         name = simpledialog.askstring(
             "Create account profile",
@@ -931,7 +960,17 @@ def gui():
                     write_profile_shortcut(name, profile_dir=profile_dir)
                 except Exception:
                     pass
-            _switch_profile_target(profile_dir)
+            if ui.get("launch_active") or _mc_running():
+                msg = (
+                    f"Profile '{name}' was created successfully.\n\n"
+                    "Minecraft is currently running in this profile, so the current launcher "
+                    "window cannot be switched.\n\n"
+                    "Would you like to open the new profile in a new window now?"
+                )
+                if messagebox.askyesno("Profile Created", msg, parent=root):
+                    open_profile_window(profile_dir)
+            else:
+                _switch_profile_target(profile_dir)
         except Exception as exc:
             messagebox.showerror("Account profile", str(exc), parent=root)
 
@@ -978,7 +1017,10 @@ def gui():
             if is_def_active:
                 ctk.CTkLabel(def_right, text="Active", text_color=T.GREEN, font=font(12, "bold")).pack(side="right", padx=6)
             else:
-                sw_btn = mkbtn(def_right, "Switch", lambda: (_switch_profile_target(None), d.destroy()), kind="ghost", height=28, width=64)
+                def do_switch_def():
+                    if _switch_profile_target(None, parent=d):
+                        d.destroy()
+                sw_btn = mkbtn(def_right, "Switch", do_switch_def, kind="ghost", height=28, width=64)
                 sw_btn.pack(side="right", padx=(4, 0))
 
             # Custom profile rows
@@ -999,7 +1041,14 @@ def gui():
                 r_right = ctk.CTkFrame(row, fg_color="transparent")
                 r_right.pack(side="right", padx=8, pady=6)
 
-                def do_rename(name=p_name):
+                def do_rename(name=p_name, is_act=is_p_active):
+                    if is_act and (ui.get("launch_active") or _mc_running() or ui.get("busy")):
+                        messagebox.showwarning(
+                            "Rename Profile",
+                            "Cannot rename the active profile while Minecraft or a task is running. Close Minecraft first.",
+                            parent=d,
+                        )
+                        return
                     from tkinter import simpledialog
                     new_n = simpledialog.askstring("Rename Profile", f"New name for '{name}':", parent=d)
                     if not new_n or not new_n.strip() or new_n.strip() == name:
@@ -1039,7 +1088,7 @@ def gui():
                 del_btn = mkbtn(r_right, "Delete", lambda n=p_name, a=is_p_active: do_delete(n, a), kind="danger" if not is_p_active else "ghost", height=28, width=60)
                 del_btn.pack(side="right", padx=(4, 0))
 
-                ren_btn = mkbtn(r_right, "Rename", lambda n=p_name: do_rename(n), kind="ghost", height=28, width=60)
+                ren_btn = mkbtn(r_right, "Rename", lambda n=p_name, a=is_p_active: do_rename(n, a), kind="ghost", height=28, width=60)
                 ren_btn.pack(side="right", padx=(4, 0))
 
                 folder_btn = mkbtn(r_right, "Folder", lambda p=p_path: do_open_folder(p), kind="ghost", height=28, width=54)
@@ -1051,7 +1100,10 @@ def gui():
                 if is_p_active:
                     ctk.CTkLabel(r_right, text="Active", text_color=T.GREEN, font=font(12, "bold")).pack(side="right", padx=(0, 6))
                 else:
-                    sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: (_switch_profile_target(p), d.destroy()), kind="ghost", height=28, width=60)
+                    def do_switch_custom(path=p_path):
+                        if _switch_profile_target(path, parent=d):
+                            d.destroy()
+                    sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: do_switch_custom(p), kind="ghost", height=28, width=60)
                     sw_btn.pack(side="right", padx=(0, 6))
 
         refresh_manager()
