@@ -40,8 +40,10 @@ permissions:
 
 env:
   # Pinned so the artifact has a stable SHA-256 to pin in bol/config.py. Bump
-  # deliberately; a toolchain change reshuffles the binary.
-  RUST_TOOLCHAIN: "1.90.0"
+  # deliberately; a toolchain change reshuffles the binary. This is the version
+  # the branch was validated against locally, and the floor is real: the xodus
+  # commit calls Duration::from_mins, which 1.90 still gated as unstable.
+  RUST_TOOLCHAIN: "1.94.1"
 
 jobs:
   build:
