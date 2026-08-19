@@ -67,6 +67,13 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive
               bash scripts/pin-apt-snapshot.sh trixie
               apt-get update
+              # Bring the image itself to the pinned snapshot first. It ships
+              # some packages newer than 20260701, and libwebkit2gtk-4.1-dev
+              # reaches liblzma-dev, which requires liblzma5 at exactly the
+              # snapshot version -- a downgrade the solver will not choose on
+              # its own, so the install could not be resolved at all. The
+              # snapshot is shared with the engine builds, so it cannot move.
+              apt-get -y --allow-downgrades dist-upgrade
               # protoc: the xodus crate runs prost-build.
               # libwebkit2gtk-4.1-dev: wry/tao, linked unconditionally for the
               #   login webview.
@@ -75,12 +82,10 @@ jobs:
               # --allow-downgrades: every package here comes from the pinned
               # snapshot, but the base image ships some of them newer, and
               # libwebkit2gtk-4.1-dev reaches liblzma-dev, which pins liblzma5
-              # to the exact version in that snapshot. Refusing the downgrade
-              # is apt protecting the image; taking it is what pinning means.
-              # No apostrophes below this line: the whole script is a single
-              # quoted argument to docker run, and one would end it here and
-              # hand the rest to the host shell.
-              apt-get install -y --no-install-recommends --allow-downgrades \
+              # No apostrophes anywhere in this script: it is a single quoted
+              # argument to docker run, and one would end it here and hand the
+              # rest to the host shell.
+              apt-get install -y --no-install-recommends \
                 build-essential pkg-config git ca-certificates curl \
                 protobuf-compiler libwebkit2gtk-4.1-dev libssl-dev \
                 tar gzip coreutils
