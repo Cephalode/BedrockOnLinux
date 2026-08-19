@@ -913,8 +913,9 @@ def gui():
             messagebox.showwarning(
                 "Minecraft is running",
                 "Close Minecraft first and wait for the game to exit before switching "
-                "profiles in this window.\n\nTo use multiple profiles simultaneously, "
-                "open them in a new window using the (⧉) button.",
+                "profiles in this window.\n\nThe (⧉) button opens another profile in a "
+                "second launcher window, but only one profile can play at a time: the "
+                "shared Minecraft files stay locked for the whole game session.",
                 parent=parent,
             )
             return True
@@ -965,7 +966,8 @@ def gui():
                     f"Profile '{name}' was created successfully.\n\n"
                     "Minecraft is currently running in this profile, so the current launcher "
                     "window cannot be switched.\n\n"
-                    "Would you like to open the new profile in a new window now?"
+                    "Would you like to open the new profile in a new window now? It can "
+                    "prepare the profile, but it can only play once the running game exits."
                 )
                 if messagebox.askyesno("Profile Created", msg, parent=root):
                     open_profile_window(profile_dir)
