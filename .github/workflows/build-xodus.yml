@@ -1,0 +1,153 @@
+# Tier 1: build xodus-cli from the pinned upstream commit and publish it as an
+# attested artifact the launcher downloads at runtime.
+#
+# Xodus (https://github.com/xodus-gaming/xodus, GPL-3.0) is how the launcher
+# acquires Minecraft: it signs in to the user's own Microsoft account, obtains
+# the title license and streams the MSIXVC package from the official Xbox CDN.
+# See third_party/xodus/README.md for what the launcher calls and why the
+# key-chain-file feature is mandatory.
+#
+# The compile runs in a debian:trixie container via `docker run` so the JS
+# actions (checkout, attest, publish) keep Node.js on the host, matching
+# build-xcurl.yml. The source tarball is published beside the binary so the
+# GPL-3.0 source requirement is met by the same release.
+
+name: Build xodus-cli
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Publish + attest xodus-cli as a release"
+        type: boolean
+        default: false
+    outputs:
+      artifact:
+        description: "Name of the uploaded xodus-cli artifact"
+        value: xodus-cli
+      sha256:
+        description: "SHA-256 of the built xodus-cli archive"
+        value: ${{ jobs.build.outputs.sha256 }}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish + attest xodus-cli as a release on this fork"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned so the artifact has a stable SHA-256 to pin in bol/config.py. Bump
+  # deliberately; a toolchain change reshuffles the binary.
+  RUST_TOOLCHAIN: "1.90.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+      rev: ${{ steps.build.outputs.rev }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build xodus-cli in a pinned Trixie container
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            -e RUST_TOOLCHAIN="${RUST_TOOLCHAIN}" \
+            debian:trixie@sha256:fac46bff2e02f51425b6e33b0e1169f55dfb053d83511ca28aa50c09fd5ed7a4 \
+            bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              bash scripts/pin-apt-snapshot.sh trixie
+              apt-get update
+              # protoc: the xodus crate runs prost-build.
+              # libwebkit2gtk-4.1-dev: wry/tao, linked unconditionally for the
+              #   login webview.
+              # libssl-dev: openssl-sys, pulled in through
+              #   dbus-secret-service-keyring-store even under key-chain-file.
+              apt-get install -y --no-install-recommends \
+                build-essential pkg-config git ca-certificates curl \
+                protobuf-compiler libwebkit2gtk-4.1-dev libssl-dev \
+                tar gzip coreutils
+              curl -fsSL --retry 5 https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+              . "$HOME/.cargo/env"
+              scripts/build-xodus-cli.sh /tmp/xodus-work
+            '
+          sudo chown -R "$(id -u):$(id -g)" dist
+
+      - name: Assert the build matches the pinned SHA-256
+        id: build
+        run: |
+          rev="$(grep -m1 '^XODUS_REV = ' bol/config.py | cut -d'"' -f2)"
+          pin="$(grep -m1 '^XODUS_ARCHIVE_SHA256 = ' bol/config.py | cut -d'"' -f2)"
+          f="dist/xodus-cli-${rev}.tar.gz"
+          src="dist/xodus-src-${rev}.tar.gz"
+          if [ ! -f "$f" ]; then
+            echo "::error::expected $f but it was not produced; XODUS_SOURCE_COMMIT" \
+                 "and XODUS_REV in bol/config.py must describe the same commit." >&2
+            ls -la dist || true
+            exit 1
+          fi
+          built="$(sha256sum "$f" | cut -d' ' -f1)"
+          echo "pinned : $pin"
+          echo "built  : $built"
+          if [ "$built" != "$pin" ]; then
+            echo "::error::xodus-cli SHA-256 does not match XODUS_ARCHIVE_SHA256." \
+                 "Re-pin bol/config.py from a reviewed build of this commit." >&2
+            exit 1
+          fi
+          echo "sha256=$built" >> "$GITHUB_OUTPUT"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          {
+            echo "TARBALL=$f"
+            echo "SRC_TARBALL=$src"
+            echo "REV=$rev"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload artifact (reuse within a run)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: xodus-cli
+          path: |
+            ${{ env.TARBALL }}
+            ${{ env.TARBALL }}.sha256
+            ${{ env.SRC_TARBALL }}
+            ${{ env.SRC_TARBALL }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Attest build provenance
+        if: ${{ inputs.publish }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: ${{ env.TARBALL }}
+
+      - name: Publish the xodus-cli release
+        if: ${{ inputs.publish }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: xodus-${{ env.REV }}
+          target_commitish: ${{ github.sha }}
+          name: xodus-cli ${{ env.REV }} (from source)
+          make_latest: false
+          body: >
+            xodus-cli built from xodus-gaming/xodus commit ${{ env.REV }} with
+            --features xodus/key-chain-file. SHA-256
+            ${{ steps.build.outputs.sha256 }}.
+            Verify with: gh attestation verify <file> --repo ${{ github.repository }}.
+            Xodus is GPL-3.0; the complete corresponding source is published as
+            xodus-src-${{ env.REV }}.tar.gz in this same release.
+          files: |
+            ${{ env.TARBALL }}
+            ${{ env.TARBALL }}.sha256
+            ${{ env.SRC_TARBALL }}
+            ${{ env.SRC_TARBALL }}.sha256
+          fail_on_unmatched_files: true
