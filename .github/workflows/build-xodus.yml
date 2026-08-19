@@ -75,8 +75,11 @@ jobs:
               # --allow-downgrades: every package here comes from the pinned
               # snapshot, but the base image ships some of them newer, and
               # libwebkit2gtk-4.1-dev reaches liblzma-dev, which pins liblzma5
-              # to the snapshot's exact version. Refusing that downgrade is
-              # apt protecting the image; taking it is what pinning means.
+              # to the exact version in that snapshot. Refusing the downgrade
+              # is apt protecting the image; taking it is what pinning means.
+              # No apostrophes below this line: the whole script is a single
+              # quoted argument to docker run, and one would end it here and
+              # hand the rest to the host shell.
               apt-get install -y --no-install-recommends --allow-downgrades \
                 build-essential pkg-config git ca-certificates curl \
                 protobuf-compiler libwebkit2gtk-4.1-dev libssl-dev \

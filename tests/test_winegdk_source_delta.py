@@ -605,6 +605,35 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
                 self.assertIn(path.name, text, f"{path.name} is never applied")
                 self.assertIn(digest, text, f"{path.name} is not pinned")
 
+    def test_no_workflow_quotes_a_container_script_containing_an_apostrophe(self):
+        """A quoted container script must not contain an apostrophe.
+
+        Workflows hand a whole shell script to `docker run` as one
+        single-quoted argument. An apostrophe inside it -- in a comment, even
+        -- closes that argument, so the container runs a truncated script and
+        the remainder is executed by the runner host instead. That is how an
+        `apt-get install` ended up on the runner, failing with "are you root?"
+        while the container had happily run everything before it.
+        """
+        opener = re.compile(r"^(\s*)bash .*-c '$")
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            lines = workflow.read_text().splitlines()
+            inside = None
+            for number, line in enumerate(lines, start=1):
+                if inside is None:
+                    match = opener.match(line)
+                    if match:
+                        inside = match.group(1)
+                    continue
+                if line.strip() == "'" :
+                    inside = None
+                    continue
+                with self.subTest(workflow=workflow.name, line=number):
+                    self.assertNotIn(
+                        "'", line,
+                        f"{workflow.name}:{number} would end the quoted "
+                        "script passed to the container")
+
     def test_no_build_script_line_ends_in_a_doubled_backslash(self):
         """A doubled continuation silently truncates a command's arguments.
 
