@@ -51,8 +51,16 @@ from .prefix import (
 )
 from .profiles import (
     create_profile,
+    current_profile_info,
+    current_profile_name,
+    delete_profile,
+    list_profiles,
     play_launch_command,
     profile_launch_command,
+    profile_shortcuts_supported,
+    relaunch_with_profile,
+    open_profile_window,
+    rename_profile,
     require_profile_shortcuts_supported,
     require_shortcuts_supported,
     write_play_shortcut,
@@ -772,29 +780,40 @@ def gui():
         def _show(self):
             if self.win is not None:
                 return
-            widget_y = self.widget.winfo_rooty() - root.winfo_rooty()
-            x = self.widget.winfo_rootx() - root.winfo_rootx() + self.widget.winfo_width() // 2
-            
-            if widget_y > root.winfo_height() // 2:
-                y = widget_y - 8
-                anchor = "s"
-            else:
-                y = widget_y + self.widget.winfo_height() + 8
-                anchor = "n"
-            
-            self.win = ctk.CTkFrame(root, fg_color=T.CARD_3, corner_radius=6)
-            lab = ctk.CTkLabel(self.win, text=self.text, fg_color="transparent", text_color=T.FG,
-                               font=font(10))
-            lab.pack(padx=8, pady=4)
-            self.win.place(x=x, y=y, anchor=anchor)
-            self.win.lift()
+            try:
+                if not self.widget.winfo_exists():
+                    return
+                widget_y = self.widget.winfo_rooty() - root.winfo_rooty()
+                x = self.widget.winfo_rootx() - root.winfo_rootx() + self.widget.winfo_width() // 2
+                
+                if widget_y > root.winfo_height() // 2:
+                    y = widget_y - 8
+                    anchor = "s"
+                else:
+                    y = widget_y + self.widget.winfo_height() + 8
+                    anchor = "n"
+                
+                self.win = ctk.CTkFrame(root, fg_color=T.CARD_3, corner_radius=6)
+                lab = ctk.CTkLabel(self.win, text=self.text, fg_color="transparent", text_color=T.FG,
+                                   font=font(10))
+                lab.pack(padx=8, pady=4)
+                self.win.place(x=x, y=y, anchor=anchor)
+                self.win.lift()
+            except Exception:
+                pass
 
         def _hide(self, _e=None):
             if self._job:
-                root.after_cancel(self._job)
+                try:
+                    root.after_cancel(self._job)
+                except Exception:
+                    pass
                 self._job = None
             if self.win is not None:
-                self.win.destroy()
+                try:
+                    self.win.destroy()
+                except Exception:
+                    pass
                 self.win = None
 
     na = NativeAuth()
@@ -870,6 +889,371 @@ def gui():
     
     acct_txt_lbl._tooltip = Tooltip(acct_txt_lbl, "")
     acct_btn._tooltip = Tooltip(acct_btn, "")
+
+    cur_prof_info = current_profile_info()
+    cur_prof_name = cur_prof_info["name"]
+    prof_menu_state = {"win": None, "bind_id": None}
+
+    def close_profile_menu():
+        win = prof_menu_state.get("win")
+        if win is not None:
+            try:
+                if prof_menu_state.get("bind_id"):
+                    root.unbind("<Configure>", prof_menu_state["bind_id"])
+            except Exception:
+                pass
+            win.destroy()
+            prof_menu_state["win"] = None
+            prof_menu_state["bind_id"] = None
+            prof_arrow.configure(text="▾", text_color=T.SUB)
+            prof_txt_lbl.configure(text_color=T.FG)
+
+    def _profile_switch_blocked(parent=root):
+        if ui.get("launch_active"):
+            messagebox.showwarning(
+                "Minecraft is running",
+                "Close Minecraft first and wait for the game to exit before switching "
+                "profiles in this window.\n\nTo use multiple profiles simultaneously, "
+                "open them in a new window using the (⧉) button.",
+                parent=parent,
+            )
+            return True
+        if ui.get("busy"):
+            messagebox.showwarning(
+                "Operation in progress",
+                "Wait for the current preparation task to finish before switching profiles.",
+                parent=parent,
+            )
+            return True
+        return False
+
+    def _switch_profile_target(profile_path, parent=root):
+        close_profile_menu()
+        if _profile_switch_blocked(parent=parent):
+            return False
+        root.destroy()
+        relaunch_with_profile(profile_path)
+        return True
+
+    def _prompt_create_profile():
+        close_profile_menu()
+        if ui.get("busy") and not ui.get("launch_active"):
+            messagebox.showwarning(
+                "Operation in progress",
+                "Wait for the current preparation task to finish before creating a profile.",
+                parent=root,
+            )
+            return
+        from tkinter import simpledialog
+        name = simpledialog.askstring(
+            "Create account profile",
+            "Profile name (each profile has its own Xbox login, prefix and worlds):",
+            parent=root,
+        )
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        try:
+            profile_dir = create_profile(name)
+            if profile_shortcuts_supported():
+                try:
+                    write_profile_shortcut(name, profile_dir=profile_dir)
+                except Exception:
+                    pass
+            if ui.get("launch_active"):
+                msg = (
+                    f"Profile '{name}' was created successfully.\n\n"
+                    "Minecraft is currently running in this profile, so the current launcher "
+                    "window cannot be switched.\n\n"
+                    "Would you like to open the new profile in a new window now?"
+                )
+                if messagebox.askyesno("Profile Created", msg, parent=root):
+                    open_profile_window(profile_dir)
+            else:
+                _switch_profile_target(profile_dir)
+        except Exception as exc:
+            messagebox.showerror("Account profile", str(exc), parent=root)
+
+    def _open_profile_manager():
+        close_profile_menu()
+        d = dialog("Manage Profiles", 620, 440)
+
+        ctk.CTkLabel(
+            d, text="Account Profiles", font=font(18, "bold"), text_color=T.FG
+        ).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(
+            d,
+            text="Each profile maintains an isolated Xbox sign-in, Wine prefix, worlds, and settings.",
+            font=font(12), text_color=T.SUB, wraplength=580, justify="left"
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        sf = ctk.CTkScrollableFrame(d, fg_color=T.CARD_2, corner_radius=10)
+        sf.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+        def refresh_manager():
+            for child in sf.winfo_children():
+                child.destroy()
+
+            profs = list_profiles()
+            active_info = current_profile_info()
+            active_path = active_info.get("path")
+
+            # Default profile row
+            is_def_active = active_path is None
+            def_row = ctk.CTkFrame(sf, fg_color=T.CARD_3 if is_def_active else "transparent", corner_radius=8)
+            def_row.pack(fill="x", padx=4, pady=3)
+
+            def_left = ctk.CTkFrame(def_row, fg_color="transparent")
+            def_left.pack(side="left", padx=8, pady=6)
+            ctk.CTkLabel(def_left, text="Default", font=font(13, "bold"), text_color=T.FG).pack(anchor="w")
+            ctk.CTkLabel(def_left, text="Main installation root", font=font(11), text_color=T.SUB).pack(anchor="w")
+
+            def_right = ctk.CTkFrame(def_row, fg_color="transparent")
+            def_right.pack(side="right", padx=8, pady=6)
+
+            win_btn = mkbtn(def_right, "New Window", lambda: open_profile_window(None), kind="ghost", height=28, width=90)
+            win_btn.pack(side="right", padx=(4, 0))
+
+            if is_def_active:
+                ctk.CTkLabel(def_right, text="Active", text_color=T.GREEN, font=font(12, "bold")).pack(side="right", padx=6)
+            else:
+                def do_switch_def():
+                    if _switch_profile_target(None, parent=d):
+                        d.destroy()
+                sw_btn = mkbtn(def_right, "Switch", do_switch_def, kind="ghost", height=28, width=64)
+                sw_btn.pack(side="right", padx=(4, 0))
+
+            # Custom profile rows
+            for p in profs:
+                p_name = p.get("name", "")
+                p_slug = p.get("slug", "")
+                p_path = p.get("path", "")
+                is_p_active = active_path is not None and Path(active_path).resolve() == Path(p_path).resolve()
+
+                row = ctk.CTkFrame(sf, fg_color=T.CARD_3 if is_p_active else "transparent", corner_radius=8)
+                row.pack(fill="x", padx=4, pady=3)
+
+                r_left = ctk.CTkFrame(row, fg_color="transparent")
+                r_left.pack(side="left", padx=8, pady=6)
+                ctk.CTkLabel(r_left, text=p_name, font=font(13, "bold"), text_color=T.FG).pack(anchor="w")
+                ctk.CTkLabel(r_left, text=f"profiles/{p_slug}", font=font(11), text_color=T.SUB).pack(anchor="w")
+
+                r_right = ctk.CTkFrame(row, fg_color="transparent")
+                r_right.pack(side="right", padx=8, pady=6)
+
+                def do_rename(name=p_name, is_act=is_p_active):
+                    if is_act and (ui.get("launch_active") or ui.get("busy")):
+                        messagebox.showwarning(
+                            "Rename Profile",
+                            "Cannot rename the active profile while Minecraft or a task is running in this window. Close Minecraft first.",
+                            parent=d,
+                        )
+                        return
+                    from tkinter import simpledialog
+                    new_n = simpledialog.askstring("Rename Profile", f"New name for '{name}':", parent=d)
+                    if not new_n or not new_n.strip() or new_n.strip() == name:
+                        return
+                    try:
+                        new_dir = rename_profile(name, new_n.strip())
+                        if is_act and active_path is not None and Path(new_dir).resolve() != Path(active_path).resolve():
+                            _switch_profile_target(new_dir)
+                            d.destroy()
+                            return
+                        refresh_manager()
+                        prof_var.set(f"Profile: {current_profile_name()}")
+                    except Exception as ex:
+                        messagebox.showerror("Rename Profile", str(ex), parent=d)
+
+
+                def do_delete(name=p_name, is_act=is_p_active):
+                    if is_act:
+                        messagebox.showwarning(
+                            "Delete Profile",
+                            "Cannot delete the currently active profile. Switch to another profile first.",
+                            parent=d,
+                        )
+                        return
+                    del_msg = (f"Are you sure you want to delete profile '{name}'?\n\n" +
+                               "This will permanently remove its worlds, settings, and player data.")
+                    if not messagebox.askyesno("Delete Profile", del_msg, parent=d):
+                        return
+                    try:
+                        delete_profile(name)
+                        refresh_manager()
+                    except Exception as ex:
+                        messagebox.showerror("Delete Profile", str(ex), parent=d)
+
+                def do_open_folder(path=p_path):
+                    subprocess.Popen(
+                        ["xdg-open", str(path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+                del_btn = mkbtn(r_right, "Delete", lambda n=p_name, a=is_p_active: do_delete(n, a), kind="danger" if not is_p_active else "ghost", height=28, width=60)
+                del_btn.pack(side="right", padx=(4, 0))
+
+                ren_btn = mkbtn(r_right, "Rename", lambda n=p_name, a=is_p_active: do_rename(n, a), kind="ghost", height=28, width=60)
+                ren_btn.pack(side="right", padx=(4, 0))
+
+                folder_btn = mkbtn(r_right, "Folder", lambda p=p_path: do_open_folder(p), kind="ghost", height=28, width=54)
+                folder_btn.pack(side="right", padx=(4, 0))
+
+                win_btn = mkbtn(r_right, "New Window", lambda p=p_path: open_profile_window(p), kind="ghost", height=28, width=90)
+                win_btn.pack(side="right", padx=(4, 0))
+
+                if is_p_active:
+                    ctk.CTkLabel(r_right, text="Active", text_color=T.GREEN, font=font(12, "bold")).pack(side="right", padx=(0, 6))
+                else:
+                    def do_switch_custom(path=p_path):
+                        if _switch_profile_target(path, parent=d):
+                            d.destroy()
+                    sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: do_switch_custom(p), kind="ghost", height=28, width=60)
+                    sw_btn.pack(side="right", padx=(0, 6))
+
+        refresh_manager()
+
+    def open_profile_menu():
+        if prof_menu_state["win"] is not None:
+            close_profile_menu()
+            return
+
+        profiles = list_profiles()
+        x = (prof_card.winfo_rootx() - root.winfo_rootx()) / _ui_scale
+        y = (prof_card.winfo_rooty() - root.winfo_rooty() + prof_card.winfo_height()) / _ui_scale
+        w = max(230, prof_card.winfo_width() / _ui_scale)
+
+        total_items = 1 + len(profiles) + 2
+        h = min(320, 20 + 36 * total_items + 14)
+
+        win = ctk.CTkFrame(
+            root, width=w, height=h, fg_color=T.CARD_2, bg_color=T.CARD,
+            border_width=1, border_color=T.BORDER, corner_radius=12,
+        )
+        prof_menu_state["win"] = win
+        win.pack_propagate(False)
+        win.place(x=x, y=y + 4)
+        win.lift()
+
+        prof_arrow.configure(text="▴", text_color=T.THEME_ACCENT)
+        prof_txt_lbl.configure(text_color=T.THEME_ACCENT)
+
+        def update_prof_menu_pos(_event=None):
+            if prof_menu_state["win"] != win:
+                return
+            try:
+                cur_x = (prof_card.winfo_rootx() - root.winfo_rootx()) / _ui_scale
+                cur_y = (prof_card.winfo_rooty() - root.winfo_rooty() + prof_card.winfo_height()) / _ui_scale
+                win.place(x=cur_x, y=cur_y + 4)
+            except Exception:
+                pass
+
+        prof_menu_state["bind_id"] = root.bind("<Configure>", update_prof_menu_pos, add="+")
+
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent", corner_radius=8)
+        sf.pack(fill="both", expand=True, padx=4, pady=4)
+
+        def _add_menu_row(name, path, is_active):
+            row = ctk.CTkFrame(sf, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+
+            btn = ctk.CTkButton(
+                row,
+                text=name,
+                anchor="w",
+                height=30,
+                corner_radius=6,
+                font=font(12, "bold" if is_active else "normal"),
+                fg_color=T.THEME_DIM if is_active else "transparent",
+                hover_color=T.THEME_DIM if is_active else T.CARD_3,
+                text_color=T.THEME_ACCENT if is_active else T.FG,
+                command=lambda: _switch_profile_target(path),
+            )
+            btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+            win_btn = ctk.CTkButton(
+                row,
+                text="⧉",
+                width=28,
+                height=30,
+                corner_radius=6,
+                font=font(12),
+                fg_color="transparent",
+                hover_color=T.CARD_3,
+                text_color=T.SUB,
+                command=lambda: (open_profile_window(path), close_profile_menu()),
+            )
+            win_btn.pack(side="right")
+            Tooltip(win_btn, f"Open {name} in a new window")
+
+        is_default = cur_prof_info["path"] is None
+        _add_menu_row("Default", None, is_default)
+
+        for p in profiles:
+            p_name = p.get("name", "")
+            p_path = p.get("path")
+            is_active = (cur_prof_info["path"] is not None
+                         and Path(cur_prof_info["path"]).resolve() == Path(p_path).resolve())
+            _add_menu_row(p_name, p_path, is_active)
+
+        divider = ctk.CTkFrame(sf, height=1, fg_color=T.BORDER)
+        divider.pack(fill="x", padx=4, pady=(4, 4))
+
+        new_btn = ctk.CTkButton(
+            sf,
+            text="+ New Profile…",
+            anchor="w",
+            height=30,
+            corner_radius=6,
+            font=font(12, "bold"),
+            fg_color="transparent",
+            hover_color=T.THEME_DIM,
+            text_color=T.THEME_ACCENT,
+            command=_prompt_create_profile,
+        )
+        new_btn.pack(fill="x", pady=(2, 2))
+
+        manage_btn = ctk.CTkButton(
+            sf,
+            text="Manage Profiles…",
+            anchor="w",
+            height=30,
+            corner_radius=6,
+            font=font(12),
+            fg_color="transparent",
+            hover_color=T.CARD_3,
+            text_color=T.SUB,
+            command=_open_profile_manager,
+        )
+        manage_btn.pack(fill="x", pady=(2, 2))
+
+        _enable_scrollable_frame_wheel(sf, win)
+        win.bind("<Escape>", lambda _event: close_profile_menu())
+
+    prof_card = ctk.CTkFrame(top, fg_color=T.CARD, corner_radius=14, cursor="hand2")
+    prof_card.pack(side="right", padx=(0, 10))
+
+    prof_var = tk.StringVar(value=f"Profile: {cur_prof_name}")
+    prof_txt_lbl = ctk.CTkLabel(
+        prof_card, textvariable=prof_var, text_color=T.FG, font=font(13)
+    )
+    prof_txt_lbl.pack(side="left", padx=(14, 4), pady=8)
+
+    prof_arrow = ctk.CTkLabel(
+        prof_card, text="▾", text_color=T.SUB, font=font(14, "bold"), width=12
+    )
+    prof_arrow.pack(side="left", padx=(0, 12), pady=8)
+
+    def _prof_hover(on):
+        active = on or prof_menu_state["win"] is not None
+        prof_txt_lbl.configure(text_color=T.THEME_ACCENT if active else T.FG)
+        prof_arrow.configure(text_color=T.THEME_ACCENT if active else T.SUB)
+
+    for _pw in (prof_card, prof_txt_lbl, prof_arrow):
+        _pw.bind("<Button-1>", lambda _e: open_profile_menu())
+        _pw.bind("<Enter>", lambda _e: _prof_hover(True))
+        _pw.bind("<Leave>", lambda _e: _prof_hover(False))
+        Tooltip(_pw, f"Current profile: {cur_prof_name} (click to switch)")
 
     view_area = ctk.CTkFrame(root, fg_color="transparent")
     view_area.pack(fill="both", expand=True, padx=22, pady=6)
@@ -1214,22 +1598,38 @@ def gui():
         
     def global_click(event):
         w = _pick.get("win")
-        if w is None:
-            return
-        try:
-            wx, wy = w.winfo_rootx(), w.winfo_rooty()
-            ww, wh = w.winfo_width(), w.winfo_height()
-            vx, vy = ver_field.winfo_rootx(), ver_field.winfo_rooty()
-            vw, vh = ver_field.winfo_width(), ver_field.winfo_height()
-            mx, my = event.x_root, event.y_root
-            
-            in_w = (wx <= mx <= wx + ww) and (wy <= my <= wy + wh)
-            in_v = (vx <= mx <= vx + vw) and (vy <= my <= vy + vh)
-            
-            if not in_w and not in_v:
-                close_picker()
-        except Exception:
-            pass
+        if w is not None:
+            try:
+                wx, wy = w.winfo_rootx(), w.winfo_rooty()
+                ww, wh = w.winfo_width(), w.winfo_height()
+                vx, vy = ver_field.winfo_rootx(), ver_field.winfo_rooty()
+                vw, vh = ver_field.winfo_width(), ver_field.winfo_height()
+                mx, my = event.x_root, event.y_root
+                
+                in_w = (wx <= mx <= wx + ww) and (wy <= my <= wy + wh)
+                in_v = (vx <= mx <= vx + vw) and (vy <= my <= vy + vh)
+                
+                if not in_w and not in_v:
+                    close_picker()
+            except Exception:
+                pass
+
+        pw = prof_menu_state.get("win")
+        if pw is not None:
+            try:
+                px, py = pw.winfo_rootx(), pw.winfo_rooty()
+                pww, pwh = pw.winfo_width(), pw.winfo_height()
+                cx, cy = prof_card.winfo_rootx(), prof_card.winfo_rooty()
+                cw, ch = prof_card.winfo_width(), prof_card.winfo_height()
+                mx, my = event.x_root, event.y_root
+
+                in_pw = (px <= mx <= px + pww) and (py <= my <= py + pwh)
+                in_pc = (cx <= mx <= cx + cw) and (cy <= my <= cy + ch)
+
+                if not in_pw and not in_pc:
+                    close_profile_menu()
+            except Exception:
+                pass
 
     root.bind_all("<Button-1>", global_click, add="+")
 
