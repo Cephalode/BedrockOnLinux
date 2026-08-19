@@ -909,12 +909,12 @@ def gui():
             prof_txt_lbl.configure(text_color=T.FG)
 
     def _profile_switch_blocked(parent=root):
-        if ui.get("launch_active") or _mc_running():
+        if ui.get("launch_active"):
             messagebox.showwarning(
                 "Minecraft is running",
                 "Close Minecraft first and wait for the game to exit before switching "
-                "profiles.\n\nTo use multiple profiles simultaneously, open them in a "
-                "new window using the (⧉) button.",
+                "profiles in this window.\n\nTo use multiple profiles simultaneously, "
+                "open them in a new window using the (⧉) button.",
                 parent=parent,
             )
             return True
@@ -937,7 +937,7 @@ def gui():
 
     def _prompt_create_profile():
         close_profile_menu()
-        if ui.get("busy") and not (ui.get("launch_active") or _mc_running()):
+        if ui.get("busy") and not ui.get("launch_active"):
             messagebox.showwarning(
                 "Operation in progress",
                 "Wait for the current preparation task to finish before creating a profile.",
@@ -960,7 +960,7 @@ def gui():
                     write_profile_shortcut(name, profile_dir=profile_dir)
                 except Exception:
                     pass
-            if ui.get("launch_active") or _mc_running():
+            if ui.get("launch_active"):
                 msg = (
                     f"Profile '{name}' was created successfully.\n\n"
                     "Minecraft is currently running in this profile, so the current launcher "
@@ -1042,10 +1042,10 @@ def gui():
                 r_right.pack(side="right", padx=8, pady=6)
 
                 def do_rename(name=p_name, is_act=is_p_active):
-                    if is_act and (ui.get("launch_active") or _mc_running() or ui.get("busy")):
+                    if is_act and (ui.get("launch_active") or ui.get("busy")):
                         messagebox.showwarning(
                             "Rename Profile",
-                            "Cannot rename the active profile while Minecraft or a task is running. Close Minecraft first.",
+                            "Cannot rename the active profile while Minecraft or a task is running in this window. Close Minecraft first.",
                             parent=d,
                         )
                         return
