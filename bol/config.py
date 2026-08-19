@@ -113,12 +113,10 @@ SELF_REPO = WINEGDK_PREBUILT_REPO
 XODUS_REPO = "xodus-gaming/xodus"
 XODUS_SOURCE_COMMIT = "4615749c6e02cc3b9acce2abbe9916fe8c376f9a"
 XODUS_REV = "4615749c6e02"
-# Integrity pin for the CI-built xodus-cli archive.
-# DEV PIN: this is a local build of the commit above, made on a developer
-# machine, so it will not match the archive build-xodus.yml produces (different
-# toolchain and paths). The workflow fails loudly on the mismatch and says to
-# re-pin; do that from the reviewed CI build before any release.
-XODUS_ARCHIVE_SHA256 = "6fa1c3e14edcc37225a02a614b93c0ca954b6313a9accd37262d7117904d787e"
+# Integrity pin for the CI-built xodus-cli archive, produced by the reviewed
+# build-xodus.yml run of this branch. The workflow refuses any archive that
+# does not reproduce these bytes.
+XODUS_ARCHIVE_SHA256 = "0cd9bd42d80ccf588a1f974113a7579737b041b0b7bd8e87eb8dc5d37d00c1f6"
 XODUS_DIR = DATA / "xodus"
 XODUS_BIN = XODUS_DIR / "xodus-cli"
 # Xodus keeps its tokens in a file keyring (built with --features
