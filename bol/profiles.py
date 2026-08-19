@@ -152,31 +152,30 @@ def create_profile(name, base_data=None):
         except OSError:
             pass
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        if profile_dir.exists():
-            metadata_path = _metadata_path(profile_dir)
-            if metadata_path.exists():
-                try:
-                    existing = json.loads(
-                        metadata_path.read_text(encoding="utf-8")
-                    )
-                    if existing.get("name") == display:
-                        return profile_dir
-                    existing_name = existing.get("name", "another profile")
-                except Exception:
-                    existing_name = "another profile"
-                raise BolError(
-                    f"Profile identifier '{slug}' is already used by "
-                    f"'{existing_name}'."
-                )
-            raise BolError(
-                f"A profile named '{display}' already exists."
-            )
-
         profile_dir.mkdir(mode=0o700, exist_ok=True)
         try:
             os.chmod(profile_dir, 0o700)
         except OSError:
             pass
+
+        # Re-creating an existing profile repairs it: an interrupted creation
+        # leaves a directory with no metadata, and a profile made before a
+        # release that shares one more directory still misses that link.
+        metadata_path = _metadata_path(profile_dir)
+        if metadata_path.exists():
+            try:
+                existing = json.loads(
+                    metadata_path.read_text(encoding="utf-8")
+                )
+            except Exception as exc:
+                raise BolError(
+                    f"Profile metadata is unreadable: {metadata_path}"
+                ) from exc
+            if existing.get("name") != display:
+                raise BolError(
+                    f"Profile identifier '{slug}' is already used by "
+                    f"'{existing.get('name', 'another profile')}'."
+                )
 
         for directory in _SHARED_DIRS:
             _ensure_shared_link(profile_dir, base, directory)
@@ -192,7 +191,7 @@ def create_profile(name, base_data=None):
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(staged, 0o600)
-            os.replace(staged, _metadata_path(profile_dir))
+            os.replace(staged, metadata_path)
         finally:
             staged.unlink(missing_ok=True)
         return profile_dir

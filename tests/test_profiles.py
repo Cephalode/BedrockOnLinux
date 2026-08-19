@@ -68,6 +68,28 @@ def test_profile_creation_is_idempotent(tmp_path):
     assert json.loads((first / "profile.json").read_text())["name"] == "Deck User"
 
 
+def test_profile_creation_restores_a_missing_shared_link(tmp_path):
+    # A profile made before a release that shares one more directory only gets
+    # that link back because re-creating an existing profile repairs it.
+    profile = create_profile("Deck User", tmp_path)
+    (profile / "games").unlink()
+    create_profile("Deck User", tmp_path)
+    assert (profile / "games").is_symlink()
+    assert (profile / "games").resolve() == (tmp_path / "games").resolve()
+
+
+def test_profile_creation_completes_an_interrupted_creation(tmp_path):
+    # Metadata is written last, so a crash mid-creation leaves a directory the
+    # listing cannot see. Re-creating it must finish the job, not claim the
+    # name is taken and strand the user with an invisible profile.
+    profile = create_profile("Deck User", tmp_path)
+    (profile / "profile.json").unlink()
+    assert list_profiles(tmp_path) == []
+
+    assert create_profile("Deck User", tmp_path) == profile
+    assert [item["name"] for item in list_profiles(tmp_path)] == ["Deck User"]
+
+
 def test_distinct_profiles_can_create_shared_targets_concurrently(
         tmp_path, monkeypatch):
     base = tmp_path / "data"
