@@ -38,6 +38,12 @@ CONTEXT_CALLBACK_PATCH = (
 XSTORE_PATCH = (
     DELTA / "0006-xgameruntime-stop-faking-xstore-answers.patch"
 )
+MAPPED_FD_PATCH = (
+    DELTA / "0007-ntdll-load-main-image-from-a-mapped-fd.patch"
+)
+PATH_MAP_PATCH = (
+    DELTA / "0008-ntdll-accept-a-path-in-the-image-map.patch"
+)
 SOURCE_SUMS = DELTA / "SOURCE-SHA256SUMS"
 CHANGED_FILES = {
     "dlls/combase/combase.c",
@@ -45,6 +51,7 @@ CHANGED_FILES = {
     "dlls/combase/dcom.idl",
     "dlls/combase/marshal.c",
     "dlls/combase/stubmanager.c",
+    "dlls/ntdll/unix/loader.c",
     "dlls/ole32/dcom.idl",
     "dlls/windows.storage.applicationdata/Makefile.in",
     "dlls/windows.storage.applicationdata/main.c",
@@ -126,6 +133,14 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             self._constant("VENDORED_XSTORE_PATCH_SHA256"),
         )
         self.assertEqual(
+            hashlib.sha256(MAPPED_FD_PATCH.read_bytes()).hexdigest(),
+            self._constant("VENDORED_MAPPED_FD_PATCH_SHA256"),
+        )
+        self.assertEqual(
+            hashlib.sha256(PATH_MAP_PATCH.read_bytes()).hexdigest(),
+            self._constant("VENDORED_PATH_MAP_PATCH_SHA256"),
+        )
+        self.assertEqual(
             hashlib.sha256(SOURCE_SUMS.read_bytes()).hexdigest(),
             self._constant("SOURCE_SHA256SUMS_SHA256"),
         )
@@ -145,11 +160,13 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
         achievements = ACHIEVEMENTS_PATCH.read_text()
         context_callback = CONTEXT_CALLBACK_PATCH.read_text()
         xstore = XSTORE_PATCH.read_text()
+        mapped_fd = MAPPED_FD_PATCH.read_text() + PATH_MAP_PATCH.read_text()
         self.assertTrue(text.startswith(f"From {WINEGDK_SOURCE_COMMIT} "))
         changed = {
             left for left, right in re.findall(
                 r"^diff --git a/(\S+) b/(\S+)$",
-                text + followup + achievements + context_callback + xstore,
+                text + followup + achievements + context_callback + xstore
+                + mapped_fd,
                 re.MULTILINE,
             )
             if left == right
@@ -564,6 +581,96 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
                 self.assertIn(f"! -e {path}", text)
                 self.assertIn(f"! -L {path}", text)
 
+    def test_the_container_builder_applies_every_vendored_patch(self):
+        """The container script is what CI actually runs.
+
+        Wiring a patch into the Bullseye script alone left CI exporting the
+        source without it, and the build died on the source-hash check with
+        nothing pointing at the omission.
+        """
+        text = CONTAINER_SCRIPT.read_text()
+        # 0001 and the r12 base are already inside the commit the container
+        # exports; every follow-up has to be applied on top of it by name.
+        for path in (
+            FOLLOWUP_PATCH,
+            ACHIEVEMENTS_PATCH,
+            CONTEXT_CALLBACK_PATCH,
+            CLIENT_SURFACE_PATCH,
+            XSTORE_PATCH,
+            MAPPED_FD_PATCH,
+            PATH_MAP_PATCH,
+        ):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.subTest(patch=path.name):
+                self.assertIn(path.name, text, f"{path.name} is never applied")
+                self.assertIn(digest, text, f"{path.name} is not pinned")
+
+    def test_no_workflow_quotes_a_container_script_containing_an_apostrophe(self):
+        """A quoted container script must not contain an apostrophe.
+
+        Workflows hand a whole shell script to `docker run` as one
+        single-quoted argument. An apostrophe inside it -- in a comment, even
+        -- closes that argument, so the container runs a truncated script and
+        the remainder is executed by the runner host instead. That is how an
+        `apt-get install` ended up on the runner, failing with "are you root?"
+        while the container had happily run everything before it.
+        """
+        opener = re.compile(r"^(\s*)bash .*-c '$")
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            lines = workflow.read_text().splitlines()
+            inside = None
+            for number, line in enumerate(lines, start=1):
+                if inside is None:
+                    match = opener.match(line)
+                    if match:
+                        inside = match.group(1)
+                    continue
+                if line.strip() == "'" :
+                    inside = None
+                    continue
+                with self.subTest(workflow=workflow.name, line=number):
+                    self.assertNotIn(
+                        "'", line,
+                        f"{workflow.name}:{number} would end the quoted "
+                        "script passed to the container")
+
+    def test_no_build_script_line_ends_in_a_doubled_backslash(self):
+        """A doubled continuation silently truncates a command's arguments.
+
+        Generating one of these turned `verify_sha256 \\` into a call with a
+        literal backslash and no arguments, which `bash -n` accepts happily --
+        the package job died on "$2: unbound variable" instead.
+        """
+        for script in (SCRIPT, CONTAINER_SCRIPT, PACKAGER):
+            for number, line in enumerate(
+                    script.read_text().splitlines(), start=1):
+                if line.rstrip().endswith("\\\\"):
+                    self.fail(f"{script.name}:{number} ends in '\\\\'")
+
+    def test_every_packager_pin_matches_the_file_it_names(self):
+        """Each verify_sha256 pin must be the digest of its own file.
+
+        Re-pinning one delta with a shell substitution once overwrote the
+        r12 README's pin with the native5 README's digest. Nothing caught it
+        until a CI package job refused the staged tree.
+        """
+        text = PACKAGER.read_text()
+        roots = {"r12_root": ROOT / "third_party/winegdk-r12",
+                 "native_root": DELTA}
+        pins = re.findall(
+            r'verify_sha256 "\$(\w+)/([^"]+)" \\\n\s*"([0-9a-f]{64})"',
+            text)
+        self.assertTrue(pins, "no verify_sha256 pins found")
+        for variable, relative, digest in pins:
+            root = roots.get(variable)
+            if root is None:
+                continue
+            path = root / relative
+            with self.subTest(file=f"{variable}/{relative}"):
+                self.assertTrue(path.is_file(), f"{path} is pinned but absent")
+                self.assertEqual(
+                    hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
     def test_packager_pins_current_native_source_provenance(self):
         text = PACKAGER.read_text()
         for path in (
@@ -575,6 +682,8 @@ class WineGdkSourceDeltaTests(unittest.TestCase):
             CONTEXT_CALLBACK_PATCH,
             CLIENT_SURFACE_PATCH,
             XSTORE_PATCH,
+            MAPPED_FD_PATCH,
+            PATH_MAP_PATCH,
         ):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             self.assertIn(digest, text, path.name)

@@ -10,9 +10,19 @@
 # Local test build: scripts/build-flatpak.sh (swaps the app source for the
 # working tree); add --release to build this manifest as published.
 app-id: io.github.wyze3306.BedrockOnLinux
-runtime: org.freedesktop.Platform
-runtime-version: '25.08'
-sdk: org.freedesktop.Sdk
+# The GNOME runtime is used for one reason: it ships libwebkit2gtk-4.1, and
+# org.freedesktop.Platform ships no WebKitGTK at all. Minecraft is downloaded
+# from the Microsoft Store, xodus-cli opens that sign-in in a WebKitGTK
+# webview, and no Flathub extension provides one — so on the freedesktop
+# runtime the Flatpak could not install the game.
+#
+# It is a smaller change than it looks. GNOME's runtime is built on the same
+# freedesktop base and declares the same org.freedesktop.Platform.GL extension
+# point, so the GPU path is unchanged; and this manifest builds its own Tcl, Tk
+# and Python, so the launcher's interface never depended on the runtime.
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
 command: bedrock-on-linux
 
 # Tcl/Tk installs several shared libraries read-only. Disabling the optional

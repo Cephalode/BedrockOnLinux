@@ -20,6 +20,7 @@ from .auth import (
     xbl_preauth_diagnostic,
     xbl_preauth_error_message,
 )
+from . import xodus
 from .config import CONTENT, DATA, HOME, LOGS, WINEGDK_BUILD_REV
 from .deps import ensure_login_deps
 from .dgc import dgc_warning_message, intel_dgpus_on_legacy_driver
@@ -37,6 +38,7 @@ from .gpu_safety import (
 )
 from .log import BolError, die, info, ok, warn
 from .ntsync import inproc_sync_problem
+from .perfcheck import performance_problems
 from .prefix import (
     active_prefix,
     boot_prefix,
@@ -91,14 +93,49 @@ def _prepare_graphics_engine():
     return variant
 
 
+def _vkd3d_config_options(env):
+    """The vkd3d options currently declared, in their declared order."""
+    return [item.strip() for item in
+            env.get("VKD3D_CONFIG", "").replace(";", ",").split(",")
+            if item.strip()]
+
+
 def _require_vkd3d_config(env, option):
     """Add one vkd3d option without discarding user-provided options."""
-    options = [item.strip() for item in
-               env.get("VKD3D_CONFIG", "").replace(";", ",").split(",")
-               if item.strip()]
+    options = _vkd3d_config_options(env)
     if option not in options:
         options.append(option)
     env["VKD3D_CONFIG"] = ",".join(options)
+
+
+def _forbid_vkd3d_config(env, option):
+    """Drop one vkd3d option without discarding user-provided options."""
+    options = [item for item in _vkd3d_config_options(env) if item != option]
+    if options:
+        env["VKD3D_CONFIG"] = ",".join(options)
+    else:
+        env.pop("VKD3D_CONFIG", None)
+
+
+def _configure_ray_tracing(env, settings):
+    """Hand DXR to Minecraft, or hide it, per the Settings switch.
+
+    vkd3d-proton reports the ray tracing tier by itself once the driver
+    exposes the Vulkan ray tracing extensions, so "on" is not something to
+    declare: it is making sure nothing declares the opposite, an inherited
+    ``VKD3D_CONFIG=nodxr`` in particular. Only "off" needs a positive
+    statement, which is why the vkd3d option exists in that direction alone.
+
+    Turning it off hides Minecraft's *Ray Traced* graphics mode. It leaves
+    *Vibrant Visuals* alone: that pipeline is deferred rendering, not ray
+    tracing, and runs on GPUs that have no DXR at all.
+    """
+    if settings.get("ray_tracing", True):
+        _forbid_vkd3d_config(env, "nodxr")
+        return
+    _require_vkd3d_config(env, "nodxr")
+    info("Ray tracing is off in Settings — Minecraft's Ray Traced graphics "
+         "mode stays unavailable this launch.")
 
 
 def _steam_input_available(environ=None):
@@ -183,6 +220,23 @@ def _warn_if_inproc_sync_unavailable(settings, environ=None):
         proton_path(),
         environ=custom_env_map(settings.get("custom_env") or ""))
     if problem:
+        warn(problem)
+
+
+def _warn_if_performance_degraded(environ=None):
+    """Pre-launch heads-up for the ordinary causes of "the game lags".
+
+    Exhausted memory, a full data directory, windowed vsync on a compositing
+    desktop and an extreme render distance all cost frame rate without
+    leaving anything in a Wine or vkd3d log, so they get reported as engine
+    or GPU faults. Naming them here costs two /proc reads, one statvfs and a
+    parse of Minecraft's own options.txt — no Wine process, no GPU.
+    Advisory, not a block; BOL_SKIP_PERF_CHECK=1 silences it.
+    """
+    source = os.environ if environ is None else environ
+    if source.get("BOL_SKIP_PERF_CHECK") == "1":
+        return
+    for problem in performance_problems(active_prefix(), DATA, environ=source):
         warn(problem)
 
 
@@ -310,6 +364,9 @@ def _launch_once(lock_fds=(), on_started=None):
     # Same idea for the synchronization fast path: name the cause of the
     # "runs on one thread" stutter before the game starts, not after.
     _warn_if_inproc_sync_unavailable(s)
+    # And for the causes that are not the engine at all: no memory left, no
+    # disk left, windowed vsync, a render distance past the main thread.
+    _warn_if_performance_degraded()
     # Only completed, idle wrappers can retire a current-boot marker.
     retire_idle_current_boot_marker()
     require_safe_graphics_session()
@@ -370,10 +427,16 @@ def _launch_once(lock_fds=(), on_started=None):
                 + " Minecraft starts in " + _OFFLINE_MODE_NOTICE
             )
     exe = str(CONTENT / "Minecraft.Windows.exe")
-    bump_stack_reserve(Path(exe))
+    # A Microsoft Store package keeps the executable encrypted at rest, so
+    # there is no PE header on disk to edit and no image for Wine to open. Both
+    # are handled after Xodus decrypts it into anonymous memory, below.
+    encrypted_exe = xodus.exe_is_encrypted(Path(exe))
+    if not encrypted_exe:
+        bump_stack_reserve(Path(exe))
     cmd, env = proton_umu_cmd(exe)
     # Required by the menu's indirect root-CBV updates (#27/#29/#30).
     _require_vkd3d_config(env, "force_raw_va_cbv")
+    _configure_ray_tracing(env, s)
     diag = (s.get("diagnostics", False) or os.environ.get("BOL_DIAG") == "1")
     xlog = os.environ.get("BOL_XCURL_LOG")
     if xlog == "1" or (xlog is None and diag):
@@ -468,6 +531,10 @@ def _launch_once(lock_fds=(), on_started=None):
         elif wl:
             warn("Wayland session without X DISPLAY — install XWayland (or set "
                  "BOL_INPUT=wayland to use winewayland).")
+    if encrypted_exe:
+        # Must wrap before gamescope: gamescope has to stay outermost so it
+        # owns the compositor the game renders into.
+        cmd = xodus.wrap_encrypted_launch(cmd, Path(gd), DATA / "run")
     if use_gamescope:
         if gs_opt and not env_flag(gs_opt):
             gs_argv = ["gamescope"] + shlex.split(gs_opt)

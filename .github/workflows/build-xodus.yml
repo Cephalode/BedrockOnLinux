@@ -40,8 +40,10 @@ permissions:
 
 env:
   # Pinned so the artifact has a stable SHA-256 to pin in bol/config.py. Bump
-  # deliberately; a toolchain change reshuffles the binary.
-  RUST_TOOLCHAIN: "1.90.0"
+  # deliberately; a toolchain change reshuffles the binary. This is the version
+  # the branch was validated against locally, and the floor is real: the xodus
+  # commit calls Duration::from_mins, which 1.90 still gated as unstable.
+  RUST_TOOLCHAIN: "1.94.1"
 
 jobs:
   build:
@@ -66,13 +68,28 @@ jobs:
             bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               bash scripts/pin-apt-snapshot.sh trixie
+              # Let the snapshot outrank what the image already carries. The
+              # image ships packages newer than 20260701, and
+              # libwebkit2gtk-4.1-dev reaches liblzma-dev, which requires
+              # liblzma5 at exactly the snapshot version -- so without this the
+              # install cannot be resolved at all. A priority above 1000 is the
+              # only setting that makes apt pick an older version: both
+              # --allow-downgrades and dist-upgrade merely permit a downgrade,
+              # neither asks for one. It stays local to this workflow because
+              # the snapshot script is shared with the engine builds, whose
+              # archive SHA-256 is pinned against what it produces today.
+              printf "Package: *\nPin: origin snapshot.debian.org\nPin-Priority: 1001\n" \
+                > /etc/apt/preferences.d/99-pinned-snapshot
               apt-get update
               # protoc: the xodus crate runs prost-build.
               # libwebkit2gtk-4.1-dev: wry/tao, linked unconditionally for the
               #   login webview.
               # libssl-dev: openssl-sys, pulled in through
               #   dbus-secret-service-keyring-store even under key-chain-file.
-              apt-get install -y --no-install-recommends \
+              # No apostrophes anywhere in this script: it is a single quoted
+              # argument to docker run, and one would end it here and hand the
+              # rest to the host shell.
+              apt-get install -y --no-install-recommends --allow-downgrades \
                 build-essential pkg-config git ca-certificates curl \
                 protobuf-compiler libwebkit2gtk-4.1-dev libssl-dev \
                 tar gzip coreutils

@@ -72,7 +72,7 @@ Version: ${VER}
 Section: games
 Priority: optional
 Architecture: amd64
-Depends: python3 (>= 3.9), python3-tk, python3-cryptography, tar, zstd, xdg-utils, x11-xserver-utils, ca-certificates, curl | wget
+Depends: python3 (>= 3.9), python3-tk, python3-cryptography, tar, zstd, xdg-utils, x11-xserver-utils, ca-certificates, curl | wget, libwebkit2gtk-4.1-0
 Recommends: mesa-vulkan-drivers | nvidia-driver
 Maintainer: BedrockOnLinux contributors <noreply@bedrockonlinux.invalid>
 Homepage: https://github.com/Wyze3306/BedrockOnLinux

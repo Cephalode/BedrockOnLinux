@@ -65,7 +65,6 @@ UMU_ARCHIVE_SHA256 = \
     "3f8fdc033f547afdb3408ea48ad07194769405148dcfa2b2f945b7fb368a33bb"
 UMU_RUN_SHA256 = \
     "577181dbff2eccdaa78b411c0fd1aa7fde574028449c3e0e99f508536a76870e"
-GAME_ARCHIVE_REPO = "bubbles-wow/mcbe-gdk-unpack-archive"
 MINGW_CURL = "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-curl-8.17.0-1-any.pkg.tar.zst"
 CACERT_URL = "https://curl.se/ca/cacert.pem"
 
@@ -92,13 +91,60 @@ WINEGDK_OUT = PROTON_DIR / "GDK-Proton-xuser"
 # match the reviewed pins below.
 WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
-WINEGDK_SOURCE_MANIFEST_SHA256 = "642486a98b1985395e0a704bca76fbfa2124ee1de97d1d8c671213790b9bbd29"
-WINEGDK_BUILD_REV = "wow64-archs-native15"
-WINEGDK_ARCHIVE_SHA256 = "a75d697a61d79ffd39005e198fe9d10d401562bfc4d27cbdb9ca8bfbf67ec4ca"
+WINEGDK_SOURCE_MANIFEST_SHA256 = "0feb01ca058086eccf4f4a0e6895f541547ae89aa0d2ab86f08291224de5ed46"
+WINEGDK_BUILD_REV = "wow64-archs-native16"
+# native16 carries the ntdll loader patches the Microsoft Store packages need:
+# 0007 maps the main image from a descriptor, 0008 from a path so it survives
+# the Steam Linux Runtime container. Their game executable stays encrypted on
+# disk, so an engine without them cannot start the game -- which is why an
+# unset pin here makes _verify_engine_archive() refuse every candidate rather
+# than fall back. Produced by the reviewed build-engine.yml run of this branch,
+# which refuses any archive that does not reproduce these bytes.
+WINEGDK_ARCHIVE_SHA256 = "55f29ad109dbb28e5b4f1fd3b527ff886b75bbd4169f89ac6c7bcdbe503c4ec5"
 # Build workflows verify this deterministic intermediate before reusing it.
-WINEGDK_PREFIX_SHA256 = "c5760c6275d32fc3c9a1dc31194fe14fb6966a81a51b2461e81970cd74331c81"
+WINEGDK_PREFIX_SHA256 = "eeb5079fa9736f2d5b71d95d72d64fd56fe51b5be7df220d0a535d2897165dde"
 
 SELF_REPO = WINEGDK_PREBUILT_REPO
+
+# Minecraft is acquired through Xodus (GPL-3.0), which signs in to the user's
+# own Microsoft account, obtains the title license and streams the MSIXVC
+# package from the official Xbox CDN. It replaced a third-party repository that
+# redistributed a DRM-stripped copy of the game. See third_party/xodus/README.md.
+XODUS_REPO = "xodus-gaming/xodus"
+XODUS_SOURCE_COMMIT = "4615749c6e02cc3b9acce2abbe9916fe8c376f9a"
+XODUS_REV = "4615749c6e02"
+# Integrity pin for the CI-built xodus-cli archive, produced by the reviewed
+# build-xodus.yml run of this branch. The workflow refuses any archive that
+# does not reproduce these bytes.
+XODUS_ARCHIVE_SHA256 = "0cd9bd42d80ccf588a1f974113a7579737b041b0b7bd8e87eb8dc5d37d00c1f6"
+XODUS_DIR = DATA / "xodus"
+XODUS_BIN = XODUS_DIR / "xodus-cli"
+# Xodus keeps its tokens in a file keyring (built with --features
+# key-chain-file) instead of a D-Bus secret service, which does not exist in a
+# Game Mode session or inside a Flatpak sandbox.
+XODUS_KEYRING = HOME / ".xodus-keyring.ron"
+
+# GetBasePackage only ever answers with the current build, but Microsoft's CDN
+# keeps the older ones reachable, and MinecraftBedrockArchiver/GdkLinks indexes
+# where they live. That index holds no game data: every URL points at
+# assets*.xboxlive.com, and Xodus still reads the package's own content id from
+# the downloaded header and asks Microsoft for that licence, so the account
+# still has to own Minecraft. It only restores the choice of build.
+GDK_LINKS_REPO = "MinecraftBedrockArchiver/GdkLinks"
+GDK_LINKS_URL = ("https://raw.githubusercontent.com/"
+                 "MinecraftBedrockArchiver/GdkLinks/master/urls.json")
+# The CDN serves these over plain HTTP only. The payload is AES-XTS encrypted
+# and worthless without the licence, so this costs no confidentiality; the
+# content id below is checked against every indexed URL so a bad or tampered
+# index cannot point the downloader at a different product.
+MC_PRODUCTS = (
+    {"id": "release", "product": "9NBLGGH2JHXJ", "channel": "release",
+     "content_id": "7792d9ce-355a-493c-afbd-768f4a77c3b0",
+     "name": "Minecraft for Windows", "beta": False},
+    {"id": "preview", "product": "9P5X4QVLC2XR", "channel": "preview",
+     "content_id": "98bd2335-9b01-4e4c-bd05-ccc01614078b",
+     "name": "Minecraft Preview for Windows", "beta": True},
+)
 
 
 def _legacy_install_location_file() -> Path:

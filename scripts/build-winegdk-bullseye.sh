@@ -35,8 +35,12 @@ readonly VENDORED_CLIENT_SURFACE_PATCH="$PROJECT_ROOT/third_party/winegdk-native
 readonly VENDORED_CLIENT_SURFACE_PATCH_SHA256="464da914667bd9c683fb79bc7c2a4477546a73060c66f29809cfa93783cbc1c8"
 readonly VENDORED_XSTORE_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0006-xgameruntime-stop-faking-xstore-answers.patch"
 readonly VENDORED_XSTORE_PATCH_SHA256="0ae38358531a81af9b20a997d73f07b383db68afcd14cf89107dd9442f101fd1"
+readonly VENDORED_MAPPED_FD_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0007-ntdll-load-main-image-from-a-mapped-fd.patch"
+readonly VENDORED_MAPPED_FD_PATCH_SHA256="0ebb25f67183b0bb052b9cbb76f6a0aca02be89fc7be448ff94702b178e9ffc6"
+readonly VENDORED_PATH_MAP_PATCH="$PROJECT_ROOT/third_party/winegdk-native5/0008-ntdll-accept-a-path-in-the-image-map.patch"
+readonly VENDORED_PATH_MAP_PATCH_SHA256="7510e707abf9869d40b855754d58c025e1bd98cec455bef3dbec79e9d14461a3"
 readonly SOURCE_SHA256SUMS="$PROJECT_ROOT/third_party/winegdk-native5/SOURCE-SHA256SUMS"
-readonly SOURCE_SHA256SUMS_SHA256="642486a98b1985395e0a704bca76fbfa2124ee1de97d1d8c671213790b9bbd29"
+readonly SOURCE_SHA256SUMS_SHA256="0feb01ca058086eccf4f4a0e6895f541547ae89aa0d2ab86f08291224de5ed46"
 readonly NTSYNC_UAPI_HEADER="$PROJECT_ROOT/third_party/linux-uapi/ntsync.h"
 readonly NTSYNC_UAPI_HEADER_SHA256="006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262"
 readonly GLIBC_CEILING="2.31"
@@ -518,6 +522,16 @@ fi
 [[ "$(sha256sum "$VENDORED_XSTORE_PATCH" | cut -d' ' -f1)" == \
     "$VENDORED_XSTORE_PATCH_SHA256" ]] ||
   die "vendored XStore patch SHA-256 mismatch"
+[[ -f "$VENDORED_MAPPED_FD_PATCH" ]] ||
+  die "vendored ntdll mapped-fd patch is missing"
+[[ "$(sha256sum "$VENDORED_MAPPED_FD_PATCH" | cut -d' ' -f1)" == \
+    "$VENDORED_MAPPED_FD_PATCH_SHA256" ]] ||
+  die "vendored ntdll mapped-fd patch SHA-256 mismatch"
+[[ -f "$VENDORED_PATH_MAP_PATCH" ]] ||
+  die "vendored ntdll image-map path patch is missing"
+[[ "$(sha256sum "$VENDORED_PATH_MAP_PATCH" | cut -d' ' -f1)" == \
+    "$VENDORED_PATH_MAP_PATCH_SHA256" ]] ||
+  die "vendored ntdll image-map path patch SHA-256 mismatch"
 [[ "$SOURCE_DATE_EPOCH" == "$EXPECTED_SOURCE_DATE_EPOCH" ]] ||
   die "WineGDK source timestamp changed: $SOURCE_DATE_EPOCH"
 
@@ -564,6 +578,8 @@ vendored_achievements_patch_sha256=$VENDORED_ACHIEVEMENTS_PATCH_SHA256
 vendored_context_callback_patch_sha256=$VENDORED_CONTEXT_CALLBACK_PATCH_SHA256
 vendored_client_surface_patch_sha256=$VENDORED_CLIENT_SURFACE_PATCH_SHA256
 vendored_xstore_patch_sha256=$VENDORED_XSTORE_PATCH_SHA256
+vendored_mapped_fd_patch_sha256=$VENDORED_MAPPED_FD_PATCH_SHA256
+vendored_path_map_patch_sha256=$VENDORED_PATH_MAP_PATCH_SHA256
 source_sha256sums_sha256=$SOURCE_SHA256SUMS_SHA256
 source_date_epoch=$SOURCE_DATE_EPOCH
 debian_suite=$DEBIAN_SUITE
@@ -621,6 +637,16 @@ git -C "$WORK_ROOT/source" apply --check "$VENDORED_XSTORE_PATCH" ||
   die "vendored XStore patch does not apply"
 git -C "$WORK_ROOT/source" apply "$VENDORED_XSTORE_PATCH" ||
   die "could not apply vendored XStore patch"
+printf '==> Applying the ntdll mapped-fd main-image loader\n'
+git -C "$WORK_ROOT/source" apply --check "$VENDORED_MAPPED_FD_PATCH" ||
+  die "vendored ntdll mapped-fd patch does not apply"
+git -C "$WORK_ROOT/source" apply "$VENDORED_MAPPED_FD_PATCH" ||
+  die "could not apply vendored ntdll mapped-fd patch"
+printf '==> Applying the ntdll image-map path support\n'
+git -C "$WORK_ROOT/source" apply --check "$VENDORED_PATH_MAP_PATCH" ||
+  die "vendored ntdll image-map path patch does not apply"
+git -C "$WORK_ROOT/source" apply "$VENDORED_PATH_MAP_PATCH" ||
+  die "could not apply vendored ntdll image-map path patch"
 [[ -f "$SOURCE_SHA256SUMS" ]] || die "WineGDK source hash manifest is missing"
 [[ "$(sha256sum "$SOURCE_SHA256SUMS" | cut -d' ' -f1)" == \
     "$SOURCE_SHA256SUMS_SHA256" ]] ||

@@ -37,7 +37,7 @@ from .relocation import (
 )
 from .content import _mojang_dir, import_content
 from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
-from .games import list_mc_versions
+from .games import list_editions, list_versions
 from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
@@ -515,6 +515,20 @@ class _ThemedMessageBox:
         ) == "Yes"
 
 
+_LOADING_VERSIONS = "Loading…"
+_NO_VERSIONS = "No build listed"
+
+
+def _build_label(build):
+    """Menu label for a catalogue entry.
+
+    A tick marks builds already on disk, because switching back to one of
+    those costs nothing while any other choice is a download.
+    """
+    return f"{build['version']}  ✓" if build.get("installed") \
+        else str(build["version"])
+
+
 def _create_play_icon(size=16, fg_color="white", bg_color="black"):
     import tkinter as tk
     fg = Theme.r(fg_color)
@@ -574,6 +588,55 @@ def _create_kill_icon(size=16, fg_color="white", bg_color="black"):
     img = tk.PhotoImage(width=size, height=size)
     img.put(data)
     return img
+
+
+def _gpu_incident_safety_instruction(ack_status):
+    """What must have been checked before one incident can be acknowledged."""
+    if ack_status.previous_boot_fault:
+        return ("Continue only after repairing/updating the graphics driver "
+                "and rebooting.")
+    return ("No fatal driver event was detected for this marker. Continue "
+            "only after checking why the previous session or machine "
+            "stopped.")
+
+
+def _offer_gpu_incident_acknowledgement(
+        messagebox, parent, ack_status, prefix="",
+        title="Acknowledge previous GPU incident"):
+    """Confirm and record one previous-boot GPU incident, where it is met.
+
+    The block is refused at PLAY, so that is where clearing it belongs: the
+    same confirmation used to live in Settings ▸ Tools only, which left the
+    failure dialog telling players to go and find it. Nothing about the
+    safety decision changes — the same eligibility is re-checked under the
+    launch lock by ``acknowledge_gpu_crash`` before anything is written, and
+    a current-boot marker or a live prefix is still refused.
+
+    The themed message box is owned by ``gui()``, so it is passed in rather
+    than looked up here.
+
+    Returns True only when the incident was actually acknowledged.
+    """
+    if not messagebox.askyesno(
+            title,
+            prefix + ack_status.message + "\n\n"
+            + _gpu_incident_safety_instruction(ack_status)
+            + " Acknowledge now?",
+            parent=parent):
+        return False
+    if acknowledge_gpu_crash():
+        messagebox.showinfo(
+            "GPU safety",
+            "The previous-boot incident was acknowledged. PLAY will still "
+            "run all current graphics safety checks.",
+            parent=parent,
+        )
+        return True
+    messagebox.showerror(
+        "GPU safety", gpu_crash_acknowledgement_status().message,
+        parent=parent)
+    return False
+
 
 def gui():
     if (os.environ.get("WAYLAND_DISPLAY")
@@ -817,7 +880,7 @@ def gui():
                 self.win = None
 
     na = NativeAuth()
-    ui = {"versions": [], "labels": [], "busy": False, "details": False,
+    ui = {"versions": [], "builds": [], "busy": False, "details": False,
           "launch_active": False, "changelog_active": False,
           "changelogs_loaded": False, "changelog_head": None,
           "settings_head": None,
@@ -1279,7 +1342,7 @@ def gui():
 
     status = ctk.CTkFrame(root, fg_color="transparent")
     status.pack(fill="x", padx=26, pady=(4, 0))
-    status_txt = tk.StringVar(value="Select a version to play.")
+    status_txt = tk.StringVar(value="Ready to play.")
     status_lbl = ctk.CTkLabel(status, textvariable=status_txt, text_color=T.SUB,
                                font=font(12), anchor="w")
     status_lbl.pack(fill="x")
@@ -1315,42 +1378,60 @@ def gui():
 
     vbox = ctk.CTkFrame(bar, fg_color="transparent")
     vbox.pack(side="left")
-    mc_var = tk.StringVar(value="")
+    # The Store serves one build per edition, so there is nothing to pick from
+    # a list: the choice is Minecraft or Minecraft Preview, and both fit in a
+    # two-segment toggle that is always visible.
+    edition_var = tk.StringVar(value="release")
+    version_var = tk.StringVar(value=_LOADING_VERSIONS)
+    edition_buttons = {}
+    _builds_ui = {"dialog": None, "pending": False}
 
-    _pick = {"win": None, "hover": False, "bind_id": None}
+    def current_edition():
+        return next((v for v in (ui.get("versions") or [])
+                     if v["id"] == edition_var.get()), None)
 
-    def close_picker():
-        bid = _pick.get("bind_id")
-        if bid:
-            root.unbind("<Configure>", bid)
-            _pick["bind_id"] = None
-            
-        try:
-            ver_arrow.configure(text="▾")
-            if not _pick.get("hover"):
-                ver_field.configure(fg_color=T.CARD_2)
-                ver_lbl.configure(text_color=T.FG)
-        except NameError:
-            pass
-        w = _pick["win"]
-        _pick["win"] = None
-        if w is not None:
-            try:
-                w.destroy()
-            except Exception:
-                pass
+    def selected_build():
+        """The catalogue entry the build menu names, or None while loading."""
+        label = version_var.get()
+        return next((b for b in (ui.get("builds") or [])
+                     if _build_label(b) == label), None)
 
-    def set_version(label):
-        mc_var.set(label or "")
+    def _edition_name(edition_id):
+        """Short display name, usable before the edition list has loaded."""
+        entry = next((v for v in (ui.get("versions") or [])
+                      if v["id"] == edition_id), None)
+        if entry:
+            return entry["name"].replace(" for Windows", "")
+        return "Minecraft Preview" if edition_id == "preview" else "Minecraft"
+
+    def select_edition(edition_id):
+        if edition_var.get() == edition_id:
+            return
+        edition_var.set(edition_id)
+        # Show the switch immediately and blank the build list, so the click
+        # is visibly taken even though the new list arrives a moment later --
+        # and so nothing persists a build belonging to the other edition.
+        ui["builds"] = []
+        _builds_ui["pending"] = False
+        close_build_list()
+        version_var.set(_LOADING_VERSIONS)
         _update_selected_chip()
-        close_picker()
+        # Pass the edition explicitly: the click decides, and re-reading it
+        # from settings here is what used to lose clicks.
+        threading.Thread(target=refresh_versions, args=(edition_id,),
+                         daemon=True).start()
+
+    def select_version(label=None):
+        if label is not None:
+            version_var.set(label)
+        close_build_list()
+        _update_selected_chip()
 
     def _sync_theme(w, is_beta=None):
         if w == acct_dot:
             return
         if is_beta is None:
-            lab = mc_var.get()
-            is_beta = "BETA" in lab if lab else False
+            is_beta = edition_var.get() == "preview"
             
         c_new = T.GOLD if is_beta else T.GREEN
         h_new = T.GOLD_HOV if is_beta else T.GREEN_HOV
@@ -1413,209 +1494,164 @@ def gui():
             _sync_theme(child, is_beta)
 
     def _update_selected_chip():
-        lab = mc_var.get()
-        if not lab:
-            selected_chip.configure(text="")
-            return
-        is_beta = "BETA" in lab
+        chosen = edition_var.get()
+        is_beta = chosen == "preview"
 
         s = load_settings()
         changed = False
         if s.get("ui_is_beta") != is_beta:
             s["ui_is_beta"] = is_beta
             changed = True
-            
-        cur_mc_ver = lab.split('  ')[0]
-        if s.get("mc_version") != cur_mc_ver:
-            s["mc_version"] = cur_mc_ver
+        if s.get("mc_edition") != chosen:
+            s["mc_edition"] = chosen
             changed = True
-            
+        build = selected_build()
+        if build and s.get("mc_version") != build["version"]:
+            s["mc_version"] = build["version"]
+            changed = True
+        # show_betas is no longer a setting of its own; it is what picking
+        # Preview means, and util.mc_releases() still reads it to choose which
+        # release notes to show.
+        if s.get("show_betas") != is_beta:
+            s["show_betas"] = is_beta
+            changed = True
         if changed:
             save_settings(s)
 
+        name = _edition_name(chosen)
+        shown = build["version"] if build else ""
         selected_chip.configure(
-            text=f"  {lab.split('  ')[0]}"
-                 f"{'  ·  BETA' if is_beta else ''}  ",
+            text=f"  {name}{'  ·  ' + shown if shown else ''}  ",
             text_color=T.GOLD if is_beta else T.GREEN,
             fg_color=T.GOLD_DIM if is_beta else T.GREEN_DIM)
-            
-        try:
-            active = _pick.get("hover") or _pick.get("win")
-            ver_lbl.configure(text_color=T.THEME_ACCENT if active else T.FG)
-            ver_arrow.configure(text_color=T.SUB)
-        except Exception:
-            pass
-            
+
         try:
             if hasattr(play_btn, "_tooltip"):
                 is_kill = "Kill" in play_btn._tooltip.text
                 play_btn._tooltip.text = (
-                    f"{'Kill' if is_kill else 'Play'} {cur_mc_ver}")
+                    f"{'Kill' if is_kill else 'Play'} {name}")
         except Exception:
             pass
 
         _sync_theme(root, is_beta)
-        
+        # After _sync_theme: it recolours theme-coloured widgets wholesale, and
+        # the selected segment carries a theme colour of its own.
+        _paint_edition_toggle()
+
         if ui.get("changelogs_loaded") and tab_game is not None and changelog_view.winfo_ismapped():
             from .util import mc_releases
             load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
 
-    def open_picker():
-        if _pick["win"] is not None:
-            close_picker()
+    # Edition on the left, build on the right. The old picker was a custom
+    # popup with a search box, a resizable window, a saved height and
+    # outside-click handling; the edition is two buttons and the build is a
+    # stock option menu, so none of that has to exist.
+    row = ctk.CTkFrame(vbox, fg_color="transparent")
+    row.pack(anchor="w")
+    ed_field = ctk.CTkFrame(row, fg_color=T.CARD_2, bg_color=T.CARD,
+                            corner_radius=12, height=52)
+    ed_field.pack(side="left")
+    ed_field.pack_propagate(False)
+
+    def _paint_edition_toggle():
+        chosen = edition_var.get()
+        for eid, button in edition_buttons.items():
+            on = eid == chosen
+            beta = eid == "preview"
+            button.configure(
+                fg_color=(T.GOLD_DIM if beta else T.GREEN_DIM)
+                if on else "transparent",
+                hover_color=T.CARD_3,
+                text_color=(T.GOLD if beta else T.GREEN) if on else T.SUB)
+
+    for _eid, _text in (("release", "Minecraft"), ("preview", "Preview")):
+        _button = mkbtn(ed_field, _text,
+                        (lambda e=_eid: select_edition(e)), kind="flat",
+                        width=106, height=40, font=font(14, "bold"),
+                        corner_radius=9)
+        _button.pack(side="left", padx=(6, 0) if _eid == "release" else (2, 6),
+                     pady=6)
+        edition_buttons[_eid] = _button
+    Tooltip(ed_field, "Minecraft, or the Preview build")
+    _paint_edition_toggle()
+
+    # The build list lives inside the launcher window rather than in a menu
+    # the window manager owns. A CTkOptionMenu posts a Tk menu as its own
+    # top-level window, and here that window could not be clicked reliably --
+    # the click opened it, and then nothing. Placing the list in root sidesteps
+    # stacking and grabs entirely, and it still costs a fraction of the old
+    # picker: no search box, no resizing, no remembered height.
+    build_field = ctk.CTkFrame(row, fg_color=T.CARD_2, bg_color=T.CARD,
+                               corner_radius=12, width=168, height=52)
+    build_field.pack(side="left", padx=(10, 0))
+    build_field.pack_propagate(False)
+    build_label = ctk.CTkLabel(build_field, textvariable=version_var,
+                               text_color=T.FG, font=font(14), anchor="w")
+    build_label.pack(side="left", fill="x", expand=True, padx=(14, 0))
+    build_arrow = ctk.CTkLabel(build_field, text="▾", text_color=T.SUB,
+                               font=font(15, "bold"))
+    build_arrow.pack(side="right", padx=(0, 12))
+    Tooltip(build_field, "Which build to play")
+
+    def open_build_list(_event=None):
+        """Choose a build from a small dialog.
+
+        Not a dropdown: a CTkOptionMenu posts a Tk menu that the window manager
+        owns, and here that menu opened but could not be clicked -- which is
+        why the old picker rolled its own. A dialog with a scrollable list is
+        the same shape as the Settings panes, which already work, and it needs
+        no search box, no resizing and no remembered height.
+        """
+        if _builds_ui["dialog"] is not None:
             return
-        labels = ui.get("labels") or []
-        if not labels:
+        builds = ui.get("builds") or []
+        if not builds:
+            # The list is still being fetched. Remember the click instead of
+            # dropping it: a click that does nothing at all is why this felt
+            # like it needed several tries.
+            _builds_ui["pending"] = True
             return
-        # winfo_* returns physical (already-scaled) screen pixels, but CTk
-        # widget constructors and .place() multiply whatever we pass them by
-        # the current widget scaling again — dividing here avoids the popup
-        # being double-scaled (wrong size/position) at 150%/200% UI scale.
-        x = (ver_field.winfo_rootx() - root.winfo_rootx()) / _ui_scale
-        y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-        w = ver_field.winfo_width() / _ui_scale
-        
-        s = load_settings()
-        saved_h = s.get("picker_height")
-        if saved_h is not None:
-            h = min(max(100, int(saved_h)), y - 24)
-        else:
-            h = min(360, 40 + 32 * min(len(labels), 8))
-        
-        win = ctk.CTkFrame(root, width=w, height=h, fg_color=T.CARD_2, bg_color=T.CARD, border_width=1, border_color=T.BORDER, corner_radius=12)
-        _pick["win"] = win
-        win.pack_propagate(False)
-        win.place(x=x, y=y - h - 4)
-        win.lift()
-        
-        def drag_resize(event):
-            cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-            mouse_y = (event.y_root - root.winfo_rooty()) / _ui_scale
-            mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
-            new_h = cur_y - 4 - mouse_y
-            win.configure(height=new_h)
-            win.place(y=mouse_y)
-            
-        def end_drag(event):
-            cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-            mouse_y = (event.y_root - root.winfo_rooty()) / _ui_scale
-            mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
-            new_h = cur_y - 4 - mouse_y
-            s2 = load_settings()
-            s2["picker_height"] = new_h
-            save_settings(s2)
-            
-        def update_position(_event=None):
-            if _pick["win"] != win: return
-            try:
-                cur_x = (ver_field.winfo_rootx() - root.winfo_rootx()) / _ui_scale
-                cur_y = (ver_field.winfo_rooty() - root.winfo_rooty()) / _ui_scale
-                cur_h = win.cget("height")
-                win.place(x=cur_x, y=cur_y - int(cur_h) - 4)
-            except Exception:
-                pass
-                
-        _pick["bind_id"] = root.bind("<Configure>", update_position, add="+")
-            
-        grip_container = ctk.CTkFrame(win, width=w - 40, height=18, fg_color="transparent", cursor="sb_v_double_arrow")
-        grip_container.pack(side="top", pady=(2, 0))
-        grip_container.pack_propagate(False)
-        
-        grip = ctk.CTkFrame(grip_container, width=40, height=4, fg_color=T.BORDER, corner_radius=2)
-        grip.place(relx=0.5, rely=0.5, anchor="center")
-        
-        for widget in (grip_container, grip):
-            widget.bind("<B1-Motion>", drag_resize)
-            widget.bind("<ButtonRelease-1>", end_drag)
-            widget.bind("<Button-1>", lambda _event: search.focus_set())
+        d = dialog("Choose a build", 300, 420)
+        _builds_ui["dialog"] = d
 
-        ver_arrow.configure(text="▴")
+        def done(_event=None):
+            _builds_ui["dialog"] = None
+            build_arrow.configure(text="▾")
+            if d.winfo_exists():
+                d.destroy()
+        d.protocol("WM_DELETE_WINDOW", done)
+        d.bind("<Destroy>", lambda e: done() if e.widget is d else None)
+        build_arrow.configure(text="▴")
 
-        search = ctk.CTkEntry(win, placeholder_text="Filter versions…",
-                               fg_color=T.CARD_3, border_width=0,
-                               text_color=T.FG, corner_radius=8, height=30,
-                               font=font(12))
-        search.pack(fill="x", padx=6, pady=(6, 4))
-        search.focus_set()
+        ctk.CTkLabel(d, text=_edition_name(edition_var.get()),
+                     text_color=T.SUB, font=font(12)).pack(pady=(12, 6))
+        listing = ctk.CTkScrollableFrame(d, fg_color=T.CARD_2,
+                                         corner_radius=10)
+        listing.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        current = version_var.get()
+        for build in builds:
+            label = _build_label(build)
+            chosen = label == current
+            entry = mkbtn(listing, label,
+                          (lambda v=label: (select_version(v), done())),
+                          kind="ghost", height=32, font=font(13),
+                          corner_radius=8, anchor="w",
+                          fg_color=T.THEME_DIM if chosen else T.CARD_2,
+                          hover_color=T.CARD_3,
+                          text_color=T.THEME_ACCENT if chosen else T.FG)
+            entry.pack(fill="x", padx=6, pady=2)
+        _enable_scrollable_frame_wheel(listing)
 
-        sf = ctk.CTkScrollableFrame(win, fg_color=T.CARD_2, corner_radius=8)
-        sf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        cur = mc_var.get()
-        
-        _pick["no_match"] = ctk.CTkLabel(sf, text="No matches", text_color=T.MUTED, font=font(12))
-        _pick["buttons"] = []
-        for lab in labels:
-            is_beta = "BETA" in lab
-            c_bg = T.GOLD if is_beta else T.GREEN
-            c_dim = T.GOLD_DIM if is_beta else T.GREEN_DIM
-            
-            row = ctk.CTkButton(
-                sf, text=lab, anchor="w", height=30, corner_radius=6,
-                fg_color=c_dim if lab == cur else "transparent",
-                hover_color=c_dim,
-                text_color=c_bg if lab == cur else T.FG,
-                font=font(12), command=lambda l=lab: set_version(l))
-            if lab != cur:
-                def _enter(_event, r=row, c=c_bg):
-                    r.configure(text_color=c)
+    def close_build_list(_event=None):
+        d = _builds_ui["dialog"]
+        if d is not None and d.winfo_exists():
+            d.destroy()
+        _builds_ui["dialog"] = None
+        build_arrow.configure(text="▾")
 
-                def _leave(_event, r=row):
-                    r.configure(text_color=T.FG)
-                row.bind("<Enter>", _enter, add="+")
-                row.bind("<Leave>", _leave, add="+")
-            _pick["buttons"].append((lab, row))
-            row.pack(fill="x", pady=1)
-
-        def rebuild(_e=None):
-            q = search.get().strip().lower()
-            shown_any = False
-            for lab, row in _pick["buttons"]:
-                if not q or q in lab.lower():
-                    row.pack(fill="x", pady=1)
-                    shown_any = True
-                else:
-                    row.pack_forget()
-                    
-            if not shown_any:
-                _pick["no_match"].pack(pady=10)
-            else:
-                _pick["no_match"].pack_forget()
-                
-        def on_enter(_e=None):
-            q = search.get().strip().lower()
-            shown = [lab for lab in labels if q in lab.lower()] if q else labels
-            if shown:
-                set_version(shown[0])
-            return "break"
-
-        search.bind("<KeyRelease>", rebuild)
-        search.bind("<Return>", on_enter)
-        search.bind("<Escape>", lambda _event: close_picker())
-        
-        rebuild()
-        # Bind after every row exists so the wheel scrolls the list from
-        # anywhere in the popup, including over a version button.
-        _enable_scrollable_frame_wheel(sf, win)
-        win.bind("<Escape>", lambda _event: close_picker())
-        
+    # The build list is a modal dialog with its own close protocol, so only
+    # the profile menu still needs dismissing when a click lands outside it.
     def global_click(event):
-        w = _pick.get("win")
-        if w is not None:
-            try:
-                wx, wy = w.winfo_rootx(), w.winfo_rooty()
-                ww, wh = w.winfo_width(), w.winfo_height()
-                vx, vy = ver_field.winfo_rootx(), ver_field.winfo_rooty()
-                vw, vh = ver_field.winfo_width(), ver_field.winfo_height()
-                mx, my = event.x_root, event.y_root
-                
-                in_w = (wx <= mx <= wx + ww) and (wy <= my <= wy + wh)
-                in_v = (vx <= mx <= vx + vw) and (vy <= my <= vy + vh)
-                
-                if not in_w and not in_v:
-                    close_picker()
-            except Exception:
-                pass
-
         pw = prof_menu_state.get("win")
         if pw is not None:
             try:
@@ -1635,30 +1671,8 @@ def gui():
 
     root.bind_all("<Button-1>", global_click, add="+")
 
-    ver_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD, corner_radius=12,
-                              width=220, height=52)
-    ver_field.pack(anchor="w")
-    ver_field.pack_propagate(False)
-    ver_lbl = ctk.CTkLabel(ver_field, textvariable=mc_var, text_color=T.FG,
-                            font=font(16), anchor="w")
-    ver_lbl.pack(side="left", fill="x", expand=True, padx=(14, 0))
-    ver_arrow = ctk.CTkLabel(ver_field, text="▾", text_color=T.SUB, font=font(16, "bold"))
-    ver_arrow.pack(side="right", padx=(0, 12))
-    Tooltip(ver_field, "Change Version")
-
-    def _ver_hover(on):
-        _pick["hover"] = on
-        if on or _pick["win"] is not None:
-            ver_field.configure(fg_color=T.CARD_3)
-            ver_lbl.configure(text_color=T.THEME_ACCENT)
-        else:
-            ver_field.configure(fg_color=T.CARD_2)
-            ver_lbl.configure(text_color=T.FG)
-            
-    for _w in (ver_field, ver_lbl, ver_arrow):
-        _w.bind("<Enter>", lambda _event: _ver_hover(True))
-        _w.bind("<Leave>", lambda _event: _ver_hover(False))
-        _w.bind("<Button-1>", lambda _event: open_picker())
+    for _w in (build_field, build_label, build_arrow):
+        _w.bind("<Button-1>", open_build_list)
 
     rbox = ctk.CTkFrame(bar, fg_color="transparent")
     rbox.pack(side="right")
@@ -2037,39 +2051,55 @@ def gui():
                           height=32, font=font(16), corner_radius=8)
         copy_btn.pack(side="left", padx=(2, 0))
 
-    def refresh_versions():
-        beta = load_settings().get("show_betas", False)
+    def refresh_versions(edition_id=None):
+        """Fill the build menu for an edition.
+
+        ``edition_id`` is what the player just clicked. Only the startup call
+        omits it and lets the stored settings choose -- re-reading them on
+        every refresh meant a click could be undone by a listing that had
+        already read the previous value, which is why switching edition
+        needed several tries.
+        """
+        # Both editions are always offered; the toggle is the choice, so there
+        # is no longer a setting deciding whether Preview is even listed.
+        ui["versions"] = list_editions(include_beta=True)
+        known = {v["id"] for v in ui["versions"]}
+        chosen = edition_id
+        if chosen is None:
+            chosen = (load_settings().get("mc_edition") or "").strip()
+            if chosen not in known:
+                chosen = "release"
+            root.after(0, lambda: edition_var.set(chosen))
+        want = (load_settings().get("mc_version") or "").strip()
         try:
-            ui["versions"] = list_mc_versions(beta)
+            builds = list_versions(chosen)
         except Exception as e:
-            log._LOG_SINK(f"xx versions: {e}")
-            return
-        from .util import format_display_version
-        labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
-                  for v in ui["versions"]]
+            log._LOG_SINK(f"xx builds: {e}")
+            builds = []
 
         def ap():
-            ui["labels"] = labels
-            cur = (load_settings().get("mc_version") or "")
-            pick = next((x for x in labels
-                         if x.split("  ")[0] == cur
-                         or x.split("  ")[0].startswith(cur + ".")),
-                        labels[0] if labels else "")
-            if labels:
-                mc_var.set(pick)
-                _update_selected_chip()
+            # Ignore a listing that finished after the player moved on.
+            if edition_var.get() != chosen:
+                return
+            ui["builds"] = builds
+            labels = [_build_label(b) for b in builds]
+            # Keep the build already showing when it exists here too, so a
+            # refresh never silently moves the player to another one.
+            current = version_var.get()
+            pick = current if current in labels else next(
+                (label for label, b in zip(labels, builds)
+                 if b["version"] == want), labels[0] if labels else "")
+            version_var.set(pick or _NO_VERSIONS)
+            close_build_list()
+            _update_selected_chip()
+            if _builds_ui["pending"] and builds:
+                # Honour the click made while this was still loading.
+                _builds_ui["pending"] = False
+                open_build_list()
         root.after(0, ap)
 
     def selected_version():
-        if not ui["versions"] or not mc_var.get():
-            return None
-        from .util import format_display_version
-        labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
-                  for v in ui["versions"]]
-        try:
-            return ui["versions"][labels.index(mc_var.get())]
-        except ValueError:
-            return None
+        return current_edition()
 
     def busy(on):
         ui["busy"] = on
@@ -2087,8 +2117,8 @@ def gui():
                     command=lambda: kill_wine()
                 )
                 if hasattr(play_btn, "_tooltip"):
-                    cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
-                    play_btn._tooltip.text = f"Kill {cur_ver}"
+                    play_btn._tooltip.text = (
+                        f"Kill {_edition_name(edition_var.get())}")
             else:
                 play_btn._img_norm = _create_play_icon(16, T.FG, T.THEME_ACCENT)
                 play_btn.configure(
@@ -2100,8 +2130,8 @@ def gui():
                     command=lambda: do_play()
                 )
                 if hasattr(play_btn, "_tooltip"):
-                    cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
-                    play_btn._tooltip.text = f"Play {cur_ver}"
+                    play_btn._tooltip.text = (
+                        f"Play {_edition_name(edition_var.get())}")
 
     def step_aside_for_game():
         """Unmap the launcher window once the game process exists.
@@ -2141,6 +2171,40 @@ def gui():
                 pass
         root.after(0, show)
 
+    def _ask_on_main(title, message):
+        """Ask a yes/no question from a worker thread and wait for the answer."""
+        answer = {}
+        done = threading.Event()
+
+        def ask():
+            try:
+                answer["yes"] = messagebox.askyesno(title, message, parent=root)
+            finally:
+                done.set()
+        root.after(0, ask)
+        done.wait()
+        return bool(answer.get("yes"))
+
+    def _setup_with_store_account(ver, version=None):
+        from . import xodus
+        try:
+            do_setup(mc_edition=ver, mc_version=version, progress=set_progress)
+        except xodus.NotSignedIn:
+            if not _ask_on_main(
+                    "Sign in to download Minecraft",
+                    "Minecraft is downloaded from the Microsoft Store using "
+                    "your own account, which has to own the game.\n\n"
+                    "Sign in now? A Microsoft sign-in window will open.\n"
+                    "Declining starts the version already installed, without "
+                    "checking for updates."):
+                # Without an edition to install, setup keeps whatever is
+                # already configured — so declining still gets you into a game.
+                do_setup(progress=set_progress)
+                return
+            set_status("Waiting for the Microsoft sign-in…", T.FG)
+            xodus.login()
+            do_setup(mc_edition=ver, mc_version=version, progress=set_progress)
+
     def do_play():
         if ui["busy"]:
             return
@@ -2151,7 +2215,9 @@ def gui():
         def work():
             try:
                 ver = selected_version()
-                do_setup(mc_ver=ver, progress=set_progress)
+                build = selected_build()
+                _setup_with_store_account(
+                    ver, build["version"] if build else None)
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
                 try:
@@ -2167,24 +2233,21 @@ def gui():
                     ack = gpu_crash_acknowledgement_status()
                 except Exception:
                     ack = None
-                if ack and ack.can_acknowledge:
-                    if ack.previous_boot_fault:
-                        message += (
-                            "\n\nAfter repairing/updating the graphics driver "
-                            "and rebooting, open Settings → Tools to "
-                            "acknowledge this verified previous-boot fault."
-                        )
-                    else:
-                        message += (
-                            "\n\nThis interrupted launch belongs to a previous "
-                            "boot and no fatal driver event was detected. "
-                            "After checking why it stopped, open Settings → "
-                            "Tools to acknowledge it."
-                        )
                 log._LOG_SINK(f"xx {message}")
                 set_status("Minecraft could not start.", T.RED)
-                root.after(0, lambda text=message: messagebox.showerror(
-                    "Minecraft could not start", text[:2000], parent=root))
+                if ack and ack.can_acknowledge:
+                    # Offer the acknowledgement in the dialog that reports the
+                    # block, rather than sending the player to look for it in
+                    # Settings ▸ Tools. Same guarded action, one step from
+                    # where it is needed.
+                    root.after(0, lambda text=message, status=ack:
+                               _offer_gpu_incident_acknowledgement(
+                                   messagebox, root, status,
+                                   prefix=text[:2000] + "\n\n",
+                                   title="Minecraft could not start"))
+                else:
+                    root.after(0, lambda text=message: messagebox.showerror(
+                        "Minecraft could not start", text[:2000], parent=root))
             finally:
                 # A launcher left unmapped would be unreachable, so restore it
                 # here too, on any path the inner handler could have missed.
@@ -2327,18 +2390,45 @@ def gui():
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=8, padx=4)
 
-        beta_v = tk.BooleanVar(value=load_settings().get("show_betas", False))
+        # Minecraft is downloaded from the Microsoft Store with the account
+        # that owns it. That is a separate, device-bound session from the
+        # in-game account chip, so it gets its own control.
+        store_row = ctk.CTkFrame(tab_general, fg_color="transparent")
+        store_row.pack(anchor="w", fill="x", pady=8, padx=4)
+        store_txt = tk.StringVar(value="")
+        ctk.CTkLabel(store_row, textvariable=store_txt, text_color=T.FG,
+                     font=font(13), anchor="w", justify="left"
+                     ).pack(side="left")
+        store_btn = None
 
-        def save_beta():
-            s2 = load_settings()
-            s2["show_betas"] = beta_v.get()
-            save_settings(s2)
-            threading.Thread(target=refresh_versions, daemon=True).start()
-            load_changelogs(force=True)
-        ctk.CTkSwitch(tab_general, text="Show beta / preview versions",
-                      variable=beta_v, command=save_beta,
-                      progress_color=T.THEME_ACCENT, font=font(13)
-                      ).pack(anchor="w", pady=8, padx=4)
+        def refresh_store_row():
+            from . import xodus
+            linked = xodus.signed_in()
+            store_txt.set("Microsoft Store account (downloads Minecraft): "
+                          + ("linked" if linked else "not linked"))
+            if store_btn is not None:
+                store_btn.configure(text="Unlink" if linked else "Link…")
+
+        def toggle_store_account():
+            from . import xodus
+
+            def work():
+                try:
+                    if xodus.signed_in():
+                        xodus.logout()
+                    else:
+                        xodus.login()
+                except BolError as exc:
+                    root.after(0, lambda e=exc: messagebox.showerror(
+                        "Microsoft Store account", str(e), parent=root))
+                finally:
+                    root.after(0, refresh_store_row)
+            threading.Thread(target=work, daemon=True).start()
+
+        store_btn = mkbtn(store_row, "Link…", toggle_store_account,
+                          kind="ghost", width=88, height=28, font=font(12))
+        store_btn.pack(side="left", padx=(10, 0))
+        refresh_store_row()
 
         confine_v = tk.BooleanVar(
             value=load_settings().get("confine_cursor", False))
@@ -2364,6 +2454,24 @@ def gui():
                       variable=diag_v, command=save_diag,
                       progress_color=T.THEME_ACCENT, font=font(13)
                       ).pack(anchor="w", pady=(4, 12), padx=4)
+
+        ray_tracing_v = tk.BooleanVar(
+            value=load_settings().get("ray_tracing", True))
+
+        def save_ray_tracing():
+            s2 = load_settings()
+            s2["ray_tracing"] = ray_tracing_v.get()
+            save_settings(s2)
+
+        ctk.CTkSwitch(
+            tab_advanced,
+            text="Ray tracing\n"
+                 "(hands DXR to Minecraft for its Ray Traced mode — needs\n"
+                 "an RTX-class GPU and a ray-tracing-capable world;\n"
+                 "turn it off to hide the mode and save video memory)",
+            variable=ray_tracing_v, command=save_ray_tracing,
+            progress_color=T.THEME_ACCENT, font=font(13),
+        ).pack(anchor="w", pady=(0, 12), padx=4)
 
         legacy_renderer_v = tk.BooleanVar(
             value=load_settings().get("renderer", "auto") == "opengl")
@@ -2892,36 +3000,9 @@ def gui():
             ack_status = None
         if ack_status and ack_status.can_acknowledge:
             def do_ack_gpu():
-                if ack_status.previous_boot_fault:
-                    safety_instruction = (
-                        "Continue only after repairing/updating the graphics "
-                        "driver and rebooting."
-                    )
-                else:
-                    safety_instruction = (
-                        "No fatal driver event was detected for this marker. "
-                        "Continue only after checking why the previous session "
-                        "or machine stopped."
-                    )
-                if not messagebox.askyesno(
-                        "Acknowledge previous GPU incident",
-                        ack_status.message
-                        + "\n\n" + safety_instruction
-                        + " Acknowledge now?",
-                        parent=d):
-                    return
-                if acknowledge_gpu_crash():
-                    messagebox.showinfo(
-                        "GPU safety",
-                        "The previous-boot incident was acknowledged. PLAY "
-                        "will still run all current graphics safety checks.",
-                        parent=d,
-                    )
+                if _offer_gpu_incident_acknowledgement(
+                        messagebox, d, ack_status):
                     gpu_ack_btn.pack_forget()
-                else:
-                    current = gpu_crash_acknowledgement_status()
-                    messagebox.showerror(
-                        "GPU safety", current.message, parent=d)
 
             tool_actions.insert(
                 0,
@@ -3065,9 +3146,10 @@ def gui():
 
     def render_game_changelog(widget, data, dividers):
         from .util import format_display_version
-        ui_sel = mc_var.get()
-        ui_wants_beta = "BETA" in ui_sel if ui_sel else False
-        target_version = ui_sel.split('  ')[0].strip() if ui_sel else None
+        ui_wants_beta = edition_var.get() == "preview"
+        # The picker names an edition, not a build, so scroll to the release
+        # notes of the build actually installed.
+        target_version = (load_settings().get("mc_version") or "").strip() or None
         target_index = None
         
         filtered = []

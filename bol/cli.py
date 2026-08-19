@@ -9,7 +9,7 @@ from .auth import NativeAuth
 from .config import APP, PRETTY, VERSION
 from .content import cmd_import
 from .doctor import doctor
-from .games import list_mc_versions
+from .games import list_editions, list_versions
 from .gamesetup import do_setup
 from .gui import gui
 from .launch import (
@@ -59,13 +59,21 @@ def main():
     sub.add_parser("gui", help="open the launcher (default)")
     sub.add_parser("play", help="launch Minecraft")
     sp = sub.add_parser("setup", help="download & prepare Minecraft")
-    sp.add_argument("--mc", metavar="VERSION",
-                    help="Minecraft version tag (e.g. 1.26.21.1)")
-    sp.add_argument("--beta", action="store_true", help="allow beta versions")
+    sp.add_argument("--mc", metavar="EDITION",
+                    help="Minecraft edition to install: release or preview")
+    sp.add_argument("--version", metavar="BUILD",
+                    help="Bedrock build to install (default: the newest); "
+                         "see 'versions'")
+    sp.add_argument("--beta", action="store_true", help="allow beta editions")
     sp.add_argument("--force", action="store_true", help="re-download / rebuild")
-    lv = sub.add_parser("versions", help="list available Minecraft versions")
+    lv = sub.add_parser("versions", help="list installable Minecraft builds")
     lv.add_argument("--beta", action="store_true")
     sub.add_parser("login", help="sign in to a Microsoft account")
+    sub.add_parser(
+        "store-login",
+        help=("link the Microsoft account that owns Minecraft, so it can be "
+              "downloaded from the Microsoft Store"),
+    )
     ip = sub.add_parser("import",
                         help=("import .mcpack/.mcaddon/.mcworld/.mctemplate/"
                               ".mcskin"))
@@ -122,11 +130,13 @@ def main():
         if a.cmd == "setup":
             mc = None
             if a.mc:
-                mc = next((v for v in list_mc_versions(True)
-                           if v["tag"] == a.mc), None)
+                mc = next((v for v in list_editions(True)
+                           if v["id"] == a.mc.strip().lower()), None)
                 if not mc:
-                    die(f"Minecraft version '{a.mc}' not found.")
-            do_setup(mc_ver=mc, force=a.force)
+                    die(f"Unknown Minecraft edition '{a.mc}'; expected "
+                        + " or ".join(v["id"] for v in list_editions(True))
+                        + ".")
+            do_setup(mc_edition=mc, mc_version=a.version, force=a.force)
             ok(f"Done. Run:  {APP} play")
         elif a.cmd == "play":
             launch()
@@ -144,9 +154,19 @@ def main():
             for pending in ([] if profile else direct_launch_readiness()):
                 warn(pending)
         elif a.cmd == "versions":
-            for v in list_mc_versions(a.beta):
-                print(f"  {v['tag']:<14}{'beta' if v['beta'] else 'stable':>7}"
-                      f"   {v['size']>>20} MiB")
+            for edition in list_editions(a.beta):
+                print(f"{edition['name']}  (--mc {edition['id']})")
+                for build in list_versions(edition["id"]):
+                    print(f"    {build['version']:<14}"
+                          f"{'installed' if build['installed'] else ''}")
+            info("Builds are downloaded from Microsoft's own CDN with your "
+                 "account, which must own Minecraft.")
+        elif a.cmd == "store-login":
+            from . import xodus as _xodus
+            if _xodus.signed_in():
+                ok("A Microsoft account is already linked for the download.")
+            else:
+                _xodus.login()
         elif a.cmd == "login":
             na = NativeAuth()
             if na.signed_in():

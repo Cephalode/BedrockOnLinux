@@ -1,0 +1,329 @@
+"""Name the causes of "the game lags" that live outside the engine.
+
+Exhausted memory, a full data directory, windowed vsync on a compositing
+desktop and a render distance past what Bedrock's main thread can feed all
+cost frame rate while leaving nothing in a Wine, Proton or vkd3d log. They
+are therefore reported as engine or GPU faults. These tests hold the
+detection honest in both directions: it must fire on the starved machine and
+stay quiet on the healthy one, since an advisory users learn to ignore is
+worth nothing when it finally matters.
+"""
+# SPDX-License-Identifier: MIT
+
+import os
+import tempfile
+import unittest
+from collections import namedtuple
+from pathlib import Path
+from unittest import mock
+
+from bol import launch, perfcheck
+
+
+_Usage = namedtuple("_Usage", "total used free")
+
+_OPTIONS_RELATIVE = (
+    "drive_c/users/steamuser/AppData/Roaming/Minecraft Bedrock/Users/"
+    "15576315838024289709/games/com.mojang/minecraftpe/options.txt"
+)
+
+
+def _meminfo(root, available_mib, swap_total_mib=0, swap_free_mib=0):
+    """A fake /proc/meminfo carrying only the fields that are read."""
+    path = Path(root) / "meminfo"
+    path.write_text(
+        "MemTotal:       %8d kB\n"
+        "MemFree:         %8d kB\n"
+        "MemAvailable:   %8d kB\n"
+        "SwapTotal:      %8d kB\n"
+        "SwapFree:       %8d kB\n"
+        % (16 * 1024 * 1024, 256 * 1024, available_mib * 1024,
+           swap_total_mib * 1024, swap_free_mib * 1024))
+    return path
+
+
+def _prefix(root, relative=_OPTIONS_RELATIVE, **options):
+    """A prefix tree holding one options.txt with the given settings."""
+    path = Path(root) / "pfx" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join("%s:%s\n" % item for item in options.items())
+    # Real files carry hundreds of unrelated keys; keep one so the parser is
+    # never exercised on a file containing only what it looks for.
+    path.write_text("keyboard_type_0_key.screenshot:113\n" + body)
+    return Path(root) / "pfx"
+
+
+class MemoryPressureTests(unittest.TestCase):
+    def test_starved_host_is_reported_with_the_number(self):
+        with tempfile.TemporaryDirectory() as td:
+            problem = perfcheck.low_memory_problem(_meminfo(td, 900))
+        self.assertIsNotNone(problem)
+        self.assertIn("900 MiB", problem)
+
+    def test_healthy_host_stays_quiet(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(perfcheck.low_memory_problem(_meminfo(td, 9000)))
+
+    def test_swap_already_in_use_is_named_as_where_the_game_goes(self):
+        with tempfile.TemporaryDirectory() as td:
+            meminfo = _meminfo(td, 500, swap_total_mib=16384,
+                               swap_free_mib=16384 - 4700)
+            problem = perfcheck.low_memory_problem(meminfo)
+        self.assertIn("4.6 GiB is already in swap", problem)
+
+    def test_reclaimable_cache_counts_as_available(self):
+        # MemFree is deliberately tiny in the fixture: reading it instead of
+        # MemAvailable would fire on every healthy machine.
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(
+                perfcheck.available_memory_mib(_meminfo(td, 7000)), 7000)
+
+    def test_unreadable_meminfo_is_unknown_not_a_defect(self):
+        self.assertIsNone(perfcheck.available_memory_mib("/nonexistent/mem"))
+        self.assertIsNone(perfcheck.low_memory_problem("/nonexistent/mem"))
+
+    def test_swap_free_of_a_swapless_host_is_zero_not_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(perfcheck.swap_used_mib(_meminfo(td, 8000)), 0)
+
+
+class DiskSpaceTests(unittest.TestCase):
+    def _usage(self, free_mib, total_mib=246 * 1024):
+        return _Usage(total=total_mib << 20,
+                      used=(total_mib - free_mib) << 20,
+                      free=free_mib << 20)
+
+    def test_nearly_full_volume_is_reported_with_the_percentage(self):
+        with mock.patch.object(perfcheck.shutil, "disk_usage",
+                               return_value=self._usage(2048)):
+            problem = perfcheck.free_disk_problem("/data")
+        self.assertIsNotNone(problem)
+        self.assertIn("2048 MiB", problem)
+        self.assertIn("99% full", problem)
+
+    def test_roomy_volume_stays_quiet(self):
+        with mock.patch.object(perfcheck.shutil, "disk_usage",
+                               return_value=self._usage(80 * 1024)):
+            self.assertIsNone(perfcheck.free_disk_problem("/data"))
+
+    def test_the_shader_cache_is_named_as_the_cost(self):
+        with mock.patch.object(perfcheck.shutil, "disk_usage",
+                               return_value=self._usage(100)):
+            problem = perfcheck.free_disk_problem("/data")
+        self.assertIn("shader cache", problem)
+
+    def test_unreadable_path_is_unknown_not_a_defect(self):
+        with mock.patch.object(perfcheck.shutil, "disk_usage",
+                               side_effect=OSError):
+            self.assertIsNone(perfcheck.free_disk_problem("/data"))
+        self.assertIsNone(perfcheck.free_disk_problem(None))
+
+
+class GameOptionsTests(unittest.TestCase):
+    def test_options_are_found_in_the_roaming_layout(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_viewdistance="256")
+            found = perfcheck.find_options_file(prefix)
+            self.assertIsNotNone(found)
+            self.assertEqual(
+                perfcheck.read_game_options(found)["gfx_viewdistance"], "256")
+
+    def test_options_are_found_in_the_uwp_package_layout(self):
+        relative = (
+            "drive_c/users/steamuser/AppData/Local/Packages/"
+            "Microsoft.MinecraftUWP_8wekyb3d8bbwe/LocalState/games/"
+            "com.mojang/minecraftpe/options.txt")
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, relative=relative, gfx_vsync="1")
+            found = perfcheck.find_options_file(prefix)
+            self.assertIsNotNone(found)
+            self.assertEqual(
+                perfcheck.read_game_options(found)["gfx_vsync"], "1")
+
+    def test_a_prefix_before_the_first_launch_is_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(perfcheck.find_options_file(Path(td)))
+            self.assertEqual(perfcheck.read_game_options(None), {})
+            self.assertEqual(perfcheck.performance_problems(
+                Path(td), None, environ={}, meminfo_path="/nonexistent"), [])
+
+    def test_values_holding_a_colon_keep_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td)
+            path = perfcheck.find_options_file(prefix)
+            path.write_text("keyboard_type_1_key.lookUp:38:2\ngfx_vsync:1\n")
+            options = perfcheck.read_game_options(path)
+        self.assertEqual(options["keyboard_type_1_key.lookUp"], "38:2")
+        self.assertEqual(options["gfx_vsync"], "1")
+
+    def test_malformed_values_are_ignored_rather_than_raising(self):
+        options = {"gfx_viewdistance": "", "gfx_vsync": "yes"}
+        self.assertIsNone(perfcheck.render_distance_chunks(options))
+        self.assertIsNone(perfcheck.render_distance_problem(options))
+        self.assertIsNone(perfcheck.windowed_vsync_problem(
+            options, {"XDG_CURRENT_DESKTOP": "X-Cinnamon"}))
+
+
+class RenderDistanceTests(unittest.TestCase):
+    def test_blocks_are_converted_to_the_chunks_the_slider_shows(self):
+        self.assertEqual(
+            perfcheck.render_distance_chunks({"gfx_viewdistance": "640"}), 40)
+
+    def test_extreme_distance_is_reported_in_chunks(self):
+        problem = perfcheck.render_distance_problem(
+            {"gfx_viewdistance": "640"})
+        self.assertIsNotNone(problem)
+        self.assertIn("40 chunks", problem)
+        self.assertIn("main thread", problem)
+
+    def test_ordinary_distance_stays_quiet(self):
+        for blocks in ("128", "256", "384"):
+            self.assertIsNone(perfcheck.render_distance_problem(
+                {"gfx_viewdistance": blocks}), blocks)
+
+    def test_the_threshold_itself_is_not_flagged(self):
+        blocks = str(perfcheck.EXTREME_RENDER_CHUNKS * perfcheck.CHUNK_BLOCKS)
+        self.assertIsNone(
+            perfcheck.render_distance_problem({"gfx_viewdistance": blocks}))
+
+    def test_absent_setting_is_silent(self):
+        self.assertIsNone(perfcheck.render_distance_problem({}))
+
+
+class WindowedVsyncTests(unittest.TestCase):
+    WINDOWED_VSYNC = {"gfx_vsync": "1", "gfx_fullscreen": "0"}
+
+    def test_compositing_desktop_with_windowed_vsync_is_reported(self):
+        problem = perfcheck.windowed_vsync_problem(
+            self.WINDOWED_VSYNC, {"XDG_CURRENT_DESKTOP": "X-Cinnamon"})
+        self.assertIsNotNone(problem)
+        self.assertIn("vsync", problem)
+
+    def test_fullscreen_is_never_flagged(self):
+        self.assertIsNone(perfcheck.windowed_vsync_problem(
+            {"gfx_vsync": "1", "gfx_fullscreen": "1"},
+            {"XDG_CURRENT_DESKTOP": "GNOME"}))
+
+    def test_windowed_without_vsync_is_never_flagged(self):
+        self.assertIsNone(perfcheck.windowed_vsync_problem(
+            {"gfx_vsync": "0", "gfx_fullscreen": "0"},
+            {"XDG_CURRENT_DESKTOP": "GNOME"}))
+
+    def test_wayland_always_composites(self):
+        self.assertTrue(perfcheck.session_is_composited(
+            {"XDG_SESSION_TYPE": "wayland"}))
+        self.assertTrue(perfcheck.session_is_composited(
+            {"WAYLAND_DISPLAY": "wayland-0"}))
+
+    def test_desktops_whose_compositor_is_optional_stay_unknown(self):
+        # XFCE can run with or without compositing, and guessing wrong would
+        # nag a user whose setup is fine.
+        for desktop in ("XFCE", "MATE", "LXQt", ""):
+            self.assertIsNone(perfcheck.session_is_composited(
+                {"XDG_SESSION_TYPE": "x11", "XDG_CURRENT_DESKTOP": desktop}),
+                desktop)
+            self.assertIsNone(perfcheck.windowed_vsync_problem(
+                self.WINDOWED_VSYNC,
+                {"XDG_SESSION_TYPE": "x11",
+                 "XDG_CURRENT_DESKTOP": desktop}), desktop)
+
+    def test_desktop_name_is_matched_case_insensitively(self):
+        self.assertTrue(perfcheck.session_is_composited(
+            {"XDG_CURRENT_DESKTOP": "ubuntu:GNOME"}))
+
+
+class AggregateReportTests(unittest.TestCase):
+    def test_every_condition_is_reported_at_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_viewdistance="640", gfx_vsync="1",
+                             gfx_fullscreen="0")
+            meminfo = _meminfo(td, 500)
+            environ = {"XDG_CURRENT_DESKTOP": "X-Cinnamon"}
+            with mock.patch.object(
+                    perfcheck.shutil, "disk_usage",
+                    return_value=_Usage(total=1 << 40, used=1 << 40, free=0)):
+                problems = perfcheck.performance_problems(
+                    prefix, "/data", environ=environ, meminfo_path=meminfo)
+                summary = perfcheck.performance_summary(
+                    prefix, "/data", environ, meminfo)
+        self.assertEqual(len(problems), 4)
+        self.assertEqual(summary, "4 notices")
+
+    def test_memory_is_reported_before_the_render_distance(self):
+        # Ordered by what it costs: no amount of lowering the render distance
+        # rescues a host that is paging the game out.
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_viewdistance="640")
+            problems = perfcheck.performance_problems(
+                prefix, None, environ={}, meminfo_path=_meminfo(td, 500))
+        self.assertIn("memory is available", problems[0])
+        self.assertIn("render distance", problems[1])
+
+    def test_healthy_machine_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_viewdistance="256", gfx_vsync="1",
+                             gfx_fullscreen="1")
+            meminfo = _meminfo(td, 9000)
+            with mock.patch.object(
+                    perfcheck.shutil, "disk_usage",
+                    return_value=_Usage(total=1 << 40, used=0,
+                                        free=200 << 30)):
+                environ = {"XDG_CURRENT_DESKTOP": "X-Cinnamon"}
+                self.assertEqual(perfcheck.performance_problems(
+                    prefix, "/data", environ=environ,
+                    meminfo_path=meminfo), [])
+                self.assertEqual(perfcheck.performance_summary(
+                    prefix, "/data", environ, meminfo), "OK (nothing found)")
+
+    def test_an_unreachable_prefix_or_volume_never_raises_at_launch(self):
+        # This runs on the launch path before the game starts; a missing
+        # prefix or an unreadable mount must cost a silent report, not a
+        # traceback in front of a player trying to press PLAY.
+        with mock.patch.object(perfcheck.shutil, "disk_usage",
+                               side_effect=OSError):
+            self.assertEqual(perfcheck.performance_problems(
+                Path("/nonexistent/pfx"), "/nonexistent/data", environ={},
+                meminfo_path="/nonexistent/meminfo"), [])
+
+    def test_one_condition_is_summarised_in_the_singular(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_viewdistance="640")
+            summary = perfcheck.performance_summary(
+                prefix, None, {}, _meminfo(td, 9000))
+        self.assertEqual(summary, "1 notice")
+
+
+class LaunchWiringTests(unittest.TestCase):
+    def _warn_once(self, environ, problems=("something costs frames",)):
+        with mock.patch.object(launch, "performance_problems",
+                               return_value=list(problems)) as detected, \
+                mock.patch.object(launch, "active_prefix",
+                                  return_value=Path("/pfx")), \
+                mock.patch.object(launch, "warn") as warned, \
+                mock.patch.dict(os.environ, environ, clear=True):
+            launch._warn_if_performance_degraded()
+        return detected, warned
+
+    def test_each_condition_is_warned_about_at_launch(self):
+        _, warned = self._warn_once({}, ("first cost", "second cost"))
+        self.assertEqual(warned.call_count, 2)
+        self.assertEqual(warned.call_args_list[0][0][0], "first cost")
+
+    def test_a_clean_machine_launches_without_a_word(self):
+        _, warned = self._warn_once({}, ())
+        self.assertFalse(warned.called)
+
+    def test_the_check_can_be_silenced(self):
+        detected, warned = self._warn_once({"BOL_SKIP_PERF_CHECK": "1"})
+        self.assertFalse(warned.called)
+        # Silenced means not even looked at: no statvfs, no prefix walk.
+        self.assertFalse(detected.called)
+
+    def test_it_reads_the_live_prefix_and_data_directory(self):
+        detected, _ = self._warn_once({})
+        self.assertEqual(detected.call_args[0][0], Path("/pfx"))
+        self.assertEqual(detected.call_args[0][1], launch.DATA)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2,6 +2,106 @@
 
 ## Unreleased
 
+### Added
+
+- **A ray tracing switch, in Settings ▸ Advanced.** It is on by default and
+  matches what already happened: the bundled vkd3d-proton reports the ray
+  tracing tier on its own wherever the driver exposes the Vulkan ray tracing
+  extensions, so Minecraft is offered DXR 1.1 and full DirectX 12 Ultimate
+  without anyone asking for it. The switch makes that explicit in two
+  directions — it drops a `VKD3D_CONFIG=nodxr` inherited from the session,
+  which would otherwise remove the game's *Ray Traced* graphics mode with no
+  trace anywhere, and it sets `nodxr` when you would rather keep the video
+  memory. Minecraft's own conditions are unchanged: *Ray Traced* stays
+  uneditable outside a ray-tracing-capable world, and *Vibrant Visuals*, being
+  deferred rendering, is unaffected either way.
+
+- **The launcher now names why the game is slow, before it starts.** "It lags"
+  has always arrived as an engine or GPU report, because the ordinary causes
+  leave nothing in any Wine, Proton or vkd3d log: a host with no memory left,
+  where the kernel pages the game out and every chunk the player walks into
+  comes back through a disk fault; a data directory too full for vkd3d to keep
+  its shader cache, so pipelines are recompiled every session instead of
+  reused; a render distance set past what Bedrock's main thread can feed, which
+  leaves even a fast GPU idle, since that ring is built on one thread and the
+  work grows with the square of the distance; and vsync left on while the game
+  runs in a window on a desktop that composites every window, which stacks a
+  second frame queue on the game's own. Each is now reported before launch and
+  summarised by `doctor`, together with what to change. They are advisories —
+  nothing is blocked and no setting of yours is touched — and
+  `BOL_SKIP_PERF_CHECK=1` silences them. Detection costs two `/proc/meminfo`
+  fields, one `statvfs` and a read of Minecraft's own options.txt: no Wine
+  process is started and no GPU is opened, so it can run on every launch.
+
+### Changed
+
+- **A GPU safety block can be acknowledged from the dialog that reports it.**
+  PLAY refuses the launch, and the failure dialog then told you to open
+  Settings ▸ Tools and find the acknowledgement there. That is a long way
+  round for the most common case by far: rebooting the machine while
+  Minecraft is still open leaves an interrupted-launch marker behind, because
+  the launcher is killed before it can clear its own marker, and nothing can
+  tell that apart from a graphics driver that locked the machine up. The
+  confirmation is now offered where the block is met. Nothing about the
+  safety decision changes — the same eligibility is still re-evaluated under
+  the launch lock before anything is written, a marker from the running boot
+  is still refused, and every current graphics check still runs on the next
+  PLAY.
+
+- **Minecraft is now downloaded from the Microsoft Store with your own
+  account.** Until now the launcher fetched a repackaged, DRM-stripped copy of
+  the game from a third-party GitHub repository. That redistributed Minecraft,
+  and it let anyone install it without owning it. The launcher now uses
+  [Xodus](https://github.com/xodus-gaming/xodus), which signs in to your
+  Microsoft account, asks Microsoft's licensing service for the title licence
+  and streams the package straight from the Xbox CDN, decrypting it as it goes
+  — the same path Windows takes.
+
+  What this changes for you:
+
+  - **You must own Minecraft on the account you link.** This is now true for
+    installing, not only for playing online.
+  - **There is a second sign-in.** The Store account authorises the download;
+    the existing in-game account is unchanged. They can be the same account,
+    but they are separate links, because the Store needs a device-bound
+    session that the in-game sign-in cannot provide.
+  - **The picker gained an edition, and kept its builds.** You choose
+    *Minecraft* or *Minecraft Preview*, then a build. Microsoft's own service
+    only ever offers the current build, so the list of older ones comes from
+    [GdkLinks](https://github.com/MinecraftBedrockArchiver/GdkLinks), an index
+    of where each build sits on Microsoft's CDN — it holds no game data, and
+    the licence still comes from Microsoft for your account. Each build lives
+    in its own folder, so going back to one you already have costs nothing.
+  - **WebKitGTK is a new dependency** (`libwebkit2gtk-4.1-0`), for the Store
+    sign-in window. The `.deb` and `.rpm` pull it in and `doctor` reports it.
+    The Flatpak moved to the GNOME runtime to get it: `org.freedesktop.Platform`
+    ships no WebKitGTK and no Flathub extension provides one, so the sign-in —
+    and with it installing the game at all — could not run in the sandbox. Both
+    runtimes share the same freedesktop base and the same GL extension point,
+    and this manifest already built its own Tcl, Tk and Python, so nothing else
+    about the Flatpak changes.
+
+  A copy of the game you already have keeps working: point the launcher at it
+  as before.
+
+- Load the game executable from memory when the Store package keeps it
+  encrypted. Store packages leave the segments they flag
+  `KEEP_ENCRYPTED_ON_DISK` — the game executable on GDK titles — encrypted at
+  rest, exactly as on Windows, so there is no executable on disk for Wine to
+  open. The engine gained a loader that can map the main image from a
+  descriptor or a path, and the launcher decrypts it into `/dev/shm`, which is
+  RAM: the copy is private, the loader unlinks it the instant it opens it, and
+  nothing reaches durable storage. It goes through a file rather than anonymous
+  memory for one reason — the game runs inside the Steam Linux Runtime
+  container, where a descriptor number from outside means nothing. The
+  settings/pause stack-reserve fix now lands on that copy instead of the file
+  on disk. Packages that ship a plaintext executable are detected and take the
+  previous path unchanged.
+
+  One consequence worth knowing: an encrypted package needs the licence at
+  every launch, so starting the game requires the network and a valid Store
+  session even for single-player. Nothing else about offline play changes.
+
 ### Fixed
 
 - Stop the crash that hit the main menu as soon as an account was signed in.

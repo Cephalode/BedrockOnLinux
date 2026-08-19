@@ -419,25 +419,39 @@ def bump_stack_reserve(exe: Path, target=0x1000000):
     every launch so it survives a game reinstall/update or a version switch."""
     try:
         with open(exe, "r+b") as f:
-            head = f.read(0x400)
-            if head[:2] != b"MZ":
-                return
-            e = struct.unpack_from("<I", head, 0x3C)[0]
-            if head[e:e + 4] != b"PE\0\0":
-                return
-            opt = e + 4 + 20                       # PE sig + COFF file header
-            if struct.unpack_from("<H", head, opt)[0] != 0x20B:
-                return                             # not PE32+ — leave it alone
-            field = opt + 72                       # SizeOfStackReserve (PE32+)
-            cur = struct.unpack_from("<Q", head, field)[0]
-            if cur >= target:
-                return                             # already roomy (idempotent)
-            f.seek(field)
-            f.write(struct.pack("<Q", target))
-        ok(f"Stack reserve raised {cur // 1024} KB → {target // 1024} KB "
-           "(settings/pause crash fix)")
+            raised = _raise_stack_reserve(f.fileno(), target)
     except (OSError, struct.error, IndexError) as e: # never block a launch over this
         warn(f"Could not raise the stack reserve: {e}")
+        return
+    if raised:
+        ok(f"Stack reserve raised {raised // 1024} KB → {target // 1024} KB "
+           "(settings/pause crash fix)")
+
+
+def _raise_stack_reserve(fd, target=0x1000000):
+    """Raise SizeOfStackReserve in the PE at ``fd``; return the old value.
+
+    Returns None when there is nothing to do — not a PE32+ image, or already
+    at least ``target``. Takes a descriptor rather than a path because a
+    Microsoft Store package never has a loadable executable on disk: the
+    launcher decrypts it into anonymous memory, and that memfd is the only
+    place this edit can land (see bol.xodus.wrap_encrypted_launch).
+    """
+    head = os.pread(fd, 0x400, 0)
+    if head[:2] != b"MZ":
+        return None
+    e = struct.unpack_from("<I", head, 0x3C)[0]
+    if head[e:e + 4] != b"PE\0\0":
+        return None
+    opt = e + 4 + 20                           # PE sig + COFF file header
+    if struct.unpack_from("<H", head, opt)[0] != 0x20B:
+        return None                            # not PE32+ — leave it alone
+    field = opt + 72                           # SizeOfStackReserve (PE32+)
+    cur = struct.unpack_from("<Q", head, field)[0]
+    if cur >= target:
+        return None                            # already roomy (idempotent)
+    os.pwrite(fd, struct.pack("<Q", target), field)
+    return cur
 
 
 def hide_signin_button(game_dir):

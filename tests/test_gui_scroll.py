@@ -1,4 +1,4 @@
-"""Regression tests for Settings and version-picker wheel forwarding."""
+"""Regression tests for Settings wheel forwarding."""
 # SPDX-License-Identifier: MIT
 
 import ast
@@ -97,8 +97,8 @@ def _nested_function(tree, name):
     return None
 
 
-class PickerWheelWiringTests(unittest.TestCase):
-    """The version picker builds its rows dynamically (issue #112)."""
+class ScrollWheelWiringTests(unittest.TestCase):
+    """Scrollable panels build their rows dynamically (issue #112)."""
 
     def setUp(self):
         source = Path(inspect.getsourcefile(gui)).read_text(encoding="utf-8")
@@ -111,10 +111,6 @@ class PickerWheelWiringTests(unittest.TestCase):
             call.func.id for call in ast.walk(node)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
         }
-
-    def test_version_picker_enables_wheel_scrolling(self):
-        self.assertIn(
-            "_enable_scrollable_frame_wheel", self._calls_in("open_picker"))
 
     def test_settings_tabs_keep_wheel_scrolling(self):
         self.assertIn(

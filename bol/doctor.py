@@ -5,7 +5,7 @@ import shutil
 import sys
 
 from . import deps
-from .config import PRETTY, VERSION
+from .config import DATA, PRETTY, VERSION
 from .gpu_safety import (
     GpuSafetyAcknowledgementStatus,
     acknowledge_gpu_safety_incident,
@@ -14,7 +14,26 @@ from .gpu_safety import (
 )
 from .log import BolError, info, ok, warn
 from .ntsync import inproc_sync_problem, inproc_sync_summary
+from .perfcheck import performance_problems, performance_summary
 from .util import custom_env_map, load_settings
+
+
+def _have_webkitgtk():
+    """Whether the WebKitGTK the Store sign-in webview needs is installed.
+
+    ctypes rather than pkg-config: the runtime library is what matters, and
+    the development package is not installed on a user's machine.
+    """
+    import ctypes.util
+
+    if ctypes.util.find_library("webkit2gtk-4.1"):
+        return True
+    # find_library needs ldconfig or a compiler; fall back to the soname.
+    try:
+        ctypes.CDLL("libwebkit2gtk-4.1.so.0")
+        return True
+    except OSError:
+        return False
 
 
 def gpu_crash_acknowledgement_status():
@@ -96,6 +115,14 @@ def doctor(acknowledge_gpu_crash=False):
           f"{'OK (login)' if cr_ok else 'MANQUANT (login)'}")
     if not cr_ok:
         miss.append("python3-cryptography")
+    # Minecraft is downloaded from the Microsoft Store, and xodus-cli opens
+    # that sign-in in an embedded WebKitGTK webview. Without the library it
+    # cannot even start, so name it here rather than at the first download.
+    webkit_ok = _have_webkitgtk()
+    print(f"  {'webkit2gtk':12} : "
+          f"{'OK (store sign-in)' if webkit_ok else 'MANQUANT (store sign-in)'}")
+    if not webkit_ok:
+        miss.append("libwebkit2gtk-4.1-0")
     gpu_problem = graphics_safety_problem()
     print(f"  {'graphics':12} : "
           f"{'BLOQUÉ' if gpu_problem else 'OK (no unsafe state found)'}")
@@ -116,6 +143,15 @@ def doctor(acknowledge_gpu_crash=False):
     sync_problem = inproc_sync_problem(engine, environ=custom)
     if sync_problem:
         warn(sync_problem)
+    # The same "it lags" report, from causes outside the engine entirely:
+    # no memory, no disk, windowed vsync, a render distance past the main
+    # thread. Prefix-scoped, so it is imported next to the other Wine module.
+    from .prefix import active_prefix
+
+    prefix = active_prefix()
+    print(f"  {'performance':12} : {performance_summary(prefix, DATA)}")
+    for perf_problem in performance_problems(prefix, DATA):
+        warn(perf_problem)
     if miss:
         warn("To install: " + hint.format(" ".join(sorted(set(miss)))))
         return False
