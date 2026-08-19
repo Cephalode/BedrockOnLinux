@@ -131,9 +131,9 @@ XODUS_WEBVIEW_REV = "trixie-1"
 # build-xodus.yml run of this branch. Empty means "never published", and the
 # launcher then reports the missing library instead of installing unverified
 # bytes -- publish .github/workflows/build-xodus.yml and pin the SHA-256 it
-# prints.
-XODUS_WEBVIEW_SHA256 = \
-    "a9b04506446ba57fe40bae9e731857e681da230ce4db20e6613ae558441a0c6e"
+# prints. One line, like every pin here: the build and CI checks read it with
+# grep + cut, and a continuation makes them compare the variable name.
+XODUS_WEBVIEW_SHA256 = "a9b04506446ba57fe40bae9e731857e681da230ce4db20e6613ae558441a0c6e"
 # The compiled-in directory WebKitGTK spawns its helper processes from. Modern
 # builds drop the WEBKIT_EXEC_PATH override (it is developer-mode only), so the
 # bundled library carries this literal and the launcher rewrites it in place.
