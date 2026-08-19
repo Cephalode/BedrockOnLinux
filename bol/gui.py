@@ -2473,6 +2473,25 @@ def gui():
             progress_color=T.THEME_ACCENT, font=font(13),
         ).pack(anchor="w", pady=(0, 12), padx=4)
 
+        frame_rate_v = tk.BooleanVar(
+            value=load_settings().get("limit_frame_rate", True))
+
+        def save_frame_rate():
+            s2 = load_settings()
+            s2["limit_frame_rate"] = frame_rate_v.get()
+            save_settings(s2)
+
+        ctk.CTkSwitch(
+            tab_advanced,
+            text="Limit the frame rate to the display\n"
+                 "(only when Minecraft has no limit of its own: with vsync\n"
+                 "off and Max Framerate on Unlimited the menu alone runs\n"
+                 "into four figures of FPS and takes most of the GPU;\n"
+                 "turn it off to render uncapped)",
+            variable=frame_rate_v, command=save_frame_rate,
+            progress_color=T.THEME_ACCENT, font=font(13),
+        ).pack(anchor="w", pady=(0, 12), padx=4)
+
         legacy_renderer_v = tk.BooleanVar(
             value=load_settings().get("renderer", "auto") == "opengl")
 

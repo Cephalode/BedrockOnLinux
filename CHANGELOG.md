@@ -17,8 +17,10 @@
   whenever the game has no limit of its own, which brought the same menu to
   **144 FPS and 3-16% of the card**. Only that unpaced case is capped: vsync,
   or any *Max Framerate* the player chose, is left exactly as it was, and
-  nobody loses a frame their display could have shown. `BOL_FRAME_RATE=0`
-  renders uncapped again, and `BOL_FRAME_RATE=<fps>` sets the limit by hand.
+  nobody loses a frame their display could have shown. *Settings ▸ Advanced ▸
+  Limit the frame rate to the display* turns it off, and `BOL_FRAME_RATE` in
+  the custom-environment field names a rate instead: `0` never caps, a number
+  always caps at it.
 
 - **Naming what actually holds the frame rate down**
   ([#173](https://github.com/Wyze3306/BedrockOnLinux/issues/173)). Reports of

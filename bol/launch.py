@@ -169,7 +169,7 @@ def _requested_frame_rate(environ=None):
     return value if value > 0 else 0.0
 
 
-def _configure_frame_rate_limit(env, prefix=None, environ=None,
+def _configure_frame_rate_limit(env, settings=None, prefix=None, environ=None,
                                 refresh_probe=None):
     """Stop Minecraft drawing frames no display will ever show.
 
@@ -183,11 +183,17 @@ def _configure_frame_rate_limit(env, prefix=None, environ=None,
     Only the genuinely unpaced case is capped, and only at the refresh rate of
     the fastest display attached, so a player who set either of Minecraft's
     own limits keeps exactly what they chose and nobody loses a frame they
-    could have seen. ``BOL_FRAME_RATE`` overrides both directions: 0 never
-    caps, a number always caps at it. Callers pass ``environ`` with the
-    Advanced custom-environment field overlaid, since that field is where
-    ``BOL_FRAME_RATE`` is documented and it is applied too late in the launch
-    to be visible here.
+    could have seen.
+
+    Two things override that, in order. ``BOL_FRAME_RATE`` wins outright,
+    since it is the only one that can name a rate: 0 never caps, a number
+    always caps at it, whatever the game and the switch say. Callers pass
+    ``environ`` with the Advanced custom-environment field overlaid, since
+    that field is where it is documented and it is applied too late in the
+    launch to be visible here. Failing that, the *Limit the frame rate to the
+    display* switch in Settings decides whether the automatic cap applies at
+    all; it is on by default, because the uncapped menu is a bug report and
+    not a preference.
 
     The limit is always whole frames per second, rounded up. That is not
     cosmetic: a value carrying a decimal point is parsed as no limit at all
@@ -198,6 +204,8 @@ def _configure_frame_rate_limit(env, prefix=None, environ=None,
     source = os.environ if environ is None else environ
     requested = _requested_frame_rate(source)
     if requested == 0.0:
+        return None
+    if requested is None and not (settings or {}).get("limit_frame_rate", True):
         return None
     if env.get("VKD3D_FRAME_RATE", "").strip():
         # An inherited limit is already an explicit answer to this question.
@@ -228,7 +236,8 @@ def _configure_frame_rate_limit(env, prefix=None, environ=None,
              "off, Max Framerate on Unlimited), so the launcher caps it at "
              "%d FPS for this display's %.2f Hz — frames past that are never "
              "shown, and the menu alone would otherwise take most of the "
-             "GPU. Set BOL_FRAME_RATE=0 to render uncapped."
+             "GPU. Turn off 'Limit the frame rate to the display' in "
+             "Settings ▸ Advanced to render uncapped."
              % (limit, refresh))
     else:
         limit = math.ceil(requested)
@@ -541,7 +550,7 @@ def _launch_once(lock_fds=(), on_started=None):
     # function, far too late to be read here, so overlay it explicitly: it is
     # where BOL_FRAME_RATE is documented, and the supported way to set it.
     _configure_frame_rate_limit(
-        env, active_prefix(),
+        env, s, active_prefix(),
         environ={**os.environ,
                  **custom_env_map(s.get("custom_env") or "")})
     diag = (s.get("diagnostics", False) or os.environ.get("BOL_DIAG") == "1")
@@ -641,7 +650,7 @@ def _launch_once(lock_fds=(), on_started=None):
     if encrypted_exe:
         # Must wrap before gamescope: gamescope has to stay outermost so it
         # owns the compositor the game renders into.
-        cmd = xodus.wrap_encrypted_launch(cmd, Path(gd), DATA / "run")
+        cmd = xodus.wrap_encrypted_launch(cmd, Path(gd), DATA / "run", env=env)
     if use_gamescope:
         if gs_opt and not env_flag(gs_opt):
             gs_argv = ["gamescope"] + shlex.split(gs_opt)

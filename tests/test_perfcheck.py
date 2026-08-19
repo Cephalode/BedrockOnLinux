@@ -379,13 +379,15 @@ class GameFrameLimiterTests(unittest.TestCase):
 class FrameRateLimitTests(unittest.TestCase):
     """The cap the launcher hands vkd3d-proton, and when it declines to."""
 
-    def _apply(self, environ=None, refresh_hz=143.85, env=None, **options):
+    def _apply(self, environ=None, refresh_hz=143.85, env=None,
+               settings=None, **options):
         with tempfile.TemporaryDirectory() as td:
             prefix = _prefix(td, **options) if options else None
             with mock.patch.object(launch, "info"), \
                     mock.patch.object(launch, "warn") as warned:
                 applied = launch._configure_frame_rate_limit(
-                    env if env is not None else {}, prefix,
+                    env if env is not None else {},
+                    {} if settings is None else settings, prefix,
                     environ=environ or {},
                     refresh_probe=lambda: refresh_hz)
         return applied, warned
@@ -433,6 +435,39 @@ class FrameRateLimitTests(unittest.TestCase):
         self.assertIsNone(applied)
         self.assertNotIn("VKD3D_FRAME_RATE", env)
 
+    def test_the_settings_switch_turns_it_off(self):
+        env = {}
+        applied, _ = self._apply(env=env, settings={"limit_frame_rate": False},
+                                 gfx_vsync="0", gfx_max_framerate="0")
+        self.assertIsNone(applied)
+        self.assertNotIn("VKD3D_FRAME_RATE", env)
+
+    def test_the_switch_is_on_for_an_installation_that_predates_it(self):
+        # Settings written before the switch existed carry no key, and the
+        # uncapped menu they produce is the bug report, not a preference.
+        env = {}
+        applied, _ = self._apply(env=env, settings={}, gfx_vsync="0",
+                                 gfx_max_framerate="0")
+        self.assertEqual(applied, 144)
+
+    def test_an_explicit_rate_outranks_the_switch(self):
+        env = {}
+        applied, _ = self._apply(env=env, settings={"limit_frame_rate": False},
+                                 environ={"BOL_FRAME_RATE": "90"},
+                                 gfx_vsync="0", gfx_max_framerate="0")
+        self.assertEqual(applied, 90)
+        self.assertEqual(env["VKD3D_FRAME_RATE"], "90")
+
+    def test_the_switch_off_needs_no_display_probe(self):
+        probed = []
+        env = {}
+        with mock.patch.object(launch, "info"), mock.patch.object(launch, "warn"):
+            applied = launch._configure_frame_rate_limit(
+                env, {"limit_frame_rate": False}, None, environ={},
+                refresh_probe=lambda: probed.append(1) or 143.85)
+        self.assertIsNone(applied)
+        self.assertEqual(probed, [])
+
     def test_an_explicit_rate_applies_to_a_paced_loop_too(self):
         env = {}
         applied, _ = self._apply(env=env, environ={"BOL_FRAME_RATE": "90"},
@@ -470,7 +505,7 @@ class FrameRateLimitTests(unittest.TestCase):
                                    side_effect=OSError) as probed, \
                     mock.patch.object(launch, "warn"):
                 applied = launch._configure_frame_rate_limit(
-                    env, prefix, environ={})
+                    env, {}, prefix, environ={})
         # The real probe is what a launch with no seam supplied reaches for.
         self.assertTrue(probed.called)
         self.assertIsNone(applied)

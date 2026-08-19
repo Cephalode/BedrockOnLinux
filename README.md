@@ -455,11 +455,14 @@ attached **when, and only when, the game has no limit of its own** — the same
 menu then costs 3-16% of the card. Choosing vsync or a *Max Framerate* in
 Video settings keeps exactly what you chose.
 
-Set `BOL_FRAME_RATE` in *Settings ▸ Advanced ▸ custom environment* to override
-it: `0` never caps, and a number caps at that many frames per second whatever
-the game is configured for. It is also the cheap way to hold a rate below your
-refresh: doing it here costs the main thread a tenth of what Minecraft's own
-limiter costs.
+Turn it off with **Settings ▸ Advanced ▸ Limit the frame rate to the display**,
+which renders uncapped again.
+
+To pick the rate rather than only switch it off, set `BOL_FRAME_RATE` in
+*Settings ▸ Advanced ▸ custom environment*: `0` never caps, and a number caps
+at that many frames per second whatever the game and the switch are set to.
+That is also the cheap way to hold a rate below your refresh — doing it here
+costs the main thread a tenth of what Minecraft's own limiter costs.
 
 ## Engine integrity
 
