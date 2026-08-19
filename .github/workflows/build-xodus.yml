@@ -72,7 +72,12 @@ jobs:
               #   login webview.
               # libssl-dev: openssl-sys, pulled in through
               #   dbus-secret-service-keyring-store even under key-chain-file.
-              apt-get install -y --no-install-recommends \
+              # --allow-downgrades: every package here comes from the pinned
+              # snapshot, but the base image ships some of them newer, and
+              # libwebkit2gtk-4.1-dev reaches liblzma-dev, which pins liblzma5
+              # to the snapshot's exact version. Refusing that downgrade is
+              # apt protecting the image; taking it is what pinning means.
+              apt-get install -y --no-install-recommends --allow-downgrades \
                 build-essential pkg-config git ca-certificates curl \
                 protobuf-compiler libwebkit2gtk-4.1-dev libssl-dev \
                 tar gzip coreutils
