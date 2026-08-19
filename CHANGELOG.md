@@ -4,6 +4,27 @@
 
 ### Fixed
 
+- **SteamOS can install and start the game again**
+  ([#184](https://github.com/Wyze3306/BedrockOnLinux/issues/184)). On a Steam
+  Deck, linking the Microsoft account failed with `No such file or directory`.
+  Behind it: `xodus-cli: error while loading shared libraries:
+  libwebkit2gtk-4.1.so.0`. Xodus links its login webview into every subcommand,
+  so that library has to load before the program starts — which makes it a
+  requirement not only of the sign-in window, but of the download *and* of
+  every launch, since a Store-installed executable stays encrypted on disk and
+  `xodus-cli run` is what decrypts it. SteamOS ships no WebKitGTK, and its
+  rootfs is read-only, so installing one means disabling that and losing it
+  again at the next update: the AppImage was simply unusable there for anyone
+  who did not already have the game. The launcher now carries that stack
+  itself. When the host has WebKitGTK — every ordinary distribution, the
+  `.deb`, the `.rpm`, the Flatpak's runtime — nothing changes and nothing is
+  downloaded. When it does not, one ~80 MB archive is fetched, verified
+  against a pinned SHA-256, and used for xodus-cli alone; the game is handed
+  back its own environment one exec before it starts, so Wine and the Steam
+  Linux Runtime keep their own libraries. Where even that is unavailable, the
+  failure now names the missing library and the package that provides it on
+  *this* distribution, instead of the loader's `No such file or directory`.
+
 - **The main menu no longer runs the GPU at full load**
   ([#150](https://github.com/Wyze3306/BedrockOnLinux/issues/150)). A still
   image over a panorama was pinning cards at 87-90%, hot and loud, before the

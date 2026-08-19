@@ -15,7 +15,8 @@ from .log import BolError
 
 
 _PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
-_SHARED_DIRS = ("games", "proton", "umu", "cache", "xodus", "xodus-xcurl")
+_SHARED_DIRS = ("games", "proton", "umu", "cache", "xodus", "xodus-xcurl",
+                "xodus-webview")
 
 
 def profile_slug(name):

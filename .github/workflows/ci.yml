@@ -147,6 +147,20 @@ jobs:
           check_pin "xodus-cli (XODUS_ARCHIVE_SHA256)" \
             "xodus-${xodus_rev}" "xodus-cli-${xodus_rev}.tar.gz" "$xodus_pin" || fail=1
 
+          # The WebKitGTK runtime rides in the same release as the binary it
+          # belongs to. An unset pin is a supported state -- the launcher then
+          # asks for the host package instead of installing unverified bytes --
+          # so only a set pin has to resolve.
+          webview_rev="$(grep -m1 '^XODUS_WEBVIEW_REV = ' "$cfg" | cut -d'"' -f2)"
+          webview_pin="$(grep -m1 '^XODUS_WEBVIEW_SHA256 = ' "$cfg" | cut -d'"' -f2)"
+          if [ -n "$webview_pin" ]; then
+            check_pin "WebKitGTK runtime (XODUS_WEBVIEW_SHA256)" \
+              "xodus-${xodus_rev}" "xodus-webview-${webview_rev}.tar.xz" \
+              "$webview_pin" || fail=1
+          else
+            echo "== skipping the WebKitGTK runtime: XODUS_WEBVIEW_SHA256 is unset"
+          fi
+
           if [ "$fail" -ne 0 ]; then
             echo "::error::One or more release pins in bol/config.py do not resolve to a matching published asset on ${repo}." >&2
             exit 1

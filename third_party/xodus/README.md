@@ -57,6 +57,27 @@ Linux — `key-chain-file` stops that store from being *used*, but it is still
 compiled, so `libssl-dev` is required to build even though the file keyring
 never touches it.
 
+## The WebKitGTK runtime beside it
+
+`mod webview` is not behind a feature, so `libwebkit2gtk-4.1.so.0` has to load
+before `main()` — for `login`, but equally for `streaming` and for `run`, which
+starts every Store-installed game. A host without WebKitGTK therefore cannot
+sign in, download or play, and immutable images (SteamOS) cannot install one:
+issue #184.
+
+`scripts/build-xodus-webview.sh` packages that stack from the same pinned
+snapshot as the binary, and `bol/webview.py` uses it only where the host has
+none. Two things are worth knowing before touching either:
+
+- The helper processes (`WebKitWebProcess`, `WebKitNetworkProcess`) are spawned
+  from a directory compiled into the library. `WEBKIT_EXEC_PATH` overrides it
+  in developer builds only, and Debian's is not one, so the launcher rewrites
+  that literal in place — which is why `XODUS_WEBVIEW_EXEC_DIR` is a pin, and
+  why the replacement must be shorter than it.
+- Nothing else is patched. The bundle is stock Debian packages with a `$ORIGIN`
+  RUNPATH, listed in the `PACKAGES` file it carries, so it can be rebuilt and
+  compared byte for byte.
+
 ## License
 
 Xodus is GPL-3.0; BedrockOnLinux is MIT. The launcher never links Xodus code —

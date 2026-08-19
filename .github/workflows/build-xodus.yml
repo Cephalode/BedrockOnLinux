@@ -28,6 +28,9 @@ on:
       sha256:
         description: "SHA-256 of the built xodus-cli archive"
         value: ${{ jobs.build.outputs.sha256 }}
+      webview_sha256:
+        description: "SHA-256 of the built WebKitGTK runtime archive"
+        value: ${{ jobs.build.outputs.webview_sha256 }}
   workflow_dispatch:
     inputs:
       publish:
@@ -55,6 +58,7 @@ jobs:
     outputs:
       sha256: ${{ steps.build.outputs.sha256 }}
       rev: ${{ steps.build.outputs.rev }}
+      webview_sha256: ${{ steps.webview.outputs.sha256 }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -86,17 +90,27 @@ jobs:
               #   login webview.
               # libssl-dev: openssl-sys, pulled in through
               #   dbus-secret-service-keyring-store even under key-chain-file.
+              # glib-networking: the GIO TLS backend. Only a Recommends of
+              #   libsoup3, so --no-install-recommends leaves it out, and the
+              #   webview bundle would then be unable to load an https page.
+              # patchelf, xz-utils: build-xodus-webview.sh makes every bundled
+              #   object find the rest of the bundle relative to itself.
               # No apostrophes anywhere in this script: it is a single quoted
               # argument to docker run, and one would end it here and hand the
               # rest to the host shell.
               apt-get install -y --no-install-recommends --allow-downgrades \
                 build-essential pkg-config git ca-certificates curl \
                 protobuf-compiler libwebkit2gtk-4.1-dev libssl-dev \
+                glib-networking patchelf xz-utils \
                 tar gzip coreutils
               curl -fsSL --retry 5 https://sh.rustup.rs \
                 | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
               . "$HOME/.cargo/env"
               scripts/build-xodus-cli.sh /tmp/xodus-work
+              # The same container, because the bundle has to be the closure of
+              # the binary that was just built, taken from the same snapshot.
+              scripts/build-xodus-webview.sh /tmp/xodus-webview-work \
+                /tmp/xodus-work/xodus/target/release/xodus-cli
             '
           sudo chown -R "$(id -u):$(id -g)" dist
 
@@ -129,6 +143,37 @@ jobs:
             echo "REV=$rev"
           } >> "$GITHUB_ENV"
 
+      - name: Check the WebKitGTK runtime against its pin
+        id: webview
+        run: |
+          rev="$(grep -m1 '^XODUS_WEBVIEW_REV = ' bol/config.py | cut -d'"' -f2)"
+          pin="$(grep -m1 '^XODUS_WEBVIEW_SHA256 = ' bol/config.py | cut -d'"' -f2)"
+          f="dist/xodus-webview-${rev}.tar.xz"
+          if [ ! -f "$f" ]; then
+            echo "::error::expected $f but it was not produced." >&2
+            ls -la dist || true
+            exit 1
+          fi
+          built="$(sha256sum "$f" | cut -d' ' -f1)"
+          echo "pinned : ${pin:-<unset>}"
+          echo "built  : $built"
+          # An unset pin is the bootstrap case: the launcher refuses to install
+          # an unpinned runtime, so publishing one is how its SHA-256 becomes
+          # known. Once pinned, a mismatch means the snapshot moved under us.
+          if [ -n "$pin" ] && [ "$built" != "$pin" ]; then
+            echo "::error::xodus-webview SHA-256 does not match XODUS_WEBVIEW_SHA256." \
+                 "Re-pin bol/config.py from a reviewed build of this commit." >&2
+            exit 1
+          fi
+          if [ -z "$pin" ]; then
+            echo "::warning::XODUS_WEBVIEW_SHA256 is unset; pin $built in bol/config.py."
+          fi
+          {
+            echo "WEBVIEW_TARBALL=$f"
+            echo "WEBVIEW_REV=$rev"
+          } >> "$GITHUB_ENV"
+          echo "sha256=$built" >> "$GITHUB_OUTPUT"
+
       - name: Upload artifact (reuse within a run)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -138,6 +183,8 @@ jobs:
             ${{ env.TARBALL }}.sha256
             ${{ env.SRC_TARBALL }}
             ${{ env.SRC_TARBALL }}.sha256
+            ${{ env.WEBVIEW_TARBALL }}
+            ${{ env.WEBVIEW_TARBALL }}.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -145,7 +192,9 @@ jobs:
         if: ${{ inputs.publish }}
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: ${{ env.TARBALL }}
+          subject-path: |
+            ${{ env.TARBALL }}
+            ${{ env.WEBVIEW_TARBALL }}
 
       - name: Publish the xodus-cli release
         if: ${{ inputs.publish }}
@@ -162,9 +211,16 @@ jobs:
             Verify with: gh attestation verify <file> --repo ${{ github.repository }}.
             Xodus is GPL-3.0; the complete corresponding source is published as
             xodus-src-${{ env.REV }}.tar.gz in this same release.
+            xodus-webview-${{ env.WEBVIEW_REV }}.tar.xz beside it is the
+            WebKitGTK stack that binary links, for hosts that ship none
+            (SHA-256 ${{ steps.webview.outputs.sha256 }}); it is Debian
+            packages, unmodified apart from the RUNPATH that makes them
+            relocatable, listed in the PACKAGES file it carries.
           files: |
             ${{ env.TARBALL }}
             ${{ env.TARBALL }}.sha256
             ${{ env.SRC_TARBALL }}
             ${{ env.SRC_TARBALL }}.sha256
+            ${{ env.WEBVIEW_TARBALL }}
+            ${{ env.WEBVIEW_TARBALL }}.sha256
           fail_on_unmatched_files: true

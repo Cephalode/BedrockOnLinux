@@ -27,6 +27,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
+from . import webview
 from .archive import safe_extract_tar
 from .config import (
     CACHE,
@@ -73,6 +74,11 @@ _UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30,
           "TiB": 1 << 40}
 _TOTAL_BAR = re.compile(r"^(initializing|downloading)", re.I)
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# ld.so, not Xodus: "…/xodus-cli: error while loading shared libraries:
+# libwebkit2gtk-4.1.so.0: cannot open shared object file: No such file or
+# directory" is all a host without WebKitGTK ever gets to print.
+_LOADER_ERROR = re.compile(
+    r"error while loading shared libraries:\s*([^:\s]+)")
 
 
 def edition(edition_id):
@@ -284,16 +290,19 @@ def login():
     This is a *separate* account link from bol.auth's device-code flow, which
     stays as-is for the in-game sign-in: Xodus needs a device-bound legacy RPS
     token to talk to the licensing service, which a device-code OAuth token
-    cannot stand in for. Opens Xodus's own webview window, so it needs
-    libwebkit2gtk-4.1 and a display.
+    cannot stand in for. Opens Xodus's own webview window, so it needs a
+    display and libwebkit2gtk-4.1 -- from the host, or from the runtime
+    bol.webview installs where the host has none.
     """
     binary = ensure_cli()
     info("Sign in to the Microsoft account that owns Minecraft …")
-    proc = subprocess.run([str(binary), "login"], env=_env(),
+    proc = subprocess.run([str(binary), "login"], env=_env(binary),
                           capture_output=True, text=True)
     if proc.returncode != 0 or not signed_in():
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        output = (proc.stderr or proc.stdout or "").strip()
+        detail = output.splitlines()
         raise XodusError(
+            _loader_failure(output) or
             "Microsoft sign-in for the Minecraft download did not complete"
             + (f": {detail[-1]}" if detail else ".")
         )
@@ -304,14 +313,37 @@ def login():
 def logout(device=False):
     binary = ensure_cli()
     cmd = [str(binary), "logout"] + (["--device"] if device else [])
-    subprocess.run(cmd, env=_env(), capture_output=True, text=True)
+    subprocess.run(cmd, env=_env(binary), capture_output=True, text=True)
 
 
-def _env():
+def _loader_failure(text):
+    """The message to show when xodus-cli died in the dynamic loader.
+
+    _env() installs the bundled WebKitGTK before that can happen, so reaching
+    here means the library it found was unusable -- report the missing library
+    rather than "No such file or directory", which is what the loader says and
+    what issue #184 is about.
+    """
+    match = _LOADER_ERROR.search(text or "")
+    if not match:
+        return None
+    return webview.missing_message(
+        "The Minecraft downloader could not start: it needs "
+        f"{match.group(1)}, which this system does not have.")
+
+
+def _env(binary=None):
+    """The environment xodus-cli runs in.
+
+    xodus-cli cannot start at all without WebKitGTK -- the login webview is
+    linked into every subcommand -- so hosts that ship none get the bundled
+    runtime added here rather than at the sign-in alone.
+    """
     env = os.environ.copy()
     # Xodus writes its file keyring under $HOME; keep it explicit so a launcher
     # started with a scrubbed environment still finds the same session.
     env.setdefault("HOME", str(Path.home()))
+    webview.apply(binary if binary is not None else XODUS_BIN, env)
     return env
 
 
@@ -353,6 +385,9 @@ def install(product, dest: Path, progress=None):
             raise NotSignedIn(
                 "The Microsoft session for the download expired. Sign in "
                 "again.")
+        loader = _loader_failure(text)
+        if loader:
+            raise XodusError(loader)
         raise XodusError(
             f"The Minecraft download failed{': ' + _failure_line(tail) if _failure_line(tail) else '.'}")
     return dest
@@ -382,10 +417,11 @@ def _run_streaming(cmd, progress=None):
     child gets a pty; without one there would be no progress to report at all.
     """
     tail = []
+    env = _env(cmd[0])
     master, slave = pty.openpty()
     try:
         proc = subprocess.Popen(cmd, stdout=slave, stderr=slave, stdin=slave,
-                                env=_env(), close_fds=True)
+                                env=env, close_fds=True)
     except OSError as exc:
         os.close(master)
         os.close(slave)
@@ -503,6 +539,12 @@ import tempfile
 ARGV = json.loads({argv!r})
 LAUNCHER_PATH = {launcher_path!r}
 EXE_NAME = {exe_name!r}
+# What the game's environment looked like before the bundled WebKitGTK runtime
+# was added for `xodus-cli run` (empty when the host provided its own). That
+# runtime exists so xodus-cli can load; the game below must not inherit it,
+# since Wine and the Steam Linux Runtime bring their own libraries and a
+# stray LD_LIBRARY_PATH would put ours in front of them.
+WEBVIEW_ENV = json.loads({webview_env!r})
 
 ENTRIES = []
 for entry in (os.environ.get("WINE_DLL_FILE_MAP") or "").split("|"):
@@ -566,12 +608,17 @@ except Exception as exc:                                  # noqa: BLE001
 if staged:
     os.environ["WINE_DLL_FILE_MAP"] = "|".join(
         "%s:%s" % (path, mapped) for mapped, path in staged.items())
+for name, value in WEBVIEW_ENV.items():
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
 os.execvp(ARGV[0], ARGV + [nt_name])
 '''
 
 
 def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
-                          launcher_path=None):
+                          launcher_path=None, env=None):
     """Turn a launch command into one that can start an encrypted executable.
 
     The returned command runs ``xodus-cli run`` outermost. It holds the license
@@ -579,9 +626,15 @@ def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
     reimplementable here, and it hands the plaintext to Wine as a descriptor
     rather than a file. ``argv``'s last element is the executable path, which
     the wrapper replaces with the NT name Xodus assigns.
+
+    ``env`` is the environment the game will be started with. Since xodus-cli
+    is the outermost process, a host without WebKitGTK needs the bundled
+    runtime in *that* environment -- so it is added here and taken back out by
+    the wrapper, one exec before the game.
     """
     binary = ensure_cli()
     _sweep_staged_images()
+    restore = webview.apply(binary, env) if env is not None else None
     work_dir.mkdir(parents=True, exist_ok=True)
     wrapper = work_dir / "xodus-launch-wrapper.py"
     if launcher_path is None:
@@ -589,7 +642,8 @@ def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
     wrapper.write_text(
         _WRAPPER.format(argv=json.dumps(list(argv[:-1])),
                         launcher_path=launcher_path,
-                        exe_name=Path(argv[-1]).name),
+                        exe_name=Path(argv[-1]).name,
+                        webview_env=json.dumps(restore or {})),
         encoding="utf-8")
     wrapper.chmod(0o755)
     return [str(binary), "run", str(game_dir), str(wrapper)]

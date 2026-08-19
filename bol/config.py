@@ -119,6 +119,23 @@ XODUS_REV = "4615749c6e02"
 XODUS_ARCHIVE_SHA256 = "0cd9bd42d80ccf588a1f974113a7579737b041b0b7bd8e87eb8dc5d37d00c1f6"
 XODUS_DIR = DATA / "xodus"
 XODUS_BIN = XODUS_DIR / "xodus-cli"
+# xodus-cli links wry/tao unconditionally, so libwebkit2gtk-4.1 has to be
+# loadable before main() runs -- not only for the sign-in window, but for the
+# download and for `xodus-cli run`, which starts every encrypted game. Hosts
+# that ship no WebKitGTK and cannot install one (SteamOS and other immutable
+# images, issue #184) get this runtime instead: the closure of that stack,
+# built by build-xodus.yml from the same pinned snapshot as xodus-cli.
+XODUS_WEBVIEW_DIR = DATA / "xodus-webview"
+XODUS_WEBVIEW_REV = "trixie-1"
+# Integrity pin for the CI-built runtime. Empty means "never published", and
+# the launcher then reports the missing library instead of installing
+# unverified bytes -- publish .github/workflows/build-xodus.yml and pin the
+# SHA-256 it prints.
+XODUS_WEBVIEW_SHA256 = ""
+# The compiled-in directory WebKitGTK spawns its helper processes from. Modern
+# builds drop the WEBKIT_EXEC_PATH override (it is developer-mode only), so the
+# bundled library carries this literal and the launcher rewrites it in place.
+XODUS_WEBVIEW_EXEC_DIR = "/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
 # Xodus keeps its tokens in a file keyring (built with --features
 # key-chain-file) instead of a D-Bus secret service, which does not exist in a
 # Game Mode session or inside a Flatpak sandbox.

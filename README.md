@@ -287,7 +287,10 @@ layouts, not in the Flatpak sandbox.
   and LAN need none of *those*.
 - **WebKitGTK** (`libwebkit2gtk-4.1-0`), for the Store sign-in window. The
   `.deb` and `.rpm` pull it in, the Flatpak gets it from its runtime, and
-  `bedrock-on-linux doctor` reports it if it is missing.
+  `bedrock-on-linux doctor` reports it if it is missing. Immutable systems
+  that cannot install it — SteamOS above all — need nothing: the launcher
+  downloads that stack once (~80 MB) and runs the downloader against it. It
+  is used for nothing else, and the game is never started with it.
 
 GPUs stuck on Vulkan 1.2 can try **Settings ▸ Advanced ▸ Legacy compatibility
 renderer**, but treat it as a last resort: it swaps the entire Direct3D stack —
