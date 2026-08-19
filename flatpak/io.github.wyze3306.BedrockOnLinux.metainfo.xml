@@ -70,6 +70,35 @@
   </content_rating>
 
   <releases>
+    <release version="2.2.0" date="2026-08-19">
+      <description>
+        <p>Minecraft is now downloaded from the Microsoft Store with your own
+           account, and the launcher opens again in every session.</p>
+        <ul>
+          <li>downloads the game from the Microsoft Store with the account you
+              link, using the licence that account holds, instead of a
+              repackaged copy from a third-party repository: you must own
+              Minecraft on that account to install it, and the Store sign-in is
+              a second, separate link from the in-game one</li>
+          <li>keeps the choice of build, and adds the edition: Minecraft or
+              Minecraft Preview, then any build, each in its own folder</li>
+          <li>plays a Store package whose executable stays encrypted on disk,
+              by decrypting it into memory at launch; such a package needs the
+              network and a valid Store session at every start, even for
+              single-player</li>
+          <li>installs the game inside the Flatpak sandbox again: the manifest
+              moved to the GNOME runtime, the only one carrying the WebKitGTK
+              the Store sign-in window needs</li>
+          <li>stops the crash that hit the main menu as soon as an account was
+              signed in</li>
+          <li>opens the launcher window in every session, including Steam Deck
+              Game Mode, where the game had become unreachable; launching
+              without the launcher stays available where it is asked for</li>
+          <li>names why the game is slow before it starts, and adds a ray
+              tracing switch to Settings</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.1.4" date="2026-08-11">
       <description>
         <p>Fixes the game freezing when its window is hidden, and makes the
