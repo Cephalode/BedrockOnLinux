@@ -119,8 +119,9 @@ jobs:
               echo "::error::${label}: published asset SHA-256 does not match the pin in ${cfg}." >&2
               echo "  pin      : ${pin}" >&2
               echo "  published: ${got}" >&2
-              echo "  A stale/rebuilt pin usually means build-engine.yml (or build-xcurl.yml) was never" >&2
-              echo "  run with publish:true against ${repo} after the pin changed." >&2
+              echo "  A stale/rebuilt pin usually means the matching build workflow" >&2
+              echo "  (build-engine.yml, build-xcurl.yml or build-xodus.yml) was never run" >&2
+              echo "  with publish:true against ${repo} after the pin changed." >&2
               return 1
             fi
             echo "   ok — ${label} pin matches the published asset."
@@ -137,6 +138,14 @@ jobs:
           xcurl_pin="$(grep -m1 '^OPENSSL_XCURL_ARCHIVE_SHA256 = ' "$cfg" | cut -d'"' -f2)"
           check_pin "OpenSSL-XCurl set (OPENSSL_XCURL_ARCHIVE_SHA256)" \
             "xcurl-${xcurl_rev}" "openssl-xcurl-set-${xcurl_rev}.tar.gz" "$xcurl_pin" || fail=1
+
+          # xodus-cli is downloaded the first time someone installs the game, so
+          # an unpublished pin here is not a setup-time failure but an
+          # install-time one: the launcher signs in, then cannot fetch anything.
+          xodus_rev="$(grep -m1 '^XODUS_REV = ' "$cfg" | cut -d'"' -f2)"
+          xodus_pin="$(grep -m1 '^XODUS_ARCHIVE_SHA256 = ' "$cfg" | cut -d'"' -f2)"
+          check_pin "xodus-cli (XODUS_ARCHIVE_SHA256)" \
+            "xodus-${xodus_rev}" "xodus-cli-${xodus_rev}.tar.gz" "$xodus_pin" || fail=1
 
           if [ "$fail" -ne 0 ]; then
             echo "::error::One or more release pins in bol/config.py do not resolve to a matching published asset on ${repo}." >&2
