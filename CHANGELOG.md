@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Settings no longer reset themselves after a crash** (#175). Players lost
+  their keyboard mappings, the tutorial flags and the whole *Video ▸ Mode*
+  block at random, with nothing in any log to explain it. The settings that
+  went were never random: Minecraft saves `options.txt` by truncating it and
+  streaming the entire file back, so when the game dies part-way through that
+  write — and on Wine it does, with the unhandled page fault the same sessions
+  report — the file is left cut off, and every key past the cut reads as its
+  default next time. Those four are simply what lives in the tail. The
+  launcher now keeps a copy of the settings file before the game starts and
+  puts it back when the game leaves a torn one behind, so an interrupted save
+  costs that session's changes rather than a rebuilt control scheme. Only a
+  file that cannot be a finished save is ever replaced, and only from a copy
+  the launcher took itself: a settings file Minecraft wrote to the end is left
+  alone however much it changed.
+
+- **The launcher no longer rewrites Minecraft's settings file wholesale.**
+  Disabling the repeated online-multiplayer warning reparsed `options.txt` and
+  regenerated it from scratch — 14,728 of 15,458 bytes rewritten for a
+  one-character change, every CRLF terminator converted to LF, and any line
+  the launcher could not parse dropped on the floor. It also ran the instant
+  the umu wrapper returned, which is not the instant Minecraft exits: the
+  launcher could be rewriting the file while the game was still saving to it.
+  It now edits the single line it owns, writes through a rename so the file is
+  never observed half-written, and waits for the prefix to be idle first.
+
 ## 2.2.0 — 2026-08-19
 
 ### Added

@@ -62,6 +62,8 @@ class ReadyLaunchHarness:
             mock.patch.object(launch, "proton_umu_cmd",
                               return_value=(["fake-umu"], dict(umu_env or {}))),
             mock.patch.object(launch, "patch_options"),
+            mock.patch.object(launch, "snapshot_game_options"),
+            mock.patch.object(launch, "restore_truncated_game_options"),
             mock.patch.object(launch, "diagnose", return_value=[]),
             mock.patch.object(launch, "_prefix_stably_idle_after_wrapper",
                               return_value=prefix_idle),

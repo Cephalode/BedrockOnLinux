@@ -46,6 +46,8 @@ from .prefix import (
     patch_options,
     prefix_processes,
     proton_umu_cmd,
+    restore_truncated_game_options,
+    snapshot_game_options,
 )
 from .proton import custom_proton, patch_proton, proton_path
 from .util import (
@@ -552,6 +554,13 @@ def _launch_once(lock_fds=(), on_started=None):
     _warn_custom_env_overrides(s.get("custom_env") or "")
     # Prevent diagnosis from attributing stale Proton logs to this launch.
     _clear_previous_proton_logs()
+    # Repair a settings file a previous crash cut off before the game reads
+    # it, then keep a copy of what it is about to start rewriting (#175).
+    # Safe to declare idle: _prepare_launch_engine() refused to get this far
+    # with a live prefix and the game has not been started yet, so nothing
+    # that writes options.txt can be running, whatever wineboot left behind.
+    restore_truncated_game_options(prefix_idle=True)
+    snapshot_game_options()
     info("Starting Minecraft … sign in with Microsoft in-game, then "
          "join your server from the Servers tab.")
     glog = open(LOGS / "minecraft.log", "w")
@@ -606,6 +615,7 @@ def _launch_once(lock_fds=(), on_started=None):
                     ok("Minecraft is running — close the game window to come "
                        "back here.")
     finally:
+        prefix_idle = None
         if game_returned and gpu_marker_token:
             try:
                 wrapper_returned_recorded = mark_gpu_wrapper_returned(
@@ -618,7 +628,8 @@ def _launch_once(lock_fds=(), on_started=None):
                 warn("Minecraft returned, but its GPU marker could not record "
                      "the completed wrapper phase. A failed teardown will "
                      "require explicit Doctor acknowledgement.")
-            if not _prefix_stably_idle_after_wrapper():
+            prefix_idle = _prefix_stably_idle_after_wrapper()
+            if not prefix_idle:
                 warn("The UMU wrapper returned while Wine/Minecraft processes "
                      "still appear live. The GPU safety marker was retained; "
                      "force-stop the remaining processes and inspect the "
@@ -628,7 +639,12 @@ def _launch_once(lock_fds=(), on_started=None):
                      f"be cleared. Run '{acknowledge_gpu_crash_command()}' "
                      "after checking the driver.")
         glog.close()
-        patch_options()
+        # Both of these rewrite the file Minecraft keeps its settings in, so
+        # neither may run while the game could still be saving to it (#175).
+        if prefix_idle is None:
+            prefix_idle = _prefix_stably_idle_after_wrapper()
+        restore_truncated_game_options(prefix_idle=prefix_idle)
+        patch_options(prefix_idle=prefix_idle)
         logs = sorted(LOGS.glob("steam-*.log"),
                       key=lambda p: p.stat().st_mtime if p.exists() else 0)
         if logs:

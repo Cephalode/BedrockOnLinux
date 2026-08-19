@@ -33,6 +33,7 @@ from .config import (
     WINEGDK_OUT,
 )
 from .log import BolError, die, info, ok, warn
+from .perfcheck import find_options_files
 from .proton import proton_path
 from .util import download, sha256_file
 
@@ -823,26 +824,177 @@ def reset_prefix():
 OPTIONS_REL = ("drive_c/users/steamuser/AppData/Roaming/Minecraft Bedrock/"
                "Users/Shared/games/com.mojang/minecraftpe/options.txt")
 
+# Minecraft saves options.txt by truncating the file and streaming the whole
+# thing back. A crash in that window — and the game does crash on Wine with an
+# unhandled page fault — leaves the file cut off mid-write, and every setting
+# past the cut silently reads as its default next time (#175). The tail is
+# where the graphics mode, the tutorial flags and the entire keyboard-mapping
+# block live, which is why those are the ones players notice losing. The write
+# is the game's, so it cannot be made atomic from here; keep a copy of the last
+# intact file instead and put it back when the game leaves a torn one behind.
+OPTIONS_BACKUP_SUFFIX = ".bol-backup"
 
-def patch_options():
+_MULTIPLAYER_WARNING_KEY = b"do_not_show_multiplayer_online_safety_warning"
+
+
+def _options_backup_path(options_path: Path) -> Path:
+    return options_path.with_name(options_path.name + OPTIONS_BACKUP_SUFFIX)
+
+
+def _read_bytes(path: Path):
+    """The file's contents, or None when it cannot be read at all."""
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _options_intact(data) -> bool:
+    """Whether *data* is a finished options.txt rather than a cut-off write.
+
+    Minecraft terminates every line it writes, so a file that stops without a
+    line ending stopped in the middle of being written. Demanding at least one
+    parsed ``key:value`` on top of that keeps an empty or shredded file from
+    being mistaken for a good copy worth keeping.
+    """
+    if not data or not data.endswith(b"\n"):
+        return False
+    return any(b":" in line for line in data.splitlines())
+
+
+def _write_options_atomically(path: Path, data: bytes) -> bool:
+    """Replace *path* with *data* in one step, or leave it exactly as it was.
+
+    Writing in place is what produces a half-file if anything interrupts the
+    write; a rename cannot be observed halfway through.
+    """
+    tmp = None
+    try:
+        handle_fd, name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        tmp = Path(name)
+        with os.fdopen(handle_fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(tmp), str(path))
+        return True
+    except OSError:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return False
+
+
+def _options_files(prefix=None):
+    """Every settings file the game may be using, across accounts."""
+    root = active_prefix() if prefix is None else Path(prefix)
+    try:
+        return find_options_files(root)
+    except OSError:
+        return []
+
+
+def _prefix_is_idle(prefix_idle=None) -> bool:
+    """Whether nothing in the prefix can still be writing the settings file.
+
+    Callers that have already waited for the prefix to settle pass their
+    answer in rather than paying for a second scan.
+    """
+    if prefix_idle is not None:
+        return bool(prefix_idle)
+    try:
+        return not prefix_processes(active_prefix())
+    except OSError:
+        return False
+
+
+def snapshot_game_options(prefix=None) -> int:
+    """Keep a copy of each intact options.txt before the game rewrites it.
+
+    Only an intact file may replace a kept copy. If the previous session
+    already left a torn one behind, the good copy from before it is the whole
+    point and has to survive.
+    """
+    kept = 0
+    for path in _options_files(prefix):
+        data = _read_bytes(path)
+        if not _options_intact(data):
+            continue
+        backup = _options_backup_path(path)
+        if _read_bytes(backup) == data:
+            kept += 1
+            continue
+        if _write_options_atomically(backup, data):
+            kept += 1
+    return kept
+
+
+def restore_truncated_game_options(prefix=None, prefix_idle=None):
+    """Put back any options.txt the game left cut off mid-write (#175).
+
+    Deliberately narrow: it restores only from a copy this launcher took
+    itself, and only over a file that cannot be a finished save. A settings
+    file the game wrote to the end is never touched, however much it changed.
+    """
+    restored = []
+    for path in _options_files(prefix):
+        if _options_intact(_read_bytes(path)):
+            continue
+        kept = _read_bytes(_options_backup_path(path))
+        if not _options_intact(kept):
+            continue
+        if not _prefix_is_idle(prefix_idle):
+            # The game is still shutting down and may yet finish its save.
+            return restored
+        if _write_options_atomically(path, kept):
+            restored.append(path)
+    if restored:
+        warn("Minecraft was interrupted while saving its settings and left "
+             "options.txt cut off — the last complete copy has been restored. "
+             "Settings changed during that session may need setting again.")
+    return restored
+
+
+def _set_option_line(data: bytes, key: bytes, value: bytes):
+    """*data* with one ``key:value`` line set, or None when already set.
+
+    Rewrites only the line it owns. Every other byte — the file's CRLF
+    terminators, the key order, and any line this launcher does not
+    understand — is carried over untouched, because Minecraft's own writer
+    produced them and is the only thing that should be changing them.
+    """
+    newline = b"\r\n" if b"\r\n" in data else b"\n"
+    lines = data.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        body = line.rstrip(b"\r\n")
+        name, separator, current = body.partition(b":")
+        if separator and name.strip() == key:
+            if current.strip() == value:
+                return None
+            lines[index] = key + b":" + value + (line[len(body):] or newline)
+            return b"".join(lines)
+    return data + key + b":" + value + newline
+
+
+def patch_options(prefix_idle=None):
+    """Turn off Minecraft's repeated online-multiplayer safety warning.
+
+    This runs once the game has exited, so it has to be sure the game is
+    really gone first: two processes truncating and rewriting the same
+    settings file is precisely how one ends up cut in half (#175).
+    """
     opt = PFX / OPTIONS_REL
-    if not opt.exists():
+    data = _read_bytes(opt)
+    if not _options_intact(data):
         return
-    kv, order = {}, []
-    for l in opt.read_text(errors="ignore").splitlines():
-        if ":" in l:
-            k, _, v = l.partition(":")
-            k = k.strip()
-            if k not in kv:
-                order.append(k)
-            kv[k] = v.strip()
-    if kv.get("do_not_show_multiplayer_online_safety_warning") == "1":
+    updated = _set_option_line(data, _MULTIPLAYER_WARNING_KEY, b"1")
+    if updated is None or not _prefix_is_idle(prefix_idle):
         return
-    if "do_not_show_multiplayer_online_safety_warning" not in order:
-        order.append("do_not_show_multiplayer_online_safety_warning")
-    kv["do_not_show_multiplayer_online_safety_warning"] = "1"
-    opt.write_text("\n".join(f"{k}:{kv[k]}" for k in order) + "\n")
-    ok("Multiplayer warning disabled")
+    if _write_options_atomically(opt, updated):
+        ok("Multiplayer warning disabled")
 
 
 def _mc_running():

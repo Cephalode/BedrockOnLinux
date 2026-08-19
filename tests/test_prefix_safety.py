@@ -1297,5 +1297,134 @@ class PrefixOperationLockTests(unittest.TestCase):
                                 pass
 
 
+_OPTIONS_REL = ("drive_c/users/steamuser/AppData/Roaming/Minecraft Bedrock/"
+                "Users/%s/games/com.mojang/minecraftpe/options.txt")
+
+# A settings file shaped like Minecraft's own: CRLF terminators, and the keys
+# players report losing (#175) sitting in the tail where a cut-off write drops
+# them — graphics mode, tutorial flags, keyboard mappings.
+_OPTIONS_HEAD = b"gfx_viewdistance:96\r\naudio_main:1\r\n"
+_OPTIONS_TAIL = (b"graphics_mode:2\r\nhas_dismissed_new_player_flow:1\r\n"
+                 b"graphics_mode_switch:1\r\nkeyboard_type_0_key.jump:32\r\n")
+_OPTIONS_FULL = _OPTIONS_HEAD + _OPTIONS_TAIL
+
+
+def _write_options(root, body, user="Shared"):
+    """One options.txt inside a prefix tree, as the game would leave it."""
+    path = Path(root) / (_OPTIONS_REL % user)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return path
+
+
+class GameOptionsTruncationTests(unittest.TestCase):
+    """The settings file must survive a save the game never finished (#175)."""
+
+    def test_a_write_cut_off_mid_line_is_not_mistaken_for_a_finished_save(self):
+        self.assertTrue(prefix._options_intact(_OPTIONS_FULL))
+        # Cut where a buffered write would stop: mid-line, no terminator.
+        self.assertFalse(prefix._options_intact(_OPTIONS_HEAD + b"graphics_mo"))
+        self.assertFalse(prefix._options_intact(b""))
+        self.assertFalse(prefix._options_intact(None))
+        # Terminated but holding nothing parseable is not a copy worth keeping.
+        self.assertFalse(prefix._options_intact(b"\r\n"))
+
+    def test_a_truncated_settings_file_is_restored_after_the_game_exits(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _write_options(td, _OPTIONS_FULL)
+            self.assertEqual(prefix.snapshot_game_options(td), 1)
+            # The game crashes part-way through rewriting it.
+            path.write_bytes(_OPTIONS_HEAD + b"graphics_mo")
+            restored = prefix.restore_truncated_game_options(
+                td, prefix_idle=True)
+            self.assertEqual(restored, [path])
+            self.assertEqual(path.read_bytes(), _OPTIONS_FULL)
+
+    def test_a_settings_file_the_game_finished_writing_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _write_options(td, _OPTIONS_FULL)
+            prefix.snapshot_game_options(td)
+            changed = _OPTIONS_HEAD + b"graphics_mode:0\r\n"
+            path.write_bytes(changed)
+            self.assertEqual(
+                prefix.restore_truncated_game_options(td, prefix_idle=True), [])
+            self.assertEqual(path.read_bytes(), changed)
+
+    def test_a_torn_file_never_overwrites_the_copy_that_could_repair_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _write_options(td, _OPTIONS_FULL)
+            prefix.snapshot_game_options(td)
+            path.write_bytes(_OPTIONS_HEAD + b"graphics_mo")
+            # A second launch must not snapshot the wreckage over the copy.
+            prefix.snapshot_game_options(td)
+            prefix.restore_truncated_game_options(td, prefix_idle=True)
+            self.assertEqual(path.read_bytes(), _OPTIONS_FULL)
+
+    def test_nothing_is_rewritten_while_the_game_may_still_be_saving(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _write_options(td, _OPTIONS_FULL)
+            prefix.snapshot_game_options(td)
+            torn = _OPTIONS_HEAD + b"graphics_mo"
+            path.write_bytes(torn)
+            self.assertEqual(
+                prefix.restore_truncated_game_options(td, prefix_idle=False),
+                [])
+            self.assertEqual(path.read_bytes(), torn)
+
+    def test_every_account_settings_file_is_guarded_not_only_the_newest(self):
+        with tempfile.TemporaryDirectory() as td:
+            shared = _write_options(td, _OPTIONS_FULL)
+            signed_in = _write_options(td, _OPTIONS_FULL, user="2533274")
+            self.assertEqual(prefix.snapshot_game_options(td), 2)
+            for path in (shared, signed_in):
+                path.write_bytes(_OPTIONS_HEAD + b"graphics_mo")
+            prefix.restore_truncated_game_options(td, prefix_idle=True)
+            self.assertEqual(shared.read_bytes(), _OPTIONS_FULL)
+            self.assertEqual(signed_in.read_bytes(), _OPTIONS_FULL)
+
+
+class MultiplayerWarningPatchTests(unittest.TestCase):
+    """Patching one setting must not rewrite the rest of the file (#175)."""
+
+    @contextmanager
+    def _prefix_with(self, body):
+        with tempfile.TemporaryDirectory() as td:
+            path = _write_options(td, body)
+            with mock.patch.object(prefix, "PFX", Path(td)), \
+                    mock.patch.object(prefix, "ok"):
+                yield path
+
+    def test_only_the_patched_line_changes_and_crlf_survives(self):
+        body = (_OPTIONS_HEAD + prefix._MULTIPLAYER_WARNING_KEY + b":0\r\n"
+                + _OPTIONS_TAIL)
+        with self._prefix_with(body) as path:
+            prefix.patch_options(prefix_idle=True)
+            self.assertEqual(
+                path.read_bytes(),
+                body.replace(b"safety_warning:0", b"safety_warning:1"))
+
+    def test_a_line_the_launcher_cannot_parse_is_carried_over_untouched(self):
+        body = _OPTIONS_HEAD + b"a comment with no separator\r\n" + _OPTIONS_TAIL
+        with self._prefix_with(body) as path:
+            prefix.patch_options(prefix_idle=True)
+            written = path.read_bytes()
+            self.assertIn(b"a comment with no separator\r\n", written)
+            self.assertTrue(written.startswith(body))
+            self.assertTrue(written.endswith(
+                b"do_not_show_multiplayer_online_safety_warning:1\r\n"))
+
+    def test_a_truncated_file_is_never_completed_by_the_patch(self):
+        torn = _OPTIONS_HEAD + b"graphics_mo"
+        with self._prefix_with(torn) as path:
+            prefix.patch_options(prefix_idle=True)
+            self.assertEqual(path.read_bytes(), torn)
+
+    def test_the_patch_waits_for_the_game_to_be_gone(self):
+        body = _OPTIONS_HEAD + _OPTIONS_TAIL
+        with self._prefix_with(body) as path:
+            prefix.patch_options(prefix_idle=False)
+            self.assertEqual(path.read_bytes(), body)
+
+
 if __name__ == "__main__":
     unittest.main()

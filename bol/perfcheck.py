@@ -60,6 +60,8 @@ _ALWAYS_COMPOSITED_DESKTOPS = (
 
 # Minecraft has kept its settings in the Roaming path since the GDK build; the
 # Local/Packages path is where a UWP-layout install of the same game puts it.
+# The Users/* wildcard matters: the game keeps one settings file per signed-in
+# account, plus a shared one for playing signed out.
 _OPTIONS_GLOBS = (
     "drive_c/users/*/AppData/Roaming/Minecraft Bedrock/Users/*/games/"
     "com.mojang/minecraftpe/options.txt",
@@ -144,14 +146,15 @@ def free_disk_problem(path, threshold_mib=LOW_DISK_MIB):
         % (free_mib, path, used_percent, _SILENCE))
 
 
-def find_options_file(prefix):
-    """The most recently written Minecraft options.txt inside a prefix.
+def find_options_files(prefix):
+    """Every Minecraft options.txt inside a prefix, in no particular order.
 
-    Returns None when the game has never written one, which is the normal
-    state before the first launch and must stay silent.
+    A prefix holds one per account the player has signed in with, and code
+    that guards the files rather than reading a setting has to see all of
+    them: the game picks which one it uses at sign-in time, not at launch.
     """
     if not prefix:
-        return None
+        return []
     root = Path(prefix)
     found = []
     for pattern in _OPTIONS_GLOBS:
@@ -159,6 +162,16 @@ def find_options_file(prefix):
             found.extend(item for item in root.glob(pattern) if item.is_file())
         except OSError:
             continue
+    return found
+
+
+def find_options_file(prefix):
+    """The most recently written Minecraft options.txt inside a prefix.
+
+    Returns None when the game has never written one, which is the normal
+    state before the first launch and must stay silent.
+    """
+    found = find_options_files(prefix)
     if not found:
         return None
     try:
