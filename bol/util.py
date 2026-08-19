@@ -518,6 +518,13 @@ def _screen_wh(runner=None):
     return primary_output_size(runner)
 
 
+def _screen_refresh_hz(runner=None):
+    """Fastest refresh rate an active output drives, or None. See
+    bol.x11.primary_output_refresh_hz for why it is the fastest one."""
+    from .x11 import primary_output_refresh_hz
+    return primary_output_refresh_hz(runner)
+
+
 def sha256_file(path):
     """SHA-256 of a file, read in blocks so a multi-gigabyte engine fits."""
     digest = hashlib.sha256()

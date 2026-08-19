@@ -293,6 +293,190 @@ class AggregateReportTests(unittest.TestCase):
         self.assertEqual(summary, "1 notice")
 
 
+class UnlimitedFrameRateTests(unittest.TestCase):
+    """Nothing pacing the render loop is what pins the GPU in the menu (#150).
+
+    Measured on an RTX 4060: with vsync off and Max Framerate on Unlimited the
+    main menu runs at ~1800 FPS for 58-72% of the card; with Max Framerate at
+    60 the same menu is 60.0 FPS. The detection has to separate that case from
+    every settings file where the player did choose a limit.
+    """
+
+    def test_vsync_off_and_slider_unlimited_is_unpaced(self):
+        self.assertTrue(perfcheck.frame_rate_is_unlimited(
+            {"gfx_vsync": "0", "gfx_max_framerate": "0"}))
+
+    def test_vsync_alone_paces_the_loop(self):
+        self.assertFalse(perfcheck.frame_rate_is_unlimited(
+            {"gfx_vsync": "1", "gfx_max_framerate": "0"}))
+
+    def test_the_slider_alone_paces_the_loop(self):
+        self.assertFalse(perfcheck.frame_rate_is_unlimited(
+            {"gfx_vsync": "0", "gfx_max_framerate": "60"}))
+
+    def test_settings_never_written_are_not_unlimited(self):
+        # Before the first launch there is no options.txt at all, and a
+        # guess there would cap a player who never chose anything.
+        self.assertFalse(perfcheck.frame_rate_is_unlimited({}))
+
+    def test_a_file_without_the_slider_is_not_unlimited(self):
+        self.assertFalse(perfcheck.frame_rate_is_unlimited(
+            {"gfx_vsync": "0"}))
+
+    def test_a_malformed_value_is_not_unlimited(self):
+        self.assertFalse(perfcheck.frame_rate_is_unlimited(
+            {"gfx_vsync": "0", "gfx_max_framerate": "unlimited"}))
+
+    def test_a_missing_vsync_key_still_counts_as_off(self):
+        self.assertTrue(perfcheck.frame_rate_is_unlimited(
+            {"gfx_max_framerate": "0"}))
+
+    def test_it_reads_the_condition_out_of_a_real_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_vsync="0", gfx_max_framerate="0")
+            options = perfcheck.read_game_options(
+                perfcheck.find_options_file(prefix))
+        self.assertTrue(perfcheck.frame_rate_is_unlimited(options))
+
+
+class GameFrameLimiterTests(unittest.TestCase):
+    """Minecraft's own limiter spins in Wine's message pump (#173).
+
+    Measured in the main menu, same scene and same 60 FPS: Max Framerate at
+    60 holds the main thread at 99% of a core (56 points of it kernel time),
+    against 10% when the launcher caps instead.
+    """
+
+    def test_the_games_own_limit_is_reported_with_its_value(self):
+        problem = perfcheck.game_frame_limiter_problem(
+            {"gfx_vsync": "0", "gfx_max_framerate": "60"})
+        self.assertIsNotNone(problem)
+        self.assertIn("60 FPS", problem)
+        self.assertIn("BOL_FRAME_RATE=60", problem)
+
+    def test_unlimited_has_no_limiter_to_spin_in(self):
+        self.assertIsNone(perfcheck.game_frame_limiter_problem(
+            {"gfx_vsync": "0", "gfx_max_framerate": "0"}))
+
+    def test_vsync_waits_inside_present_instead(self):
+        # Only the measured configuration is reported: with vsync on the main
+        # thread stayed near 20%, so warning there would be noise.
+        self.assertIsNone(perfcheck.game_frame_limiter_problem(
+            {"gfx_vsync": "1", "gfx_max_framerate": "60"}))
+
+    def test_settings_never_written_stay_quiet(self):
+        self.assertIsNone(perfcheck.game_frame_limiter_problem({}))
+
+    def test_it_is_reported_at_launch_with_the_other_conditions(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_vsync="0", gfx_max_framerate="60")
+            problems = perfcheck.performance_problems(
+                prefix, None, environ={}, meminfo_path=_meminfo(td, 9000))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Max Framerate", problems[0])
+
+
+class FrameRateLimitTests(unittest.TestCase):
+    """The cap the launcher hands vkd3d-proton, and when it declines to."""
+
+    def _apply(self, environ=None, refresh_hz=143.85, env=None, **options):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, **options) if options else None
+            with mock.patch.object(launch, "info"), \
+                    mock.patch.object(launch, "warn") as warned:
+                applied = launch._configure_frame_rate_limit(
+                    env if env is not None else {}, prefix,
+                    environ=environ or {},
+                    refresh_probe=lambda: refresh_hz)
+        return applied, warned
+
+    def test_an_unpaced_loop_is_capped_at_the_display(self):
+        env = {}
+        applied, _ = self._apply(env=env, gfx_vsync="0",
+                                 gfx_max_framerate="0")
+        # Rounded up, and whole: the limiter reads "143.85" as no limit.
+        self.assertEqual(applied, 144)
+        self.assertEqual(env["VKD3D_FRAME_RATE"], "144")
+
+    def test_a_whole_refresh_rate_is_not_rounded_past(self):
+        env = {}
+        applied, _ = self._apply(env=env, refresh_hz=60.0, gfx_vsync="0",
+                                 gfx_max_framerate="0")
+        self.assertEqual(applied, 60)
+        self.assertEqual(env["VKD3D_FRAME_RATE"], "60")
+
+    def test_a_paced_loop_is_left_alone(self):
+        env = {}
+        applied, _ = self._apply(env=env, gfx_vsync="1",
+                                 gfx_max_framerate="0")
+        self.assertIsNone(applied)
+        self.assertNotIn("VKD3D_FRAME_RATE", env)
+
+    def test_no_settings_file_means_no_cap(self):
+        env = {}
+        applied, _ = self._apply(env=env)
+        self.assertIsNone(applied)
+        self.assertNotIn("VKD3D_FRAME_RATE", env)
+
+    def test_an_unreadable_refresh_rate_warns_instead_of_guessing(self):
+        env = {}
+        applied, warned = self._apply(env=env, refresh_hz=None,
+                                      gfx_vsync="0", gfx_max_framerate="0")
+        self.assertIsNone(applied)
+        self.assertNotIn("VKD3D_FRAME_RATE", env)
+        self.assertTrue(warned.called)
+
+    def test_the_cap_can_be_turned_off(self):
+        env = {}
+        applied, _ = self._apply(env=env, environ={"BOL_FRAME_RATE": "0"},
+                                 gfx_vsync="0", gfx_max_framerate="0")
+        self.assertIsNone(applied)
+        self.assertNotIn("VKD3D_FRAME_RATE", env)
+
+    def test_an_explicit_rate_applies_to_a_paced_loop_too(self):
+        env = {}
+        applied, _ = self._apply(env=env, environ={"BOL_FRAME_RATE": "90"},
+                                 gfx_vsync="1", gfx_max_framerate="60")
+        self.assertEqual(applied, 90)
+        self.assertEqual(env["VKD3D_FRAME_RATE"], "90")
+
+    def test_an_explicit_rate_needs_no_display_and_no_settings(self):
+        env = {}
+        applied, _ = self._apply(env=env, environ={"BOL_FRAME_RATE": "75"},
+                                 refresh_hz=None)
+        self.assertEqual(applied, 75)
+        self.assertEqual(env["VKD3D_FRAME_RATE"], "75")
+
+    def test_a_typo_falls_back_to_the_automatic_behaviour(self):
+        env = {}
+        applied, warned = self._apply(
+            env=env, environ={"BOL_FRAME_RATE": "sixty"},
+            gfx_vsync="0", gfx_max_framerate="0")
+        self.assertEqual(applied, 144)
+        self.assertTrue(warned.called)
+
+    def test_an_inherited_limit_is_never_overridden(self):
+        env = {"VKD3D_FRAME_RATE": "30"}
+        applied, _ = self._apply(env=env, gfx_vsync="0",
+                                 gfx_max_framerate="0")
+        self.assertIsNone(applied)
+        self.assertEqual(env["VKD3D_FRAME_RATE"], "30")
+
+    def test_a_display_probe_that_raises_never_fails_a_launch(self):
+        env = {}
+        with tempfile.TemporaryDirectory() as td:
+            prefix = _prefix(td, gfx_vsync="0", gfx_max_framerate="0")
+            with mock.patch.object(launch, "_screen_refresh_hz",
+                                   side_effect=OSError) as probed, \
+                    mock.patch.object(launch, "warn"):
+                applied = launch._configure_frame_rate_limit(
+                    env, prefix, environ={})
+        # The real probe is what a launch with no seam supplied reaches for.
+        self.assertTrue(probed.called)
+        self.assertIsNone(applied)
+        self.assertNotIn("VKD3D_FRAME_RATE", env)
+
+
 class LaunchWiringTests(unittest.TestCase):
     def _warn_once(self, environ, problems=("something costs frames",)):
         with mock.patch.object(launch, "performance_problems",

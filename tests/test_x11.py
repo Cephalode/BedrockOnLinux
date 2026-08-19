@@ -57,6 +57,68 @@ NEGATIVE_MONITOR = (
 )
 
 
+# A 144 Hz primary next to a 60 Hz secondary, as `xrandr` with no arguments
+# prints it: the driven mode carries '*', the preferred one '+'.
+DUAL_REFRESH_RATES = (
+    "DP-1 connected primary 1920x1080+0+0 (normal left inverted right x "
+    "axis y axis) 600mm x 340mm\n"
+    "   1920x1080    143.85*+ 120.00   60.00\n"
+    "   1280x720      60.00\n"
+    "HDMI-1 connected 1920x1080+1920+0 (normal left inverted right x axis "
+    "y axis) 530mm x 300mm\n"
+    "   1920x1080     60.00*+  50.00\n"
+    "DP-2 disconnected (normal left inverted right x axis y axis)\n"
+    "   1920x1080     59.94\n"
+)
+
+NO_MODE_DRIVEN = (
+    "DP-1 disconnected (normal left inverted right x axis y axis)\n"
+    "   1920x1080     60.00 +\n"
+)
+
+
+class XrandrRefreshCliTests(unittest.TestCase):
+    """Exercises the xrandr CLI half of primary_output_refresh_hz."""
+
+    def setUp(self):
+        patcher = mock.patch.object(x11.shutil, "which", return_value="xrandr")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        have_patcher = mock.patch.object(x11, "have", return_value=False)
+        have_patcher.start()
+        self.addCleanup(have_patcher.stop)
+
+    def test_the_fastest_driven_mode_wins(self):
+        def runner(args, **_kwargs):
+            self.assertEqual(args, ["xrandr"])
+            return result(DUAL_REFRESH_RATES)
+
+        self.assertAlmostEqual(
+            x11.primary_output_refresh_hz(runner=runner), 143.85)
+
+    def test_a_mode_no_output_drives_is_not_a_refresh_rate(self):
+        def runner(args, **_kwargs):
+            return result(NO_MODE_DRIVEN)
+
+        self.assertIsNone(x11.primary_output_refresh_hz(runner=runner))
+
+    def test_xrandr_missing_returns_none(self):
+        with mock.patch.object(x11.shutil, "which", return_value=None):
+            self.assertIsNone(x11.primary_output_refresh_hz())
+
+    def test_xrandr_failing_returns_none(self):
+        def runner(args, **_kwargs):
+            return result("", returncode=1)
+
+        self.assertIsNone(x11.primary_output_refresh_hz(runner=runner))
+
+    def test_xrandr_timing_out_returns_none(self):
+        def runner(args, **_kwargs):
+            raise subprocess.TimeoutExpired(args, 5)
+
+        self.assertIsNone(x11.primary_output_refresh_hz(runner=runner))
+
+
 class XrandrCliFallbackTests(unittest.TestCase):
     """Exercises _primary_via_xrandr_cli directly, and through
     primary_output_size() with the python-xlib path forced off (it isn't
@@ -330,6 +392,140 @@ class XlibPathTests(unittest.TestCase):
             self.assertEqual(
                 x11.primary_output_size(runner=must_not_run),
                 ("1920", "1080"))
+
+
+class FakeMode:
+    def __init__(self, mode_id, dot_clock, h_total, v_total):
+        self.id = mode_id
+        self.dot_clock = dot_clock
+        self.h_total = h_total
+        self.v_total = v_total
+
+
+class FakeCrtcInfo:
+    def __init__(self, mode):
+        self.mode = mode
+
+
+class FakeResources:
+    config_timestamp = 42
+
+    def __init__(self, modes, crtcs):
+        self.modes = modes
+        self.crtcs = crtcs
+
+
+class FakeRandrRoot:
+    def __init__(self, resources):
+        self._resources = resources
+
+    def xrandr_get_screen_resources_current(self):
+        return self._resources
+
+
+class FakeRandrDisplay(FakeDisplay):
+    """A display whose CRTCs drive the modes the test declares."""
+
+    crtc_modes = {}
+
+    def xrandr_get_crtc_info(self, crtc, config_timestamp):
+        assert config_timestamp == FakeResources.config_timestamp
+        return FakeCrtcInfo(type(self).crtc_modes.get(crtc, 0))
+
+
+# 1920x1080: over a 2000x1111 total, 319.6347 MHz is 143.85 Hz and 133.32 MHz
+# is 60.00 Hz. Both are the pixel-clock-over-totals shape RandR reports.
+FAST_MODE = FakeMode(1, 319_634_700, 2000, 1111)
+SLOW_MODE = FakeMode(2, 133_320_000, 2000, 1111)
+
+
+class XlibRefreshTests(unittest.TestCase):
+    """Exercises _refresh_via_xlib with the same injected-module technique."""
+
+    def setUp(self):
+        FakeRandrDisplay.fail_to_connect = None
+        FakeRandrDisplay.close_raises = None
+        FakeRandrDisplay.root = None
+        FakeRandrDisplay.crtc_modes = {}
+
+        fake_xlib = types.ModuleType("Xlib")
+        fake_display_mod = types.ModuleType("Xlib.display")
+        fake_error_mod = types.ModuleType("Xlib.error")
+        fake_display_mod.Display = FakeRandrDisplay
+        fake_error_mod.DisplayError = XlibDisplayError
+        fake_error_mod.XError = XlibXError
+        fake_error_mod.ConnectionClosedError = XlibConnectionClosedError
+        fake_xlib.display = fake_display_mod
+        fake_xlib.error = fake_error_mod
+
+        modules_patcher = mock.patch.dict(sys.modules, {
+            "Xlib": fake_xlib,
+            "Xlib.display": fake_display_mod,
+            "Xlib.error": fake_error_mod,
+        })
+        modules_patcher.start()
+        self.addCleanup(modules_patcher.stop)
+
+        have_patcher = mock.patch.object(x11, "have", return_value=True)
+        have_patcher.start()
+        self.addCleanup(have_patcher.stop)
+
+    def _resources(self, modes, crtcs):
+        FakeRandrDisplay.root = FakeRandrRoot(FakeResources(modes, crtcs))
+
+    def test_the_fastest_active_crtc_wins(self):
+        self._resources([FAST_MODE, SLOW_MODE], [10, 11])
+        FakeRandrDisplay.crtc_modes = {10: 2, 11: 1}
+        self.assertAlmostEqual(x11._refresh_via_xlib(), 143.85, places=2)
+
+    def test_a_crtc_driving_no_mode_is_skipped(self):
+        self._resources([SLOW_MODE], [10, 11])
+        FakeRandrDisplay.crtc_modes = {10: 0, 11: 2}
+        self.assertAlmostEqual(x11._refresh_via_xlib(), 60.0, places=2)
+
+    def test_no_active_crtc_returns_none(self):
+        self._resources([FAST_MODE], [10])
+        FakeRandrDisplay.crtc_modes = {10: 0}
+        self.assertIsNone(x11._refresh_via_xlib())
+
+    def test_a_mode_with_no_total_cannot_divide(self):
+        self._resources([FakeMode(1, 319_500_000, 0, 0)], [10])
+        FakeRandrDisplay.crtc_modes = {10: 1}
+        self.assertIsNone(x11._refresh_via_xlib())
+
+    def test_connection_failure_returns_none(self):
+        FakeRandrDisplay.fail_to_connect = XlibDisplayError("no display")
+        self.assertIsNone(x11._refresh_via_xlib())
+
+    def test_a_server_without_randr_returns_none(self):
+        FakeRandrDisplay.root = object()
+        self.assertIsNone(x11._refresh_via_xlib())
+
+    def test_display_is_closed_after_use(self):
+        self._resources([FAST_MODE], [10])
+        FakeRandrDisplay.crtc_modes = {10: 1}
+        seen = {}
+        real_init = FakeRandrDisplay.__init__
+
+        def tracking_init(self):
+            real_init(self)
+            seen["instance"] = self
+
+        with mock.patch.object(FakeRandrDisplay, "__init__", tracking_init):
+            x11._refresh_via_xlib()
+        self.assertTrue(seen["instance"].closed)
+
+    def test_xlib_path_wins_over_cli_fallback(self):
+        self._resources([FAST_MODE], [10])
+        FakeRandrDisplay.crtc_modes = {10: 1}
+
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("CLI fallback must not run when Xlib succeeds")
+
+        with mock.patch.object(x11.shutil, "which", return_value="xrandr"):
+            self.assertAlmostEqual(
+                x11.primary_output_refresh_hz(runner=must_not_run),
+                143.85, places=2)
 
 
 if __name__ == "__main__":

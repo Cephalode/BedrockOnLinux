@@ -432,12 +432,34 @@ they get reported as engine or GPU faults:
   that ring is built on one thread and the work grows with the square of the
   distance, so a fast GPU simply idles;
 - **vsync is on while the game runs in a window**, on a desktop that
-  composites every window, which stacks a second frame queue on the game's own.
+  composites every window, which stacks a second frame queue on the game's own;
+- **Minecraft's own *Max Framerate* is set**, which is expensive here: the game
+  waits for each frame's deadline by polling for window messages, and under
+  Wine that poll costs three system calls about a hundred and fifty times per
+  frame. Measured in the main menu at 60 FPS, it holds the main thread — the
+  thread that builds every frame in Bedrock — at 99% of a CPU core, against
+  10% when the launcher holds the same rate instead.
 
 These are advisories: nothing is blocked and none of your settings is changed.
 `BOL_SKIP_PERF_CHECK=1` silences them. Two neighbours work the same way —
 `BOL_SKIP_NTSYNC_CHECK=1` for Wine's synchronization fast path, and
 `BOL_SKIP_DGC_CHECK=1` for the Intel discrete GPU notice.
+
+### Frame rate limit
+
+Minecraft draws as fast as the machine allows when neither vsync nor *Max
+Framerate* is set, and the main menu is where that goes furthest: measured at
+~1800 FPS for 58-77% of an RTX 4060, to display a still image. The launcher
+therefore caps the frame rate at the refresh rate of the fastest display
+attached **when, and only when, the game has no limit of its own** — the same
+menu then costs 3-16% of the card. Choosing vsync or a *Max Framerate* in
+Video settings keeps exactly what you chose.
+
+Set `BOL_FRAME_RATE` in *Settings ▸ Advanced ▸ custom environment* to override
+it: `0` never caps, and a number caps at that many frames per second whatever
+the game is configured for. It is also the cheap way to hold a rate below your
+refresh: doing it here costs the main thread a tenth of what Minecraft's own
+limiter costs.
 
 ## Engine integrity
 

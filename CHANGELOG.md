@@ -4,6 +4,42 @@
 
 ### Fixed
 
+- **The main menu no longer runs the GPU at full load**
+  ([#150](https://github.com/Wyze3306/BedrockOnLinux/issues/150)). A still
+  image over a panorama was pinning cards at 87-90%, hot and loud, before the
+  player had even chosen a world. Nothing in the stack paces Minecraft's
+  render loop when the game itself does not: with vsync off and *Max
+  Framerate* on Unlimited it simply draws as fast as the machine can, and the
+  menu — the cheapest frame the game ever produces — is where that goes
+  furthest. Measured here in that exact configuration: **~1800 FPS and 58-77%
+  of an RTX 4060** to display a menu. The launcher now hands vkd3d-proton a
+  frame rate limit at the refresh rate of the fastest display attached
+  whenever the game has no limit of its own, which brought the same menu to
+  **144 FPS and 3-16% of the card**. Only that unpaced case is capped: vsync,
+  or any *Max Framerate* the player chose, is left exactly as it was, and
+  nobody loses a frame their display could have shown. `BOL_FRAME_RATE=0`
+  renders uncapped again, and `BOL_FRAME_RATE=<fps>` sets the limit by hand.
+
+- **Naming what actually holds the frame rate down**
+  ([#173](https://github.com/Wyze3306/BedrockOnLinux/issues/173)). Reports of
+  the game refusing to reach 60 FPS while barely touching the GPU kept
+  arriving with no log to explain them, on hardware from an RTX 3050 to a
+  5090. The measurement finds Minecraft's own *Max Framerate* limiter: it
+  waits for each frame's deadline by polling for window messages, and under
+  Wine every one of those polls on an empty queue costs two user-mode
+  callbacks and a `NtYieldExecution` — three system calls, roughly a hundred
+  and fifty times per frame. In the main menu, same scene and same 60 FPS, the
+  main thread costs **99% of a CPU core with 56 points of it in the kernel**
+  when Minecraft holds the limit, against **10%** when the launcher's limiter
+  holds it instead; whole-process CPU falls from 127% of a core to 50%. That
+  thread is what builds every frame in Bedrock, so the wait comes straight out
+  of the frame rate. The launcher cannot change the setting on the player's
+  behalf — that file is theirs, and rewriting it is how #175 happened — so it
+  now says so before each launch, with the exact replacement to use. With
+  vsync on the game waits inside its present call instead and the main thread
+  stays near 20%, so the notice is limited to the configuration that was
+  measured.
+
 - **Settings no longer reset themselves after a crash** (#175). Players lost
   their keyboard mappings, the tutorial flags and the whole *Video ▸ Mode*
   block at random, with nothing in any log to explain it. The settings that

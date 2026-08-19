@@ -59,6 +59,83 @@ def _primary_via_xlib():
     return str(primary[2]), str(primary[3])
 
 
+def _refresh_via_xlib():
+    """Fastest active mode's refresh rate in Hz via RandR, or None.
+
+    RandR describes a mode by its pixel clock and its total (including blanking)
+    line and frame sizes, so the refresh rate is the one divided by the other.
+    """
+    if not have("Xlib"):
+        return None
+    try:
+        from Xlib import display as xdisplay
+        from Xlib import error as xerror
+    except ImportError:
+        return None
+    connection_errors = (xerror.DisplayError, xerror.ConnectionClosedError,
+                         OSError)
+    try:
+        d = xdisplay.Display()
+    except connection_errors:
+        return None
+    try:
+        resources = d.screen().root.xrandr_get_screen_resources_current()
+        modes = {mode.id: mode for mode in resources.modes}
+        rates = []
+        for crtc in resources.crtcs:
+            info = d.xrandr_get_crtc_info(crtc, resources.config_timestamp)
+            mode = modes.get(info.mode)
+            if mode is None:
+                continue  # a disconnected or disabled CRTC drives no mode
+            total = mode.h_total * mode.v_total
+            if total > 0:
+                rates.append(mode.dot_clock / float(total))
+        return max(rates) if rates else None
+    except (
+            xerror.XError, *connection_errors, AttributeError, IndexError,
+            TypeError, ValueError, ZeroDivisionError):
+        return None
+    finally:
+        try:
+            d.close()
+        except Exception:
+            pass
+
+
+# xrandr marks the mode an output is currently driving with a trailing '*',
+# and may append '+' to the preferred one: "1920x1080  143.85*+  60.00".
+_ACTIVE_MODE_RATE = re.compile(r"(\d+(?:\.\d+)?)\*")
+
+
+def _refresh_via_xrandr_cli(runner=None):
+    """Fallback: fastest rate xrandr marks as current, or None."""
+    run = _xrandr_runner(runner)
+    if run is None:
+        return None
+    result = run([])
+    if result is None or getattr(result, "returncode", 1) != 0:
+        return None
+    rates = [float(rate) for rate
+             in _ACTIVE_MODE_RATE.findall(getattr(result, "stdout", ""))]
+    rates = [rate for rate in rates if rate > 0]
+    return max(rates) if rates else None
+
+
+def primary_output_refresh_hz(runner=None):
+    """Fastest refresh rate any active output is driving, or None.
+
+    The fastest rather than the primary one: nothing here can tell which
+    monitor the game window ended up on, and the only use for this number is
+    an upper bound on useful frames. Taking the fastest can never put that
+    bound below what a display the player is actually looking at can show.
+
+    Tries python-xlib's structured RandR reply first and falls back to parsing
+    xrandr CLI text, exactly as `primary_output_size` does; `runner` only
+    affects the CLI fallback.
+    """
+    return _refresh_via_xlib() or _refresh_via_xrandr_cli(runner)
+
+
 _LIST_MONITOR = re.compile(
     r"^\s*\d+:\s+\+(\*)?\S+\s+"
     r"(\d+)/\d+x(\d+)/\d+([+-]\d+)([+-]\d+)")

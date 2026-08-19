@@ -11,7 +11,9 @@ a Wine, Proton or vkd3d log, which is why they get blamed on the GPU:
   a frame of latency on top of the game's own and the pacing wobbles;
 * the render distance is set past what the main thread can feed — by a wide
   margin the largest frame-time cost in Bedrock, since the chunk ring the
-  main thread walks grows with the square of the distance.
+  main thread walks grows with the square of the distance;
+* Minecraft's own *Max Framerate* limiter waits by polling for window
+  messages, which under Wine holds the main thread at a full CPU core.
 
 Detection is cheap and side-effect free, in the same spirit as bol.ntsync and
 bol.dgc: two ``/proc/meminfo`` fields, one ``statvfs``, and Minecraft's own
@@ -231,6 +233,68 @@ def render_distance_problem(options, threshold_chunks=EXTREME_RENDER_CHUNKS):
         "rate back. %s" % (chunks, threshold_chunks, _SILENCE))
 
 
+def frame_rate_is_unlimited(options):
+    """Whether Minecraft's own settings leave the render loop unpaced.
+
+    Two settings can bound it, and the game needs neither: ``gfx_vsync`` makes
+    it wait for the display, and ``gfx_max_framerate`` is its own limit in
+    frames per second, where 0 is the *Unlimited* end of the slider. With
+    vsync off and the slider on Unlimited nothing stops Minecraft from drawing
+    as fast as the machine physically can, and the main menu — a still image
+    over a panorama, the cheapest frame the game ever draws — is where that
+    goes furthest: measured at ~1800 FPS on an RTX 4060, for 60-70% of the
+    card and the fan noise and heat that come with it (issue #150).
+
+    Answers False unless ``gfx_max_framerate`` was positively read as 0. A
+    settings file that predates the slider, or one Minecraft has never
+    written, is "cannot tell" and must not be treated as unlimited.
+    """
+    limit = _option_int(options, "gfx_max_framerate")
+    if limit is None or limit > 0:
+        return False
+    return _option_int(options, "gfx_vsync") != 1
+
+
+def game_frame_limiter_problem(options):
+    """Actionable message when Minecraft's own frame limiter spins.
+
+    Minecraft waits for its frame deadline by pumping messages rather than by
+    sleeping. On Windows that is close to free; under Wine every
+    ``PeekMessage`` on an empty queue costs two user-mode callbacks and a
+    ``NtYieldExecution`` — three syscalls — and the game issues on the order
+    of a hundred and fifty of them per frame. The main thread then sits at a
+    full core while doing nothing, and since that thread is what builds every
+    frame in Bedrock, the wait comes straight out of the frame rate.
+
+    Measured in the main menu on an RTX 4060, same scene and same 60 FPS: with
+    *Max Framerate* at 60 the main thread costs 99% of a core, 56 points of it
+    in the kernel; with *Unlimited* and the launcher capping at 60 instead it
+    costs 10%, and the whole process drops from 127% of a core to 50%.
+
+    Only reported when vsync is off, which is the configuration that was
+    measured: with vsync on the game waits inside its present call instead,
+    and the main thread stays near 20%.
+    """
+    limit = _option_int(options, "gfx_max_framerate")
+    if not limit or limit <= 0:
+        return None
+    if _option_int(options, "gfx_vsync") == 1:
+        return None
+    return (
+        "Minecraft's own Max Framerate setting (%d FPS) is expensive here: "
+        "the game waits for each frame's deadline by polling for window "
+        "messages, and under Wine that poll costs three system calls a time, "
+        "about a hundred and fifty times per frame. Measured on this exact "
+        "path, it holds the main thread at 99%% of a CPU core to draw a still "
+        "menu — and the main thread is what builds every frame, so the wait "
+        "is taken out of your frame rate. Set Max Framerate to *Unlimited* in "
+        "Video settings and let the launcher hold the same rate instead "
+        "(BOL_FRAME_RATE=%d in the Advanced custom-environment field, or "
+        "nothing at all to follow the display): the same %d FPS then costs "
+        "the main thread 10%% of a core. %s"
+        % (limit, limit, limit, _SILENCE))
+
+
 def session_is_composited(environ=None):
     """Whether the desktop certainly composites; None when it cannot be told.
 
@@ -286,6 +350,7 @@ def performance_problems(prefix=None, data_dir=None, environ=None,
     candidates = (
         low_memory_problem(meminfo_path),
         render_distance_problem(options),
+        game_frame_limiter_problem(options),
         free_disk_problem(data_dir),
         windowed_vsync_problem(options, environ),
     )

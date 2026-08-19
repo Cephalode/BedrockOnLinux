@@ -1,6 +1,7 @@
 """bol.launch — launching Minecraft through Proton/umu."""
 # SPDX-License-Identifier: MIT
 
+import math
 import os
 import shlex
 import shutil
@@ -38,7 +39,12 @@ from .gpu_safety import (
 )
 from .log import BolError, die, info, ok, warn
 from .ntsync import inproc_sync_problem
-from .perfcheck import performance_problems
+from .perfcheck import (
+    find_options_file,
+    frame_rate_is_unlimited,
+    performance_problems,
+    read_game_options,
+)
 from .prefix import (
     active_prefix,
     boot_prefix,
@@ -51,6 +57,7 @@ from .prefix import (
 )
 from .proton import custom_proton, patch_proton, proton_path
 from .util import (
+    _screen_refresh_hz,
     _screen_wh,
     apply_custom_env,
     custom_env_map,
@@ -138,6 +145,97 @@ def _configure_ray_tracing(env, settings):
     _require_vkd3d_config(env, "nodxr")
     info("Ray tracing is off in Settings — Minecraft's Ray Traced graphics "
          "mode stays unavailable this launch.")
+
+
+def _requested_frame_rate(environ=None):
+    """What ``BOL_FRAME_RATE`` asks for: a rate, 0 for uncapped, or None.
+
+    None means "not set", which leaves the automatic behaviour below in
+    charge. Anything unparsable is treated the same way rather than failing a
+    launch over a typo in an environment variable.
+    """
+    raw = str((os.environ if environ is None else environ)
+              .get("BOL_FRAME_RATE", "")).strip().lower()
+    if not raw:
+        return None
+    if raw in ("0", "off", "no", "false", "none", "unlimited"):
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError:
+        warn("BOL_FRAME_RATE=%s is not a number of frames per second — "
+             "ignored." % raw)
+        return None
+    return value if value > 0 else 0.0
+
+
+def _configure_frame_rate_limit(env, prefix=None, environ=None,
+                                refresh_probe=None):
+    """Stop Minecraft drawing frames no display will ever show.
+
+    With vsync off and *Max Framerate* on Unlimited nothing paces the render
+    loop, and the main menu — the cheapest frame in the game — then runs into
+    four figures of FPS and takes most of the GPU to display a still image
+    (issue #150). vkd3d-proton's own limiter is the right place to stop that:
+    it sleeps until the frame deadline instead of spinning, and it applies to
+    every frame the game presents, menu included.
+
+    Only the genuinely unpaced case is capped, and only at the refresh rate of
+    the fastest display attached, so a player who set either of Minecraft's
+    own limits keeps exactly what they chose and nobody loses a frame they
+    could have seen. ``BOL_FRAME_RATE`` overrides both directions: 0 never
+    caps, a number always caps at it. Callers pass ``environ`` with the
+    Advanced custom-environment field overlaid, since that field is where
+    ``BOL_FRAME_RATE`` is documented and it is applied too late in the launch
+    to be visible here.
+
+    The limit is always whole frames per second, rounded up. That is not
+    cosmetic: a value carrying a decimal point is parsed as no limit at all
+    and silently does nothing, so a 143.85 Hz display has to be asked for as
+    144 — and rounding up rather than down is what keeps the cap from landing
+    just under the rate the display is actually driving.
+    """
+    source = os.environ if environ is None else environ
+    requested = _requested_frame_rate(source)
+    if requested == 0.0:
+        return None
+    if env.get("VKD3D_FRAME_RATE", "").strip():
+        # An inherited limit is already an explicit answer to this question.
+        return None
+
+    if requested is None:
+        options = read_game_options(find_options_file(prefix))
+        if not frame_rate_is_unlimited(options):
+            return None
+        probe = _screen_refresh_hz if refresh_probe is None else refresh_probe
+        try:
+            refresh = probe()
+        except Exception:
+            # A display that cannot be measured must cost the cap, never the
+            # launch.
+            refresh = None
+        if not refresh or refresh <= 0:
+            # Without a refresh rate there is no defensible number to pick,
+            # and inventing one would cap a display we never measured.
+            warn("Minecraft has vsync off and Max Framerate on Unlimited, so "
+                 "nothing limits how fast it draws — the main menu alone can "
+                 "take most of the GPU. The launcher could not read any "
+                 "display's refresh rate to cap it; set Max Framerate in "
+                 "Video settings, or BOL_FRAME_RATE=<fps>.")
+            return None
+        limit = math.ceil(refresh)
+        info("Nothing in Minecraft's settings limits the frame rate (vsync "
+             "off, Max Framerate on Unlimited), so the launcher caps it at "
+             "%d FPS for this display's %.2f Hz — frames past that are never "
+             "shown, and the menu alone would otherwise take most of the "
+             "GPU. Set BOL_FRAME_RATE=0 to render uncapped."
+             % (limit, refresh))
+    else:
+        limit = math.ceil(requested)
+        info("BOL_FRAME_RATE limits Minecraft to %d FPS." % limit)
+
+    env["VKD3D_FRAME_RATE"] = str(limit)
+    return limit
 
 
 def _steam_input_available(environ=None):
@@ -439,6 +537,13 @@ def _launch_once(lock_fds=(), on_started=None):
     # Required by the menu's indirect root-CBV updates (#27/#29/#30).
     _require_vkd3d_config(env, "force_raw_va_cbv")
     _configure_ray_tracing(env, s)
+    # The Advanced custom-environment field is applied at the end of this
+    # function, far too late to be read here, so overlay it explicitly: it is
+    # where BOL_FRAME_RATE is documented, and the supported way to set it.
+    _configure_frame_rate_limit(
+        env, active_prefix(),
+        environ={**os.environ,
+                 **custom_env_map(s.get("custom_env") or "")})
     diag = (s.get("diagnostics", False) or os.environ.get("BOL_DIAG") == "1")
     xlog = os.environ.get("BOL_XCURL_LOG")
     if xlog == "1" or (xlog is None and diag):
