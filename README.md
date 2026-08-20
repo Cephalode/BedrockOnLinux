@@ -218,6 +218,30 @@ guarded launch as **▶ PLAY**, graphics-safety and prefix checks included, and
 turns a failure that would have gone to the launcher log into a desktop
 notification.
 
+### Driving the launcher with a controller
+
+The launcher window can be used without a mouse. Plug a controller in and a
+highlight follows the **d-pad** or the **left stick**; **A** activates what it
+is on, **B** goes back, the **shoulder buttons** change tab in Settings and
+What's New, **Start** is ▶ PLAY, and the **right stick** scrolls. The buttons
+are read by position, so it does not matter whether the pad calls them A/B or
+Cross/Circle. A reminder of the main three sits above the dock while a
+controller is connected.
+
+The highlight only appears once the controller is used and disappears again
+the moment the mouse moves, so nothing changes if you never pick a pad up.
+Everything the window can do is reachable this way: the version picker, the
+profile menu, sign-in, every Settings tab and any dialog. Turn it off in
+*Settings ▸ General ▸ Controller*, or with `BOL_CONTROLLER=0` for one session.
+
+Controllers are read straight from `/dev/input`, hot-plug included, which
+normally needs no setup: udev grants the logged-in user access to joysticks
+(and to nothing else). `bedrock-on-linux doctor` prints what it can see, and
+says so when a pad is connected but not readable — the fix there is adding
+your user to the `input` group. This is separate from the game's own
+controller support, which Minecraft reads through GameInput inside the Wine
+prefix.
+
 ### Several Xbox accounts on one machine
 
 Give each player their own launcher root and shortcut:

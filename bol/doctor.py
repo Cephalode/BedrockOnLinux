@@ -4,7 +4,7 @@
 import shutil
 import sys
 
-from . import deps, webview
+from . import deps, gamepad, webview
 from .config import DATA, PRETTY, VERSION
 from .gpu_safety import (
     GpuSafetyAcknowledgementStatus,
@@ -107,6 +107,11 @@ def doctor(acknowledge_gpu_crash=False):
     print(f"  {'webkit2gtk':12} : {webkit_summary}")
     if webkit_package:
         miss.append(webkit_package)
+    # Which controllers the launcher window itself can be driven with. The
+    # game reads its own pad through GameInput inside the prefix, so a blank
+    # here says nothing about playing -- only about navigating the launcher
+    # with no mouse, which is how Steam Game Mode reaches PLAY.
+    print(f"  {'controller':12} : {gamepad.summary()}")
     gpu_problem = graphics_safety_problem()
     print(f"  {'graphics':12} : "
           f"{'BLOQUÉ' if gpu_problem else 'OK (no unsafe state found)'}")

@@ -43,6 +43,7 @@ from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
 from . import log
 from .log import BolError, _LEVELS, desktop_notify, info, warn
+from .navigation import ControllerNav
 from .prefix import (
     _mc_running,
     kill_wine,
@@ -952,6 +953,24 @@ def gui():
     tab_game = None
     tab_launcher = None
 
+    # Controller navigation (bol.navigation). The navigator is built at the
+    # end of gui(), once every widget it can land on exists, but the dropdowns
+    # opened long before that have to be able to hand it their scope, so the
+    # handle lives in a dict from the start.
+    nav_state = {"nav": None, "legend": None, "settings_status": None,
+                 "devices": ()}
+
+    def _nav_push(widget, on_back=None):
+        """Confine the ring to a dropdown placed over the window."""
+        nav = nav_state["nav"]
+        if nav is not None:
+            nav.push_scope(widget, on_back=on_back)
+
+    def _nav_pop(widget=None):
+        nav = nav_state["nav"]
+        if nav is not None:
+            nav.pop_scope(widget)
+
     top = ctk.CTkFrame(root, fg_color="transparent")
     top.pack(fill="x", padx=22, pady=(18, 8))
 
@@ -1027,6 +1046,7 @@ def gui():
                     root.unbind("<Configure>", prof_menu_state["bind_id"])
             except Exception:
                 pass
+            _nav_pop(win)
             win.destroy()
             prof_menu_state["win"] = None
             prof_menu_state["bind_id"] = None
@@ -1359,6 +1379,7 @@ def gui():
 
         _enable_scrollable_frame_wheel(sf, win)
         win.bind("<Escape>", lambda _event: close_profile_menu())
+        _nav_push(win, on_back=close_profile_menu)
 
     prof_card = ctk.CTkFrame(top, fg_color=T.CARD, corner_radius=14, cursor="hand2")
     prof_card.pack(side="right", padx=(0, 10))
@@ -1407,6 +1428,9 @@ def gui():
 
     status = ctk.CTkFrame(root, fg_color="transparent")
     status.pack(fill="x", padx=26, pady=(4, 0))
+    # This row is the drag handle for the activity log, not a control: its
+    # <Button-1> binding would otherwise make it a stop on the controller ring.
+    status._nav_skip = True
     status_txt = tk.StringVar(value="Ready to play.")
     status_lbl = ctk.CTkLabel(status, textvariable=status_txt, text_color=T.SUB,
                                font=font(12), anchor="w")
@@ -1414,6 +1438,22 @@ def gui():
     prog = ctk.CTkProgressBar(status, height=8, corner_radius=4,
                                progress_color=T.THEME_ACCENT, fg_color=T.CARD_2)
     prog.set(0)
+
+    # Which button does what, shown only while a controller is connected —
+    # placed rather than packed so it shares the status row without disturbing
+    # the status text or the progress bar that replaces it. The button names
+    # are spelled out instead of drawn as circled glyphs: the Ⓐ/Ⓑ characters
+    # are missing from DejaVu Sans and would render as boxes on a minimal
+    # system or inside the AppImage's own font set.
+    nav_legend = ctk.CTkFrame(status, fg_color="transparent")
+    for _key, _what in (("A", "Select"), ("B", "Back"), ("Start", "Play")):
+        _pair = ctk.CTkFrame(nav_legend, fg_color="transparent")
+        _pair.pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(_pair, text=_key, text_color=T.THEME_ACCENT,
+                     font=font(11, "bold")).pack(side="left")
+        ctk.CTkLabel(_pair, text=_what, text_color=T.MUTED,
+                     font=font(11)).pack(side="left", padx=(4, 0))
+    nav_state["legend"] = nav_legend
 
     dock = ctk.CTkFrame(root, fg_color=T.CARD, corner_radius=16,
                          border_width=1, border_color=T.BORDER)
@@ -1434,7 +1474,8 @@ def gui():
         detwrap.configure(height=new_h)
         root.minsize(860, 640 + new_h)
 
-    for _w in (status, status_lbl, prog, getattr(prog, "_canvas", prog)):
+    for _w in (status, status_lbl, prog, getattr(prog, "_canvas", prog),
+               nav_legend, *nav_legend.winfo_children()):
         _w.bind("<Button-1>", sash_click, add="+")
         _w.bind("<B1-Motion>", sash_drag, add="+")
 
@@ -1473,6 +1514,7 @@ def gui():
         w = _pick["win"]
         _pick["win"] = None
         if w is not None:
+            _nav_pop(w)
             try:
                 w.destroy()
             except Exception:
@@ -1549,6 +1591,8 @@ def gui():
             widget.bind("<B1-Motion>", drag_resize)
             widget.bind("<ButtonRelease-1>", end_drag)
             widget.bind("<Button-1>", lambda e: search.focus_set())
+        # A resize handle, not a control: keep it off the controller ring.
+        grip_container._nav_skip = True
 
         ver_arrow.configure(text="▴")
 
@@ -1622,6 +1666,7 @@ def gui():
 
         rebuild()
         win.bind("<Escape>", lambda e: close_picker())
+        _nav_push(win, on_back=close_picker)
 
     def global_click(event):
         w = _pick.get("win")
@@ -2522,6 +2567,77 @@ def gui():
             settings_btn.configure(fg_color=T.CARD_2)
             load_changelogs()
 
+    # ==================================================================
+    # Controller navigation
+    # ==================================================================
+    def refresh_controller_status():
+        """Say in Settings what the controller support is currently doing."""
+        label = nav_state.get("settings_status")
+        if label is None:
+            return
+        names = nav_state.get("devices") or ()
+        if nav_state["nav"] is None:
+            text = "Controller navigation is off."
+        elif names:
+            text = "Ready — " + ", ".join(names)
+        else:
+            text = ("Waiting for a controller. One plugged in now is picked "
+                    "up without restarting the launcher.")
+        try:
+            label.configure(text=text)
+        except Exception:
+            pass
+
+    def _controller_devices(names):
+        """A controller was plugged in or unplugged."""
+        nav_state["devices"] = tuple(names)
+        legend = nav_state.get("legend")
+        if legend is not None:
+            try:
+                if names and nav_state["nav"] is not None:
+                    legend.place(relx=1.0, rely=0.0, anchor="ne")
+                else:
+                    legend.place_forget()
+            except Exception:
+                pass
+        refresh_controller_status()
+
+    def _controller_back():
+        """What B does with nothing opened over the main window: leave the
+        view the user is in, which is what Escape would do with a keyboard."""
+        if settings_view.winfo_ismapped():
+            toggle_settings()
+        elif changelog_view.winfo_ismapped():
+            toggle_changelog()
+
+    def apply_controller_nav(enabled):
+        """Start or stop watching for controllers, from the Settings switch."""
+        nav = nav_state["nav"]
+        if not enabled:
+            if nav is not None:
+                nav_state["nav"] = None
+                nav.stop()
+                _controller_devices(())
+            return
+        if nav is not None:
+            return
+        nav = ControllerNav(
+            root, ctk, tk, accent=T.THEME_ACCENT,
+            on_back=_controller_back,
+            # Whatever the big button says right now — PLAY, or KILL once the
+            # game is running.
+            on_start=lambda: play_btn.invoke(),
+            on_devices=_controller_devices,
+            primary_item=lambda: play_btn,
+            # The pad keeps reporting while Minecraft is in the foreground and
+            # this window is still alive behind it.
+            accepts_input=lambda: not ui.get("launch_active"))
+        if not nav.start():
+            refresh_controller_status()
+            return
+        nav_state["nav"] = nav
+        _controller_devices(nav.device_names)
+
     def _settings_card(parent, title, desc=None):
         """A titled card frame that a Settings section is built into.
 
@@ -2647,6 +2763,39 @@ def gui():
             b.pack(side="left", padx=3, pady=3)
             _scale_btns[val] = b
         _refresh_scale_btns(_cur_scale if _cur_scale in _scale_btns else 1.0)
+
+        # -- Controller card
+        controller = _settings_card(
+            tab_general, "Controller",
+            "Move a highlight around the launcher with a gamepad, for Steam "
+            "Game Mode and any other couch setup with no mouse in reach.")
+
+        controller_v = tk.BooleanVar(
+            value=load_settings().get("controller_nav", True))
+
+        def save_controller_nav():
+            s2 = load_settings()
+            s2["controller_nav"] = controller_v.get()
+            save_settings(s2)
+            apply_controller_nav(controller_v.get())
+
+        controller_sw = ctk.CTkSwitch(
+            controller, text="Navigate with a controller",
+            variable=controller_v, command=save_controller_nav,
+            progress_color=T.THEME_ACCENT, font=font(13))
+        controller_sw.pack(anchor="w", pady=4)
+        explain(controller_sw,
+                "D-pad or left stick moves the highlight, A activates it, B "
+                "goes back, the shoulder buttons change tab and Start plays. "
+                "The highlight only appears once the controller is used, and "
+                "goes away as soon as the mouse moves.")
+
+        controller_status = ctk.CTkLabel(
+            controller, text="", text_color=T.SUB, font=font(11),
+            anchor="w", justify="left", wraplength=380)
+        controller_status.pack(anchor="w", pady=(2, 0))
+        nav_state["settings_status"] = controller_status
+        refresh_controller_status()
 
         # -- Startup card
         startup = _settings_card(tab_general, "Startup")
@@ -3962,6 +4111,16 @@ def gui():
             root.after(0, lambda: show_update_banner(rel))
 
     acct_state("in" if msa_signed_in() else "out")
+
+    # Every widget the ring can land on exists by now. This goes before the
+    # worker threads rather than after: they report back through root.after,
+    # which raises if a fast one gets there before mainloop does, and nothing
+    # should widen that window. BOL_CONTROLLER=0 turns navigation off for a
+    # session without touching the saved setting.
+    if (load_settings().get("controller_nav", True)
+            and os.environ.get("BOL_CONTROLLER") != "0"):
+        apply_controller_nav(True)
+
     threading.Thread(target=refresh_versions, daemon=True).start()
     threading.Thread(target=update_check, daemon=True).start()
 
@@ -3988,6 +4147,7 @@ def gui():
             )
             return
         na.stop()
+        apply_controller_nav(False)
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", on_close)
     def on_enter_pressed(_event):

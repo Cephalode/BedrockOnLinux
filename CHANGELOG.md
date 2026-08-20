@@ -4,6 +4,26 @@
 
 ### Added
 
+- **The launcher can be driven with a controller**. On a Steam Deck, in Game
+  Mode, or on any couch setup, the launcher window was the one screen with no
+  way past it: it deliberately still opens before the game, and reaching ▶ PLAY
+  needed a mouse. A highlight now follows the d-pad or the left stick, A
+  activates, B goes back, the shoulder buttons change tab, Start plays and the
+  right stick scrolls — through the version picker, the profile menu, sign-in,
+  every Settings tab and any dialog that opens over the window. Buttons are
+  read by position rather than by letter, so an Xbox pad and a PlayStation one
+  behave the same. The highlight appears only once a controller is used and
+  goes away again as soon as the mouse moves, so nothing changes for anyone who
+  never picks one up, and a short reminder of the main buttons sits above the
+  dock while a pad is connected. Controllers are read straight from
+  `/dev/input` — no new dependency, hot-plug included, and nothing to install,
+  since udev already grants the logged-in user access to joysticks. Input is
+  ignored while Minecraft is running, so a pad in hand during the game never
+  reaches the launcher behind it. Off with *Settings ▸ General ▸ Controller*,
+  or `BOL_CONTROLLER=0` for one session; `doctor` reports which controllers it
+  can see, and distinguishes "none connected" from one that is connected but
+  not readable.
+
 - **The launcher can close itself when the game starts**. *Settings ▸ General
   ▸ Startup ▸ Close the launcher when Minecraft starts*, off by default. With
   it on, the window goes as soon as Minecraft is running instead of waiting
