@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **`BOL_INPUT=wayland` gets a Wayland driver that can load**
+  ([#180](https://github.com/Wyze3306/BedrockOnLinux/issues/180)). Asking for
+  a native Wayland window never started the game on any host: Wine loaded
+  `winewayland.drv`, its Unix half failed on `undefined symbol:
+  win32u_set_window_pixel_format`, and no window was created. The driver was
+  not ours. Debian 11 ships the xkbregistry development files in their own
+  package, the build container installed only `libxkbcommon-dev`, and Wine's
+  configure dropped `winewayland.drv` without failing the build — and because
+  the engine is a Proton base with our WineGDK build overlaid on top, that did
+  not leave a gap in the result: the base's own Wine 10 driver stayed, next to
+  our Wine 11 `win32u.so`, which no longer exports the entry points it
+  imports. The build now installs `libxkbregistry-dev` and refuses to finish
+  without a Wayland driver, and the packager refuses a candidate whose driver
+  belongs to a different Wine build than the engine around it. Until an engine
+  built that way is installed, asking for Wayland says so and plays on
+  XWayland instead of failing to start; Doctor reports the driver's state on
+  its own line.
+
 - **A launcher that steps aside for the game says so**. In a session that
   shows one application window at a time — Steam Game Mode — the launcher
   unmaps its window while the game runs, or the game stays audible and never

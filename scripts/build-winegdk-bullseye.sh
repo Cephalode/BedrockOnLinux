@@ -85,6 +85,7 @@ readonly -a BUILD_PACKAGES=(
   libxi-dev
   libxinerama-dev
   libxkbcommon-dev
+  libxkbregistry-dev
   libxrandr-dev
   libxrender-dev
   libxxf86vm-dev
@@ -272,6 +273,21 @@ assert_inproc_sync_enabled() {
   ((found > 0)) || die "no wineserver found below $prefix"
 }
 
+assert_wayland_driver_built() {
+  # configure drops winewayland.drv without stopping the build when any of
+  # wayland-client, wayland-scanner, xkbcommon, xkbregistry or <linux/input.h>
+  # is missing. The packager overlays this prefix onto the GE-Proton base, so
+  # a module we did not build does not leave a hole: Proton's Wine 10 one
+  # survives beside our Wine 11 win32u.so, fails to load on its win32u imports
+  # and makes BOL_INPUT=wayland unable to start the game (issue #180).
+  local prefix="$1" module
+  for module in lib/wine/x86_64-unix/winewayland.so \
+                lib/wine/x86_64-windows/winewayland.drv; do
+    [[ -f "$prefix/$module" ]] ||
+      die "$module was not built — Wayland driver configured out"
+  done
+}
+
 internal_build_stage() {
   local work_root="$1" source_date_epoch="$2" make_jobs="$3"
   local rootfs="$work_root/rootfs"
@@ -370,6 +386,9 @@ finalize_build() {
 
   printf '==> Verifying in-process synchronization (ntsync) is compiled in\n'
   assert_inproc_sync_enabled "$work_root/prefix"
+
+  printf '==> Verifying the Wayland driver was built\n'
+  assert_wayland_driver_built "$work_root/prefix"
 
   # Bind the installed bytes to the reviewed source/build inputs.  The engine
   # packager requires this machine-readable record; a caller-supplied commit

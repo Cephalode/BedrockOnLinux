@@ -68,6 +68,7 @@ from .util import (
     load_settings,
 )
 from .vkd3d import prepare_universal_vkd3d
+from .waylanddrv import engine_wayland_driver_problem
 from .winegdk import ensure_winegdk
 
 
@@ -349,6 +350,26 @@ def _warn_if_performance_degraded(environ=None):
         warn(problem)
 
 
+def _resolve_input_backend(backend, host_wayland, engine_root):
+    """The graphics backend to really launch with.
+
+    ``BOL_INPUT=wayland`` asks Wine for a native Wayland window. An engine
+    whose winewayland cannot load fails its PROCESS_ATTACH and opens no window
+    at all, which reaches the user as "the game does not start" and reads like
+    a display or GPU fault (issue #180). The driver is opt-in and XWayland is
+    the supported path anyway, so name the real cause and take XWayland rather
+    than starting a launch that cannot succeed. A missing WAYLAND_DISPLAY is
+    left to the caller, which reports it where it configures the X11 session.
+    """
+    if backend != "wayland" or not host_wayland:
+        return backend
+    problem = engine_wayland_driver_problem(engine_root)
+    if not problem:
+        return backend
+    warn(problem + " Using X11/XWayland for this launch.")
+    return "x11"
+
+
 def _configure_runtime_compat(env, settings, backend, host_wayland,
                               diagnostics=False, host_env=None,
                               steam_deck=None):
@@ -614,6 +635,7 @@ def _launch_once(lock_fds=(), on_started=None):
         backend = "x11"
     elif want_gamescope and not shutil.which("gamescope"):
         warn("BOL_GAMESCOPE is set but gamescope isn't installed — ignored.")
+    backend = _resolve_input_backend(backend, bool(wl), proton_path())
     _configure_runtime_compat(
         env, s, backend, bool(wl), diagnostics=diag,
     )

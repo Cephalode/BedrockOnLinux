@@ -199,6 +199,26 @@ rm -rf "$STAGED_ENGINE/files/lib/wine/i386-unix"
 }
 echo "   removed stale Wine 10 i386 Unix runtime"
 
+# The overlay above only replaces the modules the WineGDK build produced, so a
+# module Wine's configure dropped does not leave a hole here: the GE-Proton
+# base's own module survives in its place, a Wine major version behind
+# everything around it. That is how the base's Wine 10 winewayland.drv shipped
+# beside our Wine 11 win32u.so, importing entry points Wine has since removed
+# and failing to load on every host (issue #180). Ask the same question the
+# launcher asks before it honours BOL_INPUT=wayland, so a candidate cannot
+# disagree with the check that has to defend users from it.
+PYTHONPATH="$SRC" python3 - "$STAGED_ENGINE" <<'PY'
+import sys
+from pathlib import Path
+
+from bol.waylanddrv import engine_wayland_driver_problem
+
+problem = engine_wayland_driver_problem(Path(sys.argv[1]))
+if problem:
+    raise SystemExit("!! " + problem)
+print("   Wayland driver belongs to the staged Wine build")
+PY
+
 # Wine's installed headers are build-time material, not part of the Proton
 # runtime. Besides adding about 75 MiB, generated headers embed the builder's
 # absolute source path. Remove them from the locked snapshot so the candidate

@@ -56,7 +56,8 @@ readonly -a BUILD_PACKAGES=(
   libkrb5-dev libpcap-dev libpulse-dev libsdl2-dev libudev-dev libunwind-dev
   libusb-1.0-0-dev libvulkan-dev libwayland-dev libx11-dev libxcomposite-dev
   libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxinerama-dev
-  libxkbcommon-dev libxrandr-dev libxrender-dev libxxf86vm-dev wayland-protocols
+  libxkbcommon-dev libxkbregistry-dev libxrandr-dev libxrender-dev
+  libxxf86vm-dev wayland-protocols
 )
 
 echo "== Installing build dependencies"
@@ -203,6 +204,21 @@ for server in "$PREFIX"/bin/wineserver "$PREFIX"/bin-wow64/wineserver; do
 done
 [ "$ntsync_servers" -gt 0 ] \
   || { echo "!! no wineserver below $PREFIX to verify" >&2; exit 1; }
+
+# Fail closed if the Wayland driver was configured out. configure disables it
+# without stopping the build when any of wayland-client, wayland-scanner,
+# xkbcommon, xkbregistry or <linux/input.h> is missing, and the packager then
+# overlays this prefix onto the GE-Proton base: every module we did not build
+# survives from that base, so a missing winewayland.drv does not leave a hole,
+# it leaves Proton's Wine 10 one next to our Wine 11 win32u.so. The two ABIs do
+# not match, the driver fails to load on its win32u imports, and BOL_INPUT=
+# wayland can never start the game (issue #180).
+echo "== Verifying the Wayland driver was built"
+for module in lib/wine/x86_64-unix/winewayland.so \
+              lib/wine/x86_64-windows/winewayland.drv; do
+  [ -f "$PREFIX/$module" ] \
+    || { echo "!! $module was not built — Wayland driver configured out" >&2; exit 1; }
+done
 
 # ntdll.so links libunwind (configure autodetects libunwind-dev), but the
 # pressure-vessel/sniper runtime ships no libunwind, so bundle the exact bullseye

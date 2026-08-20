@@ -16,6 +16,7 @@ from .log import BolError, info, ok, warn
 from .ntsync import inproc_sync_problem, inproc_sync_summary
 from .perfcheck import performance_problems, performance_summary
 from .util import custom_env_map, load_settings
+from .waylanddrv import wayland_driver_summary
 
 
 def gpu_crash_acknowledgement_status():
@@ -126,6 +127,11 @@ def doctor(acknowledge_gpu_crash=False):
     sync_problem = inproc_sync_problem(engine, environ=custom)
     if sync_problem:
         warn(sync_problem)
+    # Whether BOL_INPUT=wayland has a driver it can actually use. Reported
+    # without a warning: the launcher runs on XWayland by default, so an
+    # unusable native driver is not a problem for anyone who never asks for
+    # it — but it is the first thing to look at for anyone who did (#180).
+    print(f"  {'wayland drv':12} : {wayland_driver_summary(engine)}")
     # The same "it lags" report, from causes outside the engine entirely:
     # no memory, no disk, windowed vsync, a render distance past the main
     # thread. Prefix-scoped, so it is imported next to the other Wine module.
