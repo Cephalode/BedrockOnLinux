@@ -70,6 +70,31 @@
   </content_rating>
 
   <releases>
+    <release version="2.2.1" date="2026-08-21">
+      <description>
+        <p>The launcher can be driven with a controller, the Microsoft sign-in
+           window opens on Wayland again, and a Store-downloaded Minecraft
+           starts inside the Flatpak.</p>
+        <ul>
+          <li>navigates the whole window with a controller: the d-pad or left
+              stick moves, A activates, B goes back, Start plays, so a Steam
+              Deck no longer needs a mouse to reach PLAY</li>
+          <li>opens the Microsoft sign-in window on Wayland desktops where it
+              used to die instantly, taking the game download with it</li>
+          <li>starts a Store-downloaded Minecraft from inside the Flatpak
+              sandbox, and installs and starts it again on SteamOS</li>
+          <li>can close the launcher when the game starts, from Settings</li>
+          <li>finishes a first run that used to fail with "wineboot timed out"
+              while the runtime it needs was still downloading</li>
+          <li>retries a Minecraft download that failed, instead of leaving a
+              cache no later attempt could get past</li>
+          <li>reports in doctor what ray tracing the graphics stack granted the
+              game on its last launch</li>
+          <li>says plainly that the achievements list loads but new
+              achievements do not unlock yet</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.2.0" date="2026-08-19">
       <description>
         <p>Minecraft is now downloaded from the Microsoft Store with your own
