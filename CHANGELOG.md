@@ -4,6 +4,25 @@
 
 ### Fixed
 
+- **Imported worlds and templates land where a signed-in game reads them**
+  ([#188](https://github.com/Wyze3306/BedrockOnLinux/issues/188)). A
+  `.mctemplate` imported without a single error, and then the world creation
+  screen went on offering nothing but Marketplace purchases. The import was
+  real and the folder was right there — in the wrong `com.mojang`. A prefix
+  holds one per account the player has signed in with, plus `Users/Shared`
+  for playing signed out, and Minecraft splits its content between them:
+  packs are shared across accounts, but worlds, world templates and skins
+  belong to whoever is signed in and are only ever read from that account's
+  own folder. Everything was being unpacked into `Users/Shared`, so packs
+  arrived and worlds and templates quietly went nowhere. They now go to the
+  folder of the account that played last — the one whose settings the game
+  wrote most recently — while packs stay shared, and before the first launch,
+  with no account folder to prefer, they still go to `Users/Shared`. Each
+  import names the folder it wrote to, an import that finds earlier copies
+  stranded in the shared folder says where they are instead of moving save
+  data around, and *Open Minecraft folder* now opens the player's own content
+  rather than the shared one.
+
 - **`BOL_INPUT=wayland` gets a Wayland driver that can load**
   ([#180](https://github.com/Wyze3306/BedrockOnLinux/issues/180)). Asking for
   a native Wayland window never started the game on any host: Wine loaded

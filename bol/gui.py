@@ -35,7 +35,7 @@ from .relocation import (
     DIRS_TO_MOVE,
     FILES_TO_MOVE,
 )
-from .content import _mojang_dir, import_content
+from .content import game_content_dir, import_content
 from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
 from .games import list_editions, list_versions
 from .gamesetup import do_setup
@@ -3137,10 +3137,10 @@ def gui():
                   tip="Load a client-side .dll into the running game. "
                       "Native / AppImage only.")
         _tool_row(content_card, "Open Minecraft folder", lambda: subprocess.Popen(
-            ["xdg-open", str(_mojang_dir())], stdout=subprocess.DEVNULL,
+            ["xdg-open", str(game_content_dir())], stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL),
-            tip="Open the folder holding worlds, resource packs and skins "
-                "in your file manager.")
+            tip="Open the folder holding your worlds, templates and "
+                "screenshots in your file manager.")
 
         shortcuts_card = _settings_card(tab_tools, "Shortcuts")
         _tool_row(shortcuts_card,
