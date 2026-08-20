@@ -348,13 +348,26 @@ Artifacts are common, ray tracing is gone, and performance may not improve.
 all. It is on by default, because the bundled vkd3d-proton reports the ray
 tracing tier by itself on any driver exposing the Vulkan ray tracing extensions
 — on an RTX 4060 the game sees `RaytracingTier 1.1` and full DirectX 12
-Ultimate. The switch's job is therefore to keep a `VKD3D_CONFIG=nodxr` inherited
-from your session from quietly removing that, and to put `nodxr` back when you
-would rather have the video memory. What it cannot do is satisfy the rest of
-Minecraft's own conditions: **Settings ▸ Video ▸ Graphics Mode ▸ Ray Traced**
-stays uneditable without a ray-tracing-capable world on top of a capable GPU,
-and the game says so in its own tooltip. *Vibrant Visuals* is deferred
-rendering rather than ray tracing, and this switch does not touch it.
+Ultimate, and an AMD Radeon RX 6000 series or newer is judged by exactly the
+same Vulkan features rather than by its vendor. The switch's job is therefore to
+keep a `VKD3D_CONFIG=nodxr` inherited from your session from quietly removing
+that, and to put `nodxr` back when you would rather have the video memory.
+
+What it cannot do is satisfy the rest of Minecraft's own conditions.
+**Settings ▸ Video ▸ Graphics Mode ▸ Ray Traced** stays uneditable without a
+ray-tracing-capable world on top of a capable GPU, and the game says so in its
+own tooltip — a greyed-out *Ray Traced* button in the main menu is that
+condition, not a missing GPU. Which Marketplace content the game then offers is
+decided by Mojang's services for your account, not by anything here. *Vibrant
+Visuals* is deferred rendering rather than ray tracing, and this switch does not
+touch it.
+
+`bedrock-on-linux doctor` reports what the graphics payload actually granted the
+game on its last launch — the DXR tier, whether the device reached DirectX 12
+Ultimate, and which device-generated-commands path it took. That is read back
+out of the launch log, not measured by opening a GPU device. When the full list
+of feature bits matters, `tools/dxr-probe.c` builds with mingw-w64 and prints
+them from inside the prefix, Minecraft not involved.
 
 BedrockOnLinux is an independent compatibility project, not affiliated with or
 supported by Mojang or Microsoft. Minecraft updates can move private game

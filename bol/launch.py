@@ -423,6 +423,15 @@ def _configure_runtime_compat(env, settings, backend, host_wayland,
         # Avoid Proton's heavyweight debug log during normal play.
         env["WINEDEBUG"] = "-all"
 
+    # vkd3d-proton is silent by default, so "the game does not detect my ray
+    # tracing hardware" (#153) arrives with no way to tell whether the game
+    # was ever offered DXR, at which tier, and which ExecuteIndirect path it
+    # got. Its info level answers all three in about two dozen lines at device
+    # creation and logs nothing per frame, so ask for it on every launch --
+    # this is the graphics equivalent of what the launcher already reads back
+    # for synchronisation and the Wayland driver. `bol.raytracing` parses it.
+    env["VKD3D_DEBUG"] = "info"
+
 
 def _configure_graphics_cache(env, managed_engine):
     """Keep managed-engine shader caches across Minecraft version changes."""

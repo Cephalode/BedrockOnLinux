@@ -53,6 +53,28 @@
   with it — and the build now fails outright if the update information is
   embedded without it, which `appimagetool` otherwise reduces to a warning.
 
+- **`bedrock-on-linux doctor` now reports what the graphics stack granted the
+  game** ([#153](https://github.com/Wyze3306/BedrockOnLinux/issues/153)).
+  "Minecraft does not detect my ray tracing hardware" had no answer anywhere:
+  the tier is decided inside the game process by vkd3d-proton, from the Vulkan
+  features the driver exposes, and that decision was thrown away. Every launch
+  now runs the graphics payload at its info level — a couple of dozen lines at
+  device creation, nothing per frame — and doctor reads the outcome back out
+  of the launch log: the DXR tier Minecraft's *Ray Traced* mode is gated on,
+  whether the device also reached DirectX 12 Ultimate, and which half of the
+  universal device-generated-commands payload the driver took. Nothing opens a
+  GPU device to answer it, which keeps the check on the right side of the same
+  rule the rest of the GPU reporting follows. It separates the cases that look
+  identical from a screenshot and are not: a driver that exposed no ray
+  tracing at all, a device that only reached tier 1.0 — which *Ray Traced*
+  does not accept — the *Ray tracing* switch being off, and vkd3d-proton's own
+  quirk dropping the tier on a Steam Deck. A launch that died before it ever
+  created a device is reported as no answer rather than as a missing feature.
+  For the complete feature set the same stack hands Minecraft, including the
+  adapter it picked and whether an acceleration structure can actually be
+  sized, `tools/dxr-probe.c` prints it from inside the prefix with the game
+  not involved.
+
 ### Fixed
 
 - **The Microsoft sign-in window no longer dies on Wayland**

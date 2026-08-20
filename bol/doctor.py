@@ -15,6 +15,7 @@ from .gpu_safety import (
 from .log import BolError, info, ok, warn
 from .ntsync import inproc_sync_problem, inproc_sync_summary
 from .perfcheck import performance_problems, performance_summary
+from .raytracing import ray_tracing_problem, ray_tracing_summary
 from .util import custom_env_map, load_settings
 from .waylanddrv import wayland_driver_summary
 
@@ -137,6 +138,14 @@ def doctor(acknowledge_gpu_crash=False):
     # unusable native driver is not a problem for anyone who never asks for
     # it — but it is the first thing to look at for anyone who did (#180).
     print(f"  {'wayland drv':12} : {wayland_driver_summary(engine)}")
+    # What the graphics payload granted the game last time it ran: the tier
+    # Minecraft's Ray Traced mode is gated on, read back from the launch log
+    # rather than measured here, since answering it live would mean opening
+    # the GPU device this check exists to avoid (#153).
+    print(f"  {'ray tracing':12} : {ray_tracing_summary()}")
+    rt_problem = ray_tracing_problem()
+    if rt_problem:
+        warn(rt_problem)
     # The same "it lags" report, from causes outside the engine entirely:
     # no memory, no disk, windowed vsync, a render distance past the main
     # thread. Prefix-scoped, so it is imported next to the other Wine module.
