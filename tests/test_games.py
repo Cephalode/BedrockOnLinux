@@ -93,7 +93,9 @@ class InstallTests(unittest.TestCase):
                 root = games.install_game(self._edition())
 
             self.assertEqual(root, base / "release" / "1.26.44.3")
-            self.assertIn("1.26.4403", install.call_args[0][0])
+            # Every mirror of that build, so a truncated body is retryable.
+            self.assertTrue(all("1.26.4403" in url
+                                for url in install.call_args[0][0]))
             record = json.loads(
                 (base / "release" / "1.26.44.3"
                  / games._INSTALL_METADATA).read_text())
@@ -112,7 +114,8 @@ class InstallTests(unittest.TestCase):
                 root = games.install_game(self._edition(), "1.26.42.1")
 
             self.assertEqual(root, base / "release" / "1.26.42.1")
-            self.assertIn("1.26.4201", install.call_args[0][0])
+            self.assertTrue(all("1.26.4201" in url
+                                for url in install.call_args[0][0]))
 
     def test_a_build_already_on_disk_is_not_downloaded_again(self):
         with tempfile.TemporaryDirectory() as tmp:

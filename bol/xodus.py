@@ -40,7 +40,7 @@ from .config import (
     XODUS_KEYRING,
     XODUS_REV,
 )
-from .log import BolError, info, ok
+from .log import BolError, info, ok, warn
 from .util import _fetch_with_fallback, asset_url, download, gh_releases
 
 
@@ -357,40 +357,111 @@ def _bytes(value, unit):
         return 0
 
 
+def game_root(dest):
+    """Folder of a complete build under ``dest``, else None.
+
+    This is the shape ``xodus-cli streaming`` leaves behind, so it lives here
+    rather than in the caller: a bare exe with no manifest beside it is a
+    truncated install, not a build.
+    """
+    dest = Path(dest)
+    if not dest.exists():
+        return None
+    for exe in dest.rglob("Minecraft.Windows.exe"):
+        if any((exe.parent / m).exists()
+               for m in ("appxmanifest.xml", "AppxManifest.xml")):
+            return exe.parent
+    return None
+
+
+def _drop_cache(dest):
+    """Delete the package cache xodus-cli left behind in ``dest``.
+
+    xodus-cli caches the encrypted package beside the game -- as
+    ".xodus-streaming-tmp.msixvc" while a download runs, renamed to
+    ".xodus-streaming.msixvc" once one completed -- and re-opens it on the next
+    run. A short one is therefore permanent: every retry seeks into it, reads
+    past its end and panics ("cache ended before cached_len"), or concludes the
+    delta is empty and installs nothing. Deleting it is what makes a retry an
+    actual retry rather than three replays of the same failure.
+
+    The completed cache is not spare data -- ``xodus-cli run`` decrypts the
+    keep_encrypted segments out of it at every launch -- so it only goes when
+    ``dest`` holds no playable build for it to belong to.
+    """
+    dest = Path(dest)
+    stale = list(dest.glob(".xodus-streaming-tmp*.msixvc"))
+    if game_root(dest) is None:
+        stale += list(dest.glob(".xodus-streaming.msixvc"))
+    for path in stale:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _raise_unretryable(text):
+    """Raise for the download failures another mirror cannot fix."""
+    if _NOT_OWNED.search(text):
+        raise NotOwned(
+            "The linked Microsoft account does not own this edition of "
+            "Minecraft. Buy or redeem it on the same account, then try again.")
+    if _NO_CREDENTIALS.search(text):
+        raise NotSignedIn(
+            "The Microsoft session for the download expired. Sign in again.")
+    loader = _loader_failure(text)
+    if loader:
+        raise XodusError(loader)
+
+
 def install(product, dest: Path, progress=None):
     """Download + decrypt an edition into ``dest``.
+
+    ``product`` is a Store product id, a CDN package URL, or the list of mirror
+    URLs the index carries for one build. The mirrors are the same package on
+    different Microsoft asset hosts, so a body one of them cuts short is worth
+    asking the next one for.
 
     ``xodus-cli streaming`` is incremental and commits atomically on its own:
     it compares the local segment hashes against the remote package, fetches
     only the changed files, and renames its work package into place at the end.
     So there is deliberately no staging/rollback dance around it here — adding
     one would defeat the delta and re-download the whole 800+ MiB every time.
+    What a failure does need is _drop_cache(): the delta is only a shortcut
+    while the cache it reads is intact.
     """
     binary = ensure_cli()
     if not signed_in():
         raise NotSignedIn(
             "Minecraft is downloaded from Microsoft with your own account, so "
             "you have to sign in before it can be installed.")
+    sources = ([product] if isinstance(product, str)
+               else [str(source) for source in product])
+    if not sources:
+        raise XodusError("This Minecraft build has no download location.")
     dest.mkdir(parents=True, exist_ok=True)
-    cmd = [str(binary), "streaming", product, str(dest)]
-    code, tail = _run_streaming(cmd, progress)
-    if code != 0:
-        text = "\n".join(tail)
-        if _NOT_OWNED.search(text):
-            raise NotOwned(
-                "The linked Microsoft account does not own this edition of "
-                "Minecraft. Buy or redeem it on the same account, then try "
-                "again.")
-        if _NO_CREDENTIALS.search(text):
-            raise NotSignedIn(
-                "The Microsoft session for the download expired. Sign in "
-                "again.")
-        loader = _loader_failure(text)
-        if loader:
-            raise XodusError(loader)
-        raise XodusError(
-            f"The Minecraft download failed{': ' + _failure_line(tail) if _failure_line(tail) else '.'}")
-    return dest
+
+    failure = ""
+    for index, source in enumerate(sources):
+        cmd = [str(binary), "streaming", source, str(dest)]
+        code, tail = _run_streaming(cmd, progress)
+        if code == 0 and game_root(dest) is not None:
+            return dest
+        # Xodus also exits 0 having installed nothing at all, when the cache it
+        # resumed from makes the delta look empty. Treat that as the failure it
+        # is, or the caller starts a game directory that was never written.
+        if code == 0:
+            failure = ("The Minecraft download reported success but installed "
+                       "no game.")
+        else:
+            _raise_unretryable("\n".join(tail))
+            line = _failure_line(tail)
+            failure = "The Minecraft download failed" + (
+                f": {line}" if line else ".")
+        _drop_cache(dest)
+        if index + 1 < len(sources):
+            warn(f"{failure} Retrying from another Microsoft mirror …")
+    raise XodusError(failure)
 
 
 def _failure_line(tail):

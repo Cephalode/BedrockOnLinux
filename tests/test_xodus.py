@@ -272,6 +272,121 @@ class InstallErrorTests(unittest.TestCase):
         stream.assert_not_called()
 
 
+def _install_build(dest):
+    """Write what a finished xodus-cli download leaves behind."""
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "Minecraft.Windows.exe").write_bytes(b"MZ")
+    (dest / "appxmanifest.xml").write_text("<Package/>")
+    (dest / ".xodus-streaming.msixvc").write_bytes(b"cache")
+
+
+class InstallCacheTests(unittest.TestCase):
+    """A retry has to be a retry.
+
+    xodus-cli re-opens the package cache it left in the destination, so a
+    short one poisons every later attempt: it panics reading past the end
+    ("cache ended before cached_len"), or exits 0 with an empty delta and
+    installs nothing at all.
+    """
+
+    def _install(self, dest, runs, product="9NBLGGH2JHXJ"):
+        calls = []
+
+        def fake(cmd, progress=None):
+            calls.append(cmd[2])
+            return runs[len(calls) - 1](dest)
+
+        with mock.patch.object(xodus, "ensure_cli",
+                               return_value=Path("/bin/true")), \
+                mock.patch.object(xodus, "signed_in", return_value=True), \
+                mock.patch.object(xodus, "_run_streaming", side_effect=fake):
+            try:
+                xodus.install(product, dest)
+            except xodus.XodusError as exc:
+                return calls, exc
+        return calls, None
+
+    def test_a_failed_download_drops_the_cache_it_left_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.42.1"
+            dest.mkdir()
+            (dest / ".xodus-streaming.msixvc").write_bytes(b"truncated")
+            (dest / ".xodus-streaming-tmp.msixvc").write_bytes(b"partial")
+            _, exc = self._install(dest, [lambda d: (101, ["panicked at x:1:2", "ok: Header(Io(...))"])])
+            self.assertIsNotNone(exc)
+            self.assertEqual(list(dest.glob(".xodus-streaming*")), [])
+
+    def test_a_failed_reinstall_keeps_a_playable_builds_cache(self):
+        # xodus-cli run decrypts the keep_encrypted segments out of that file
+        # at every launch, so deleting it would break the build still on disk.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+            _install_build(dest)
+            (dest / ".xodus-streaming-tmp.msixvc").write_bytes(b"partial")
+            self._install(dest, [lambda d: (1, ["the CDN hung up"])])
+            self.assertTrue((dest / ".xodus-streaming.msixvc").exists())
+            self.assertFalse((dest / ".xodus-streaming-tmp.msixvc").exists())
+
+    def test_exiting_zero_without_installing_anything_is_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.42.1"
+            dest.mkdir()
+            (dest / ".xodus-streaming.msixvc").write_bytes(b"truncated")
+            _, exc = self._install(dest, [lambda d: (0, ["Complete"])])
+            self.assertIn("installed no game", str(exc))
+            self.assertEqual(list(dest.glob(".xodus-streaming*")), [])
+
+    def test_a_truncated_mirror_falls_through_to_the_next_one(self):
+        mirrors = ["http://assets1.xboxlive.com/a.msixvc",
+                   "http://assets2.xboxlive.com/a.msixvc"]
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.42.1"
+
+            def truncated(d):
+                (d / ".xodus-streaming.msixvc").write_bytes(b"short")
+                return (101, ["panicked at x:1:2", "ok: Header(Io(...))"])
+
+            def complete(d):
+                _install_build(d)
+                return (0, ["Complete"])
+
+            calls, exc = self._install(dest, [truncated, complete], mirrors)
+            self.assertIsNone(exc)
+            self.assertEqual(calls, mirrors)
+            # The good mirror's cache survives; only the bad one's was dropped.
+            self.assertTrue((dest / ".xodus-streaming.msixvc").exists())
+
+    def test_an_ownership_failure_does_not_try_the_next_mirror(self):
+        mirrors = ["http://assets1.xboxlive.com/a.msixvc",
+                   "http://assets2.xboxlive.com/a.msixvc"]
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.42.1"
+            calls, exc = self._install(
+                dest,
+                [lambda d: (1, ["Package was not found, is it owned by the "
+                                "user?"])],
+                mirrors)
+        self.assertIsInstance(exc, xodus.NotOwned)
+        self.assertEqual(calls, mirrors[:1])
+
+
+class GameRootTests(unittest.TestCase):
+    def test_a_complete_build_is_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+            _install_build(dest / "games")
+            self.assertEqual(xodus.game_root(dest), dest / "games")
+
+    def test_an_exe_without_a_manifest_is_a_truncated_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            (dest / "Minecraft.Windows.exe").write_bytes(b"MZ")
+            self.assertIsNone(xodus.game_root(dest))
+
+    def test_a_missing_directory_is_not_a_build(self):
+        self.assertIsNone(xodus.game_root(Path("/nonexistent/build")))
+
+
 class ProgressTests(unittest.TestCase):
     def test_only_the_total_bar_drives_progress(self):
         seen = []

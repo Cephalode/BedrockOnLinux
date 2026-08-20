@@ -44,14 +44,11 @@ def list_versions(edition_id):
 
 def _game_root(dest):
     """Folder of a complete installed build (exe + appxmanifest), else None
-    (a bare exe with no manifest means a truncated install → reinstall)."""
-    if not dest.exists():
-        return None
-    for exe in dest.rglob("Minecraft.Windows.exe"):
-        if any((exe.parent / m).exists()
-               for m in ("appxmanifest.xml", "AppxManifest.xml")):
-            return exe.parent
-    return None
+    (a bare exe with no manifest means a truncated install → reinstall).
+
+    Defined in bol.xodus, which is what writes the directory and now has to
+    tell a finished download from one that installed nothing."""
+    return xodus.game_root(dest)
 
 
 def _install_record(dest):
@@ -142,9 +139,11 @@ def install_game(edition, version=None, progress=None, force=False):
     info(f"{'Reinstalling' if root else 'Installing'} {edition['name']} "
          f"{entry['version']} — this downloads it from Microsoft with your "
          "own account …")
+    # Every mirror the index lists, not just the first: they carry the same
+    # package, so a truncated body from one is retryable on the next.
     url = entry["urls"][0]
     try:
-        xodus.install(url, dest, progress)
+        xodus.install(entry["urls"], dest, progress)
     except xodus.NotSignedIn:
         # Actionable, and only the caller can act: never fold this into the
         # fallback below, or the launcher quietly keeps starting the old build
