@@ -42,7 +42,7 @@ from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
 from . import log
-from .log import BolError, _LEVELS, desktop_notify, warn
+from .log import BolError, _LEVELS, desktop_notify, info, warn
 from .prefix import (
     _mc_running,
     kill_wine,
@@ -2159,6 +2159,13 @@ def gui():
         if not ui.get("single_window") or ui.get("stepped_aside"):
             return
         ui["stepped_aside"] = True
+        # A window that disappears the moment the game starts is what a
+        # launcher that crashed looks like, and players report it as one. Say
+        # in the log that it was deliberate, and why: that line is the whole
+        # difference between diagnosing the next report and guessing at it.
+        info("This session shows one window at a time, so the launcher window "
+             "is stepping aside while Minecraft runs. It comes back when the "
+             "game closes.")
 
         def hide():
             try:

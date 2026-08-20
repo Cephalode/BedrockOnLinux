@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **A launcher that steps aside for the game says so**. In a session that
+  shows one application window at a time — Steam Game Mode — the launcher
+  unmaps its window while the game runs, or the game stays audible and never
+  appears ([#130](https://github.com/Wyze3306/BedrockOnLinux/issues/130)); it
+  comes back the moment the game closes. On screen that is indistinguishable
+  from a launcher that crashed, and it gets reported as one. The activity log
+  now records the step-aside and the reason for it, which is what separates
+  that case from an actual failure in the next report. Starting the launcher
+  has opened the launcher in every session since 2.2.0
+  ([#179](https://github.com/Wyze3306/BedrockOnLinux/issues/179)); the version
+  that started the game without its own window was 2.1.4.
+
 - **The Minecraft download reports how far along it is**. Installing an
   edition left a working bar labelled *Installing Minecraft…* sweeping for the
   whole package — over two gigabytes with nothing to say whether any of it was
