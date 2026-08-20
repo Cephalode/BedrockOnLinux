@@ -369,16 +369,15 @@ def _enable_scrollable_frame_wheel(scrollable_frame, container=None):
     scrollbar. Forward the events from every descendant of ``container`` (and
     from the frame itself) to the frame's canvas using a single handler that
     understands both mechanical mouse wheels and touchpad/libinput scroll
-    events, so scrolling is smooth and consistent everywhere.
+    events, so scrolling is smooth and consistent everywhere. The frame's
+    own canvas is always inside ``container``'s widget tree, so it is
+    already covered by this recursive walk — no separate binding needed.
     """
     canvas = getattr(scrollable_frame, "_parent_canvas", None)
     if canvas is None:
         return False
     target = scrollable_frame if container is None else container
     _bind_x11_mousewheel_recursive(target, canvas)
-    # Also bind the canvas itself (and the frame), in case the pointer is
-    # over empty space rather than a specific descendant widget.
-    _bind_x11_mousewheel_recursive(canvas, canvas)
     return True
 
 class _ThemedMessageBox:
