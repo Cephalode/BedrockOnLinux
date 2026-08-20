@@ -146,6 +146,7 @@ jobs:
             dist/bedrock-on-linux-*.rpm
             dist/bedrock-on-linux-*.pyz
             dist/BedrockOnLinux-*-x86_64.AppImage
+            dist/BedrockOnLinux-*-x86_64.AppImage.zsync
             dist/BedrockOnLinux-*-x86_64.flatpak
             dist/BedrockOnLinux-*-SHA256SUMS
             dist/BedrockOnLinux-*-inputs.sha256
@@ -181,6 +182,7 @@ jobs:
             dist/bedrock-on-linux-*.rpm
             dist/bedrock-on-linux-*.pyz
             dist/BedrockOnLinux-*-x86_64.AppImage
+            dist/BedrockOnLinux-*-x86_64.AppImage.zsync
             dist/BedrockOnLinux-*-x86_64.flatpak
             dist/BedrockOnLinux-*-SHA256SUMS
             dist/BedrockOnLinux-*-inputs.sha256
@@ -310,6 +312,7 @@ jobs:
             dist/bedrock-on-linux-*.rpm
             dist/bedrock-on-linux-*.pyz
             dist/BedrockOnLinux-*-x86_64.AppImage
+            dist/BedrockOnLinux-*-x86_64.AppImage.zsync
             dist/BedrockOnLinux-*-x86_64.flatpak
             dist/BedrockOnLinux-*-SHA256SUMS
             dist/BedrockOnLinux-*-inputs.sha256

@@ -436,6 +436,27 @@ class BuildReleaseHygieneTests(unittest.TestCase):
         self.assertIn("BOL_RELEASE_CHANNEL: ${{ inputs.channel || 'release' }}",
                       workflow)
 
+    def test_the_appimage_delta_sidecar_ships_with_the_appimage(self):
+        # Issue #191: the .zsync holds block checksums of one exact AppImage.
+        # Published without it, or kept from a previous build, every updater
+        # would compute deltas against bytes nobody is serving — so it is
+        # cleared, checksummed, attested and uploaded with the AppImage, and
+        # never handed to the candidate verifier, which reads payloads.
+        script = BUILD_RELEASE.read_text(encoding="utf-8")
+        self.assertIn('APPIMAGE_ZSYNC="$APPIMAGE.zsync"', script)
+        self.assertIn('rm -f -- "$APPIMAGE" "$APPIMAGE_ZSYNC"', script)
+        self.assertIn('built_artifacts+=("$APPIMAGE_ZSYNC")', script)
+        self.assertNotIn('verified_artifacts+=("$APPIMAGE_ZSYNC")', script)
+
+        # The AppImage glob does not match the sidecar; each list needs it.
+        workflow = (ROOT / ".github/workflows/build-app.yml").read_text(
+            encoding="utf-8")
+        self.assertEqual(
+            workflow.count("dist/BedrockOnLinux-*-x86_64.AppImage\n"),
+            workflow.count("dist/BedrockOnLinux-*-x86_64.AppImage.zsync\n"))
+        self.assertEqual(
+            workflow.count("dist/BedrockOnLinux-*-x86_64.AppImage.zsync\n"), 3)
+
     def test_stale_app_artifacts_are_removed_but_shared_assets_survive(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory)
@@ -478,6 +499,8 @@ class BuildReleaseHygieneTests(unittest.TestCase):
                 dist / "BedrockOnLinux-x86_64.AppImage",
                 dist / f"BedrockOnLinux-{VERSION}-x86_64.AppImage",
                 dist / "BedrockOnLinux-1.2.9-x86_64.AppImage",
+                dist / "BedrockOnLinux-1.2.9-x86_64.AppImage.zsync",
+                dist / f"BedrockOnLinux-{VERSION}-x86_64.AppImage.zsync",
                 dist / "bedrock-on-linux-1.2.9.pyz",
                 dist / "bedrock-on-linux_1.2.9_all.deb",
                 dist / "bedrock-on-linux-1.2.9-1.x86_64.rpm",

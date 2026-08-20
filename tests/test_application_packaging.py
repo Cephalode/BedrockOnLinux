@@ -41,6 +41,49 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             self.assertIn(requirement, reqs)
         self.assertIn("--hash=sha256:", reqs)
 
+    def test_appimage_advertises_zsync_delta_updates(self):
+        # Issue #191: AppImageUpdate, AppImageLauncher and AM read update
+        # information out of the runtime's .upd_info section and then transfer
+        # only the changed blocks through the .zsync sidecar, instead of
+        # ~200 MB of unchanged bundle.
+        script = (ROOT / "scripts/build-appimage.sh").read_text(
+            encoding="utf-8")
+        self.assertIn(
+            "gh-releases-zsync|${SELF_REPO%/*}|${SELF_REPO#*/}|${UPDATE_TAG}"
+            "|BedrockOnLinux-*-x86_64.AppImage.zsync", script)
+        # The repository is the one the launcher's own updater asks, so a fork
+        # points at its own releases rather than at this one.
+        self.assertIn("grep -m1 '^WINEGDK_PREBUILT_REPO = '", script)
+        # A nightly follows the rolling prerelease; anything else follows the
+        # newest stable release.
+        self.assertIn('nightly) UPDATE_TAG="nightly" ;;', script)
+        self.assertIn('*)       UPDATE_TAG="latest" ;;', script)
+        self.assertIn('UPDATE_ARGS=(-u "$UPDATE_INFO")', script)
+
+        # appimagetool names the sidecar after the destination but writes it
+        # into the working directory, so the build has to run from dist/ or the
+        # sidecar is left wherever the caller happened to be standing.
+        packaging = script.index('ZSYNC="$APPIMG.zsync"')
+        run = script.index('ARCH=x86_64 "$TOOL"', packaging)
+        self.assertIn('cd "$OUT"', script[packaging:run])
+        self.assertIn('"${APPIMG##*/}"', script[run:run + 200])
+
+        # appimagetool only warns when zsyncmake is missing, which would ship
+        # an AppImage advertising a delta file nobody can fetch.
+        self.assertIn(
+            "update information was embedded but no $ZSYNC was written",
+            script)
+        # What the updaters actually read is the runtime section, so that is
+        # what the build verifies, along with the sidecar describing these
+        # exact bytes and a timestamp pinned like every other one here.
+        for check in ('readelf", "--section-headers"',
+                      "no .upd_info section",
+                      "embedded update information is",
+                      "does not match the pattern the ",
+                      'for key in ("Filename", "URL"):',
+                      'rb"(?m)^MTime: .*$"'):
+            self.assertIn(check, script)
+
     def test_deb_preserves_dependency_licenses_and_normalizes_modes(self):
         script = (ROOT / "scripts/build-deb.sh").read_text(encoding="utf-8")
         self.assertIn("--require-hashes --only-binary=:all:", script)

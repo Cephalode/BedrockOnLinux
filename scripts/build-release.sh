@@ -60,6 +60,7 @@ old_application_artifacts=(
   "$OUT"/bedrock-on-linux-*.pyz
   "$OUT"/BedrockOnLinux-x86_64.AppImage
   "$OUT"/BedrockOnLinux-*-x86_64.AppImage
+  "$OUT"/BedrockOnLinux-*-x86_64.AppImage.zsync
   "$OUT"/BedrockOnLinux-*-x86_64.flatpak
   "$OUT"/BedrockOnLinux-*-SHA256SUMS
   "$OUT"/*portable.tar.gz
@@ -212,18 +213,26 @@ built_artifacts+=("$PYZ")
 verified_artifacts+=("$PYZ")
 
 APPIMAGE="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"
+# The .zsync sidecar carries the block checksums AppImageUpdate and friends use
+# to transfer only what changed (issue #191); it describes exactly these bytes,
+# so it is built, published and checksummed with the AppImage, never separately.
+APPIMAGE_ZSYNC="$APPIMAGE.zsync"
 # build-appimage.sh removes its output only at the packaging stage.  Remove it
 # before starting too, otherwise an early dependency/network failure could make
 # an old file look like the successful result of this invocation.
-rm -f -- "$APPIMAGE"
+rm -f -- "$APPIMAGE" "$APPIMAGE_ZSYNC"
 APPIMAGE_LOG="$OUT/appimage-build.log"
 if bash "$SRC/scripts/build-appimage.sh" >"$APPIMAGE_LOG" 2>&1 \
     && [[ -s "$APPIMAGE" ]]; then
   echo "  ✓ dist/$(basename "$APPIMAGE")"
   built_artifacts+=("$APPIMAGE")
   verified_artifacts+=("$APPIMAGE")
+  if [[ -s "$APPIMAGE_ZSYNC" ]]; then
+    echo "  ✓ dist/$(basename "$APPIMAGE_ZSYNC") (AppImage delta updates)"
+    built_artifacts+=("$APPIMAGE_ZSYNC")
+  fi
 else
-  rm -f -- "$APPIMAGE"
+  rm -f -- "$APPIMAGE" "$APPIMAGE_ZSYNC"
   echo "  !! AppImage build failed — last 40 lines of scripts/build-appimage.sh:"
   tail -n 40 "$APPIMAGE_LOG" | sed 's/^/     /'
   required_failures+=("AppImage")

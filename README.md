@@ -84,6 +84,24 @@ If FUSE is missing, the AppImage can unpack itself instead:
 APPIMAGE_EXTRACT_AND_RUN=1 ./BedrockOnLinux-*-x86_64.AppImage
 ```
 
+### AppImage delta updates
+
+The AppImage carries standard update information, and every release publishes
+the matching `BedrockOnLinux-*-x86_64.AppImage.zsync` beside it, so
+[AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate),
+[AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), AM/AppMan
+and anything else that reads it can update the file in place — transferring
+only the blocks that actually changed rather than the whole bundle:
+
+```bash
+AppImageUpdate ./BedrockOnLinux-*-x86_64.AppImage
+```
+
+A stable AppImage follows the newest release; a nightly one follows the rolling
+`nightly` prerelease it came from. The launcher's own update button still
+downloads the complete file, and either way an update replaces only the
+launcher: the engine, the game and your worlds stay where they are.
+
 ### The engine download
 
 The first **PLAY** needs the engine archive that matches the launcher:

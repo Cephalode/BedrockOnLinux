@@ -11,6 +11,29 @@ mkdir -p "$CACHE" "$OUT"
 GLIBC_CEILING="${BOL_APPIMAGE_GLIBC_CEILING:-2.31}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1782250551}"
 export SOURCE_DATE_EPOCH
+
+# Update information (issue #191). AppImageUpdate, AppImageLauncher, AM/AppMan
+# and friends read this string out of the runtime's .upd_info section; it names
+# the release to look at and the .zsync sidecar appimagetool writes next to the
+# AppImage, so an update transfers only the blocks that actually changed
+# instead of the whole ~200 MB bundle. The repository comes from bol/config.py,
+# the same one the launcher's own updater asks, so a fork updates from its own
+# releases. The channel picks the tag: a nightly must follow the rolling
+# "nightly" prerelease rather than replace itself with the stable release.
+# Setting BOL_APPIMAGE_UPDATE_INFO to the empty string builds an AppImage with
+# no update information at all.
+SELF_REPO="$(grep -m1 '^WINEGDK_PREBUILT_REPO = ' "$SRC/bol/config.py" \
+  | cut -d'"' -f2)"
+[[ "$SELF_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+  echo "!! could not read the release repository from bol/config.py" >&2
+  exit 1
+}
+case "${BOL_RELEASE_CHANNEL:-release}" in
+  nightly) UPDATE_TAG="nightly" ;;
+  *)       UPDATE_TAG="latest" ;;
+esac
+UPDATE_INFO="${BOL_APPIMAGE_UPDATE_INFO-gh-releases-zsync|${SELF_REPO%/*}|${SELF_REPO#*/}|${UPDATE_TAG}|BedrockOnLinux-*-x86_64.AppImage.zsync}"
+
 APPDIR="$OUT/BedrockOnLinux.AppDir"; rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
@@ -410,9 +433,106 @@ runtime_dynamic="$(readelf -d "$RUNTIME")"
 [[ "$runtime_dynamic" != *"(NEEDED)"* ]] \
   || { echo "!! AppImage runtime is not statically linked" >&2; exit 1; }
 APPIMG="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"
-rm -f "$APPIMG"
-ARCH=x86_64 "$TOOL" --appimage-extract-and-run \
-  --runtime-file "$RUNTIME" "$APPDIR" "$APPIMG"
+ZSYNC="$APPIMG.zsync"
+rm -f "$APPIMG" "$ZSYNC"
+declare -a UPDATE_ARGS=()
+if [[ -n "$UPDATE_INFO" ]]; then
+  UPDATE_ARGS=(-u "$UPDATE_INFO")
+fi
+# appimagetool writes the .zsync sidecar into the *working directory*, named
+# after the destination's basename -- not beside the destination itself. Build
+# from dist/ so the sidecar lands next to the AppImage instead of wherever the
+# maintainer (or build-release.sh) happened to be standing.
+(
+  cd "$OUT"
+  ARCH=x86_64 "$TOOL" --appimage-extract-and-run "${UPDATE_ARGS[@]}" \
+    --runtime-file "$RUNTIME" "$APPDIR" "${APPIMG##*/}"
+)
 chmod 755 "$APPIMG"
+
+if [[ -n "$UPDATE_INFO" ]]; then
+  # appimagetool only *warns* when zsyncmake is missing, so without this the
+  # build would happily ship an AppImage advertising a delta file that was
+  # never written, and every updater would fail on it.
+  [[ -s "$ZSYNC" ]] || {
+    echo "!! update information was embedded but no $ZSYNC was written" >&2
+    echo "   (appimagetool found no zsyncmake — install the zsync package)" >&2
+    exit 1
+  }
+  chmod 644 "$ZSYNC"
+  python3 - "$APPIMG" "$ZSYNC" "$UPDATE_INFO" "$SOURCE_DATE_EPOCH" <<'PY'
+import email.utils
+import fnmatch
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+image, sidecar = Path(sys.argv[1]), Path(sys.argv[2])
+expected, epoch = sys.argv[3], int(sys.argv[4])
+
+# The updaters read the string back out of the runtime's .upd_info section, so
+# check it there rather than trusting the command line we passed.
+headers = subprocess.run(
+    ["readelf", "--section-headers", "--wide", str(image)],
+    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+if headers.returncode:
+    raise SystemExit(f"readelf failed for {image}: {headers.stderr.strip()}")
+section = re.search(
+    r"\.upd_info\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", headers.stdout)
+if not section:
+    raise SystemExit("the AppImage runtime carries no .upd_info section")
+offset, size = (int(value, 16) for value in section.groups())
+with image.open("rb") as stream:
+    stream.seek(offset)
+    embedded = stream.read(size).split(b"\0", 1)[0].decode("utf-8", "replace")
+if embedded != expected:
+    raise SystemExit(f"embedded update information is {embedded!r}, "
+                     f"expected {expected!r}")
+
+fields = expected.split("|")
+if fields[0] == "gh-releases-zsync" and len(fields) == 5:
+    # The release asset has to be the file the embedded pattern looks for,
+    # otherwise every updater reports "no matching asset" on a release that
+    # does carry the update.
+    if not fnmatch.fnmatch(sidecar.name, fields[4]):
+        raise SystemExit(f"{sidecar.name} does not match the pattern the "
+                         f"AppImage advertises ({fields[4]})")
+
+raw = sidecar.read_bytes()
+end = raw.find(b"\n\n")          # text headers, blank line, binary checksums
+if end < 0:
+    raise SystemExit(f"{sidecar.name} has no zsync header block")
+zsync = {}
+for line in raw[:end].decode("utf-8", "replace").splitlines():
+    key, _, value = line.partition(": ")
+    zsync[key] = value
+for key in ("Filename", "URL"):
+    # URL is relative, so it resolves next to the .zsync -- i.e. the AppImage
+    # asset of the same release.
+    if zsync.get(key) != image.name:
+        raise SystemExit(f"{sidecar.name} {key} is {zsync.get(key)!r}, "
+                         f"expected {image.name!r}")
+if zsync.get("Length") != str(image.stat().st_size):
+    raise SystemExit(f"{sidecar.name} describes {zsync.get('Length')} bytes, "
+                     f"but the AppImage is {image.stat().st_size}")
+
+# zsyncmake stamps the input file's mtime, which is the one value here that is
+# not derived from the bytes. Pin it to SOURCE_DATE_EPOCH like every other
+# timestamp in this build, so rebuilding the same source reproduces the sidecar
+# too. RFC-822 dates are fixed width, so the header block keeps its length.
+stamp = email.utils.formatdate(epoch).replace("-0000", "+0000")
+sidecar.write_bytes(
+    re.sub(rb"(?m)^MTime: .*$", ("MTime: " + stamp).encode(), raw[:end],
+           count=1) + raw[end:])
+print(f"  update information: {embedded}")
+print(f"  delta updates: {sidecar.name} "
+      f"({zsync['Blocksize']}-byte blocks, MTime {stamp})")
+PY
+fi
+
 rm -rf "$APPDIR"
 echo "OK -> $APPIMG ($(du -h "$APPIMG" | cut -f1))"
+if [[ -s "$ZSYNC" ]]; then
+  echo "OK -> $ZSYNC ($(du -h "$ZSYNC" | cut -f1))"
+fi

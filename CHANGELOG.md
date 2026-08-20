@@ -2,7 +2,40 @@
 
 ## Unreleased
 
+### Added
+
+- **The AppImage updates itself in place, one changed block at a time**
+  ([#191](https://github.com/Wyze3306/BedrockOnLinux/issues/191)). It now
+  carries standard AppImage update information, and every release publishes the
+  matching `BedrockOnLinux-*-x86_64.AppImage.zsync` beside it, so
+  AppImageUpdate, AppImageLauncher, AM/AppMan and anything else that reads the
+  standard can upgrade an existing file by fetching only the blocks that
+  actually differ instead of the whole bundle. A stable AppImage follows the
+  newest release, a nightly one the rolling `nightly` prerelease it came from,
+  and the repository is read from the same place the launcher's own updater
+  reads it, so a fork updates from its own releases. The sidecar describes one
+  exact AppImage, so it is cleared, built, checksummed, attested and uploaded
+  with it — and the build now fails outright if the update information is
+  embedded without it, which `appimagetool` otherwise reduces to a warning.
+
 ### Fixed
+
+- **A Store-downloaded Minecraft starts on the Flatpak**
+  ([#193](https://github.com/Wyze3306/BedrockOnLinux/issues/193)). PLAY went to
+  a black screen and came straight back with `ShellExecuteEx failed: File not
+  found`, on a Steam Deck where the game was installed, the account signed in
+  and the executable sitting right there on disk. The Microsoft Store keeps
+  that executable encrypted at rest, so the launcher decrypts it at launch and
+  stages the plaintext on `/dev/shm` for Wine to map — but pressure-vessel
+  builds the Steam Linux Runtime container as a *new* Flatpak app instance, and
+  says so in the log itself: *"/dev/shm not shared between app instances"*.
+  Wine was looking into a different `/dev/shm`, found nothing there, fell back
+  to the ciphertext on disk and reported the game as missing. The decrypted
+  image is now staged in the application's `$XDG_RUNTIME_DIR`, the tmpfs
+  Flatpak binds into every instance of the same application: still RAM, still
+  created 0600, still unlinked by the loader the instant it is opened — and now
+  reachable from inside the container. Nothing changes outside the Flatpak, and
+  images left behind by a launch that died are swept from both locations.
 
 - **Imported worlds and templates land where a signed-in game reads them**
   ([#188](https://github.com/Wyze3306/BedrockOnLinux/issues/188)). A

@@ -77,7 +77,9 @@ Notes:
   aliases, and validates the result against `bol/vkd3d.py`'s manifest pins.
 - **App** builds all four formats via `scripts/build-release.sh`. The AppImage's
   Tcl/Tk is compiled in a `debian:bullseye` container to meet the glibc-2.31
-  baseline, then cached for the host build.
+  baseline, then cached for the host build. The AppImage also gets update
+  information and a `.zsync` sidecar for delta updates; the sidecar describes
+  one exact AppImage, so it is published, checksummed and attested with it.
 
 ## Bootstrap order
 
