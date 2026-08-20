@@ -106,6 +106,26 @@
   cannot start without it — SteamOS above all — and, until now, neither did the
   renderer setting above.
 
+- **What the Achievements support covers, said plainly**
+  ([#152](https://github.com/Wyze3306/BedrockOnLinux/issues/152)). The
+  Achievements section promised a catalog and added that the launcher "does not
+  unlock, emulate or force anything" — which reads as a policy rather than as a
+  limit, and left a Flatpak player looking for what was broken on their side.
+  Nothing was: new achievements never unlock, in any layout, and the Flatpak
+  behaves exactly like the AppImage here. Minecraft does not write its own
+  achievements. It reports what you did to Xbox as in-game events and the
+  achievement engine awards them from those — asked directly instead, the
+  achievements service refuses every id with *"None of the submitted
+  achievements may be updated in this fashion"*, whichever token it is
+  presented with, and the event path that would feed it is not implemented in
+  the engine. The catalog is unaffected and still loads through its dedicated
+  user-only token. `tools/achievements-probe.py` now shows the whole picture
+  for your own account in one run, without launching the game: the full list
+  through the Achievements token, the same list empty through the profile token
+  every other Xbox Live call uses, and the refusal — reading the tokens the
+  launcher already holds, printing none of them, and attempting its unlock on
+  an achievement id that does not exist, so it cannot change anything.
+
 - **A Store-downloaded Minecraft starts on the Flatpak**
   ([#193](https://github.com/Wyze3306/BedrockOnLinux/issues/193)). PLAY went to
   a black screen and came straight back with `ShellExecuteEx failed: File not
