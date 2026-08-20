@@ -2110,8 +2110,9 @@ def gui():
     # Versions: using list_editions + list_versions
     # ==================================================================
     def refresh_versions():
+        beta = load_settings().get("show_betas", False)
         try:
-            editions = list_editions(include_beta=True)
+            editions = list_editions(include_beta=beta)
         except Exception as e:
             log._LOG_SINK(f"xx editions: {e}")
             return
@@ -2124,7 +2125,7 @@ def gui():
                     versions.append({
                         "tag": b["version"],
                         "beta": ed.get("beta", False),
-                        "edition": ed["id"],
+                        "edition": ed,
                         "installed": b.get("installed", False),
                     })
             except Exception as e:
@@ -2142,11 +2143,11 @@ def gui():
         def ap():
             ui["labels"] = labels
             cur = (load_settings().get("mc_version") or "")
-            wanted = [l for l, v in zip(labels, versions) if _edition_matches(v)]
-            pick = next((x for x in wanted
+            # Find the best matching version: exact or starting with cur
+            pick = next((x for x in labels
                          if x.split("  ")[0] == cur
                          or x.split("  ")[0].startswith(cur + ".")),
-                        wanted[0] if wanted else (labels[0] if labels else ""))
+                        labels[0] if labels else "")
             if labels:
                 mc_var.set(pick)
                 _update_selected_chip()
@@ -2313,7 +2314,6 @@ def gui():
         if ui.get("changelogs_loaded") and tab_game is not None and changelog_view.winfo_ismapped():
             from .util import mc_releases
             load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
-
     # ==================================================================
     # Play & Kill
     # ==================================================================
@@ -2329,8 +2329,11 @@ def gui():
                 ver = selected_version()
                 if ver is None:
                     raise BolError("No version selected")
-                version_obj = {"tag": ver["tag"], "beta": ver.get("beta", False), "edition": ver.get("edition", "release")}
-                do_setup(mc_ver=version_obj, progress=set_progress)
+                do_setup(
+                    mc_edition=ver["edition"],
+                    mc_version=ver["tag"],
+                    progress=set_progress,
+                )
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
                 try:
@@ -2366,6 +2369,7 @@ def gui():
         if not ui.get("single_window") or ui.get("stepped_aside"):
             return
         ui["stepped_aside"] = True
+
         # A window that disappears the moment the game starts is what a
         # launcher that crashed looks like, and players report it as one. Say
         # in the log that it was deliberate, and why: that line is the whole
