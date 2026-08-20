@@ -387,7 +387,13 @@ def _xbl_response_error(response):
     if error_code in _XBL_AGE_ERROR_CODES:
         category = "age"
     elif (error_code in _XBL_ACCOUNT_ERROR_CODES
-          or status in (400, 401, 403)):
+          or status in (400, 401)
+          or (status == 403 and error_code is not None)):
+        # A real Xbox Live rejection always names an XErr. A bare 403 is an
+        # edge or policy refusal instead (#149 got one from every SISU call
+        # while XSTS kept issuing tokens for the same account), and sending
+        # people to xbox.com to repair a healthy profile only wastes their
+        # time.
         category = "account"
     elif status in (408, 425, 429) or (
             isinstance(status, int) and status >= 500):
@@ -1020,26 +1026,31 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
                     warn("xbl_preauth: user.auth returned an invalid "
                          "response.")
 
-    def _xsts_user(rp, stage):
+    def _xsts_user(rp, stage, device_bound=False, record=True):
         if not user_token:
             return None
+        properties = {"SandboxId": "RETAIL", "UserTokens": [user_token]}
+        if device_bound:
+            # Bind the token to the same device identity SISU would have used,
+            # so the audience sees what a real GDK title presents.
+            properties["DeviceToken"] = device_token
+            properties["ProofKey"] = proof_key
         try:
             r = _xbl_post("https://xsts.auth.xboxlive.com/xsts/authorize", {
                 "RelyingParty": rp,
                 "TokenType": "JWT",
-                "Properties": {
-                    "SandboxId": "RETAIL",
-                    "UserTokens": [user_token],
-                },
+                "Properties": properties,
             })
         except Exception:
-            _record_xbl_preauth_diagnostic(stage, "network")
+            if record:
+                _record_xbl_preauth_diagnostic(stage, "network")
             warn(f"xbl_preauth: {stage} failed (network error).")
             return None
         if r.status_code != 200:
             category, status, error_code = _xbl_response_error(r)
-            _record_xbl_preauth_diagnostic(
-                stage, category, status, error_code)
+            if record:
+                _record_xbl_preauth_diagnostic(
+                    stage, category, status, error_code)
             warn(f"xbl_preauth: {stage} HTTP {r.status_code}")
             return None
         try:
@@ -1048,11 +1059,12 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
                 raise ValueError
             return payload
         except (TypeError, ValueError):
-            _record_xbl_preauth_diagnostic(stage, "service")
+            if record:
+                _record_xbl_preauth_diagnostic(stage, "service")
             warn(f"xbl_preauth: {stage} returned an invalid response.")
             return None
 
-    def _sisu(rp, stage):
+    def _sisu(rp, stage, record=True):
         if not msa_access_token: return None
         try:
             r = _xbl_post("https://sisu.xboxlive.com/authorize", {
@@ -1068,13 +1080,15 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
                 "ProofKey": proof_key,
             })
         except Exception:
-            _record_xbl_preauth_diagnostic(stage, "network")
+            if record:
+                _record_xbl_preauth_diagnostic(stage, "network")
             warn(f"xbl_preauth: {stage} failed (network error).")
             return None
         if r.status_code != 200:
             category, status, error_code = _xbl_response_error(r)
-            _record_xbl_preauth_diagnostic(
-                stage, category, status, error_code)
+            if record:
+                _record_xbl_preauth_diagnostic(
+                    stage, category, status, error_code)
             warn(f"xbl_preauth: {stage} HTTP {r.status_code}")
             return None
         try:
@@ -1083,7 +1097,8 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
                 raise ValueError
             return payload
         except (TypeError, ValueError):
-            _record_xbl_preauth_diagnostic(stage, "service")
+            if record:
+                _record_xbl_preauth_diagnostic(stage, "service")
             warn(f"xbl_preauth: {stage} returned an invalid response.")
             return None
 
@@ -1101,8 +1116,39 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
         "achievements_expiry": achievements_auth.get("NotAfter", ""),
     })
 
-    xbl_sisu = _sisu("http://xboxlive.com", "sisu-profile") or {}
-    xbl_auth = xbl_sisu.get("AuthorizationToken", {}) if xbl_sisu else {}
+    # The achievements call above already asked XSTS for a token with this
+    # user token, so its outcome says whether the fallback below is worth any
+    # request at all: offline or a rejected user token means it is not.
+    xsts_usable = bool(achievements_auth.get("Token"))
+    minted_via = {}
+
+    def _authorize(rp, name):
+        """Mint one relying-party token, SISU first and XSTS as the fallback.
+
+        SISU is the path a real GDK title takes and the only one returning the
+        modern-gamertag claims, so it stays first. It can also refuse a request
+        that Xbox Live is otherwise perfectly happy to serve: #149 had every
+        SISU call answered with HTTP 403 while XSTS kept issuing tokens for the
+        very same audiences and the very same account. Falling back to XSTS
+        completes the chain instead of failing the whole sign-in.
+        """
+        fallback = xsts_usable
+        sisu = _sisu(rp, "sisu-" + name, record=not fallback) or {}
+        claims = sisu.get("AuthorizationToken")
+        if isinstance(claims, dict) and claims.get("Token"):
+            minted_via[name] = "SISU"
+            return claims
+        if not fallback:
+            return {}
+        for device_bound in (True, False):
+            claims = _xsts_user(rp, "xsts-" + name, device_bound=device_bound,
+                                record=not device_bound)
+            if isinstance(claims, dict) and claims.get("Token"):
+                minted_via[name] = "XSTS"
+                return claims
+        return {}
+
+    xbl_auth = _authorize("http://xboxlive.com", "profile")
     xbl_token = xbl_auth.get("Token")
     xbl_expiry = xbl_auth.get("NotAfter", "") if xbl_auth else ""
     xbl_claims = {}
@@ -1112,9 +1158,8 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
         pass
     xbl_privileges_present, xbl_privileges = _xbl_privilege_claim(xbl_claims)
 
-    pf_sisu = _sisu(
-        "https://b980a380.minecraft.playfabapi.com/", "sisu-playfab") or {}
-    pf_auth = pf_sisu.get("AuthorizationToken", {}) if pf_sisu else {}
+    pf_auth = _authorize(
+        "https://b980a380.minecraft.playfabapi.com/", "playfab")
     sisu_rp = "https://b980a380.minecraft.playfabapi.com/" if pf_auth.get("Token") else None
     sisu_token = pf_auth.get("Token")
     sisu_expiry = pf_auth.get("NotAfter", "")
@@ -1125,9 +1170,8 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
         pass
 
     # Joining requires this audience even when server pings already work.
-    mp_sisu = _sisu(
-        "https://multiplayer.minecraft.net/", "sisu-multiplayer") or {}
-    mp_auth = mp_sisu.get("AuthorizationToken", {}) if mp_sisu else {}
+    mp_auth = _authorize(
+        "https://multiplayer.minecraft.net/", "multiplayer")
     mp_rp = "https://multiplayer.minecraft.net/" if mp_auth.get("Token") else None
     mp_token = mp_auth.get("Token")
     mp_expiry = mp_auth.get("NotAfter", "")
@@ -1139,9 +1183,7 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
 
     # Realms still validates the canonical legacy Bedrock audience.
     realms_relying_party = "https://pocket.realms.minecraft.net/"
-    realms_sisu = _sisu(realms_relying_party, "sisu-realms") or {}
-    realms_auth = (realms_sisu.get("AuthorizationToken", {})
-                   if realms_sisu else {})
+    realms_auth = _authorize(realms_relying_party, "realms")
     realms_rp = realms_relying_party if realms_auth.get("Token") else None
     realms_token = realms_auth.get("Token")
     realms_expiry = realms_auth.get("NotAfter", "")
@@ -1152,9 +1194,7 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
         pass
 
     # Marketplace catalog and entitlement endpoints require this audience.
-    lic_sisu = _sisu(
-        "http://licensing.xboxlive.com", "sisu-licensing") or {}
-    lic_auth = lic_sisu.get("AuthorizationToken", {}) if lic_sisu else {}
+    lic_auth = _authorize("http://licensing.xboxlive.com", "licensing")
     lic_rp = "http://licensing.xboxlive.com" if lic_auth.get("Token") else None
     lic_token = lic_auth.get("Token")
     lic_expiry = lic_auth.get("NotAfter", "")
@@ -1234,14 +1274,20 @@ def xbl_preauth(msa_access_token, expected_account_epoch=None,
         return _fallback("xbl_preauth: account changed while refreshing; "
                          "refusing to store or reuse the old online payload.",
                          "account-cache", "session")
+    recovered = sorted(name for name, path in minted_via.items()
+                       if path == "XSTS")
+    if recovered:
+        # Otherwise the log reads as five failures followed by a success.
+        info("Xbox Live pre-auth: SISU refused " + ", ".join(recovered)
+             + "; minted the same audiences through XSTS instead.")
     bits = ["device"]
     if user_token: bits.append("user")
     if xbl_token: bits.append("XBL")
     if achievements_fields: bits.append("XSTS-achievements")
-    if sisu_token: bits.append("SISU-pf")
-    if mp_token: bits.append("SISU-mp")
-    if realms_token: bits.append("SISU-realms")
-    if lic_token: bits.append("SISU-lic")
+    if sisu_token: bits.append(minted_via.get("playfab", "SISU") + "-pf")
+    if mp_token: bits.append(minted_via.get("multiplayer", "SISU") + "-mp")
+    if realms_token: bits.append(minted_via.get("realms", "SISU") + "-realms")
+    if lic_token: bits.append(minted_via.get("licensing", "SISU") + "-lic")
     ok(f"Xbox Live pre-auth: {', '.join(bits)}")
     _clear_xbl_preauth_diagnostic()
     return True

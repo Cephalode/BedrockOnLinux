@@ -761,6 +761,173 @@ class OnlinePreauthPayloadTests(unittest.TestCase):
             self.assertIsNone(auth.xbl_preauth_diagnostic())
 
 
+class SisuRefusalFallbackTests(unittest.TestCase):
+    """#149: SISU answered HTTP 403 for every relying party while XSTS kept
+    issuing tokens for the same audiences and the same account.  The chain has
+    to be completed through XSTS instead of failing the whole sign-in."""
+
+    expiry = "2999-01-01T00:00:00Z"
+
+    def setUp(self):
+        auth._clear_xbl_preauth_diagnostic()
+        self.addCleanup(auth._clear_xbl_preauth_diagnostic)
+
+    class _Response:
+        def __init__(self, status, payload):
+            self.status = status
+            self.payload = json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self.payload
+
+    def _xsts_token(self, relying_party):
+        xui = {"uhs": "84"}
+        if relying_party == "http://xboxlive.com":
+            xui.update({"xid": "1234", "gtg": "Player", "agg": "Adult",
+                        "prv": "190 191"})
+        return {"Token": "xsts-" + relying_party, "NotAfter": self.expiry,
+                "DisplayClaims": {"xui": [xui]}}
+
+    def _run(self, xsts_status):
+        """Drive a full pre-auth where every SISU call is refused.
+
+        ``xsts_status`` maps a device-bound XSTS request to its HTTP status so
+        a test can also refuse that variant and check the user-only retry.
+        """
+        requests = []
+
+        def urlopen(request, timeout=None):
+            body = json.loads(request.data)
+            requests.append((request.full_url, body))
+            if request.full_url.startswith("https://device.auth"):
+                return self._Response(
+                    200, {"Token": "device", "NotAfter": self.expiry})
+            if request.full_url.startswith("https://user.auth"):
+                return self._Response(
+                    200, {"Token": "user", "NotAfter": self.expiry})
+            if request.full_url.startswith("https://sisu"):
+                # Exactly what the report shows: a bare 403 with no XErr.
+                return self._Response(403, {"Message": "Forbidden"})
+            device_bound = "DeviceToken" in body["Properties"]
+            status = xsts_status if device_bound else 200
+            if status != 200:
+                return self._Response(status, {"Message": "Forbidden"})
+            return self._Response(
+                200, self._xsts_token(body["RelyingParty"]))
+
+        epoch = "a" * 32
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cache = root / "winegdk-preauth"
+            cache.mkdir()
+            (cache / ".account-epoch").write_text(epoch + "\n")
+            with mock.patch.object(auth, "DATA", root), \
+                    mock.patch("urllib.request.urlopen",
+                               side_effect=urlopen), \
+                    mock.patch.object(auth, "warn"), \
+                    mock.patch.object(auth, "info"), \
+                    mock.patch.object(auth, "ok"):
+                completed = auth.xbl_preauth("fresh-access-token", epoch)
+            payload = cache / "device.json"
+            # A refused chain writes nothing; let the caller assert on that
+            # rather than fail here with a missing file.
+            stored = json.loads(payload.read_text()) if payload.exists() else {}
+        return completed, stored, requests
+
+    def test_every_audience_is_minted_through_xsts(self):
+        completed, stored, requests = self._run(xsts_status=200)
+
+        self.assertTrue(completed)
+        self.assertEqual(stored["xbl_token"], "xsts-http://xboxlive.com")
+        self.assertEqual(stored["sisu_token"],
+                         "xsts-https://b980a380.minecraft.playfabapi.com/")
+        self.assertEqual(stored["mp_token"],
+                         "xsts-https://multiplayer.minecraft.net/")
+        self.assertEqual(stored["realms_token"],
+                         "xsts-https://pocket.realms.minecraft.net/")
+        self.assertEqual(stored["lic_token"],
+                         "xsts-http://licensing.xboxlive.com")
+        self.assertEqual(stored["xbl_xuid"], "1234")
+        self.assertEqual(stored["realms_rp"],
+                         "https://pocket.realms.minecraft.net/")
+        # Every SISU refusal was answered by an XSTS request for the same
+        # audience, and the replacement carries the device identity.
+        fallbacks = [body for url, body in requests
+                     if url.startswith("https://xsts")
+                     and "DeviceToken" in body["Properties"]]
+        self.assertEqual(
+            [body["RelyingParty"] for body in fallbacks],
+            ["http://xboxlive.com",
+             "https://b980a380.minecraft.playfabapi.com/",
+             "https://multiplayer.minecraft.net/",
+             "https://pocket.realms.minecraft.net/",
+             "http://licensing.xboxlive.com"],
+        )
+        for body in fallbacks:
+            self.assertEqual(body["Properties"]["DeviceToken"], "device")
+            self.assertIn("ProofKey", body["Properties"])
+
+    def test_a_recovered_sign_in_leaves_no_failure_diagnostic(self):
+        """The refusals must not survive as 'Xbox Live rejected this account'
+        advice once the tokens were obtained anyway."""
+
+        self._run(xsts_status=200)
+
+        self.assertIsNone(auth.xbl_preauth_diagnostic())
+
+    def test_device_bound_refusal_retries_with_the_user_token_alone(self):
+        completed, stored, requests = self._run(xsts_status=403)
+
+        self.assertTrue(completed)
+        self.assertEqual(stored["mp_token"],
+                         "xsts-https://multiplayer.minecraft.net/")
+        user_only = [body for url, body in requests
+                     if url.startswith("https://xsts")
+                     and "DeviceToken" not in body["Properties"]]
+        # The achievements token plus one retry for each of the five audiences.
+        self.assertEqual(len(user_only), 6)
+
+
+class BareForbiddenClassificationTests(unittest.TestCase):
+    """Xbox Live names an XErr whenever it truly rejects an account, so a bare
+    403 must not send people to xbox.com to repair a healthy profile (#149)."""
+
+    class _Response:
+        def __init__(self, status, payload):
+            self.status_code = status
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def test_forbidden_without_an_xerr_is_not_an_account_verdict(self):
+        category, status, error_code = auth._xbl_response_error(
+            self._Response(403, {"Message": "Forbidden"}))
+
+        self.assertEqual(category, "service")
+        self.assertEqual(status, 403)
+        self.assertIsNone(error_code)
+
+    def test_forbidden_with_an_xerr_still_blames_the_account(self):
+        category, _status, error_code = auth._xbl_response_error(
+            self._Response(403, {"XErr": 2148916233}))
+
+        self.assertEqual(category, "account")
+        self.assertEqual(error_code, 2148916233)
+
+    def test_unauthorized_without_an_xerr_still_blames_the_account(self):
+        category, _status, _error_code = auth._xbl_response_error(
+            self._Response(401, {"Message": "Unauthorized"}))
+
+        self.assertEqual(category, "account")
+
+
 class NativeAuthCancellationTests(unittest.TestCase):
     @staticmethod
     def _device_response():

@@ -23,6 +23,22 @@
   data around, and *Open Minecraft folder* now opens the player's own content
   rather than the shared one.
 
+- **Xbox Live sign-in survives a SISU refusal**
+  ([#149](https://github.com/Wyze3306/BedrockOnLinux/issues/149)). The
+  Microsoft login completed, and then every `sisu.xboxlive.com` call came back
+  HTTP 403 — profile, PlayFab, multiplayer, Realms and licensing alike — on
+  several accounts that Xbox and Minecraft were perfectly happy with
+  everywhere else. Nothing was wrong with those accounts: the same audiences
+  were still being issued by `xsts.auth.xboxlive.com` in the same run, with
+  the same user token, which is why the Achievements token kept arriving while
+  the rest of the chain came back empty. Each audience now falls back to XSTS
+  when SISU refuses it, so the sign-in completes instead of stopping at a
+  partial payload; the fallback costs nothing when SISU works, and it is not
+  attempted when XSTS has already failed. The advice was misleading on top of
+  it — an Xbox Live account rejection always names an `XErr`, so a bare 403 no
+  longer reads as *"Xbox Live rejected this Microsoft account"* and no longer
+  sends people to xbox.com to repair a profile that was never broken.
+
 - **`BOL_INPUT=wayland` gets a Wayland driver that can load**
   ([#180](https://github.com/Wyze3306/BedrockOnLinux/issues/180)). Asking for
   a native Wayland window never started the game on any host: Wine loaded
