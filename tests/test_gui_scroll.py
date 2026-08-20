@@ -42,8 +42,7 @@ class SettingsScrollTests(unittest.TestCase):
 
         for widget in (root, child, grandchild):
             self.assertEqual(
-                set(widget.bindings), {"<Button-4>", "<Button-5>"})
-            self.assertNotIn("<MouseWheel>", widget.bindings)
+                set(widget.bindings), {"<Button-4>", "<Button-5>", "<MouseWheel>"})
             self.assertTrue(all(
                 add == "+" for _, add in widget.bindings.values()))
 
@@ -52,6 +51,22 @@ class SettingsScrollTests(unittest.TestCase):
         self.assertEqual(up(SimpleNamespace(num=4)), "break")
         self.assertEqual(down(SimpleNamespace(num=5)), "break")
         self.assertEqual(canvas.scrolls, [(-1, "units"), (1, "units")])
+
+    def test_mousewheel_is_forwarded_and_normalized(self):
+        widget = Widget()
+        canvas = Canvas()
+        _bind_x11_mousewheel_recursive(widget, canvas)
+        wheel = widget.bindings["<MouseWheel>"][0]
+
+        # Windows/X11-style large delta (multiples of 120 per notch).
+        wheel(SimpleNamespace(num=None, delta=-120))
+        wheel(SimpleNamespace(num=None, delta=240))
+        # macOS/libinput-style small continuous delta.
+        wheel(SimpleNamespace(num=None, delta=-2))
+        wheel(SimpleNamespace(num=None, delta=1))
+
+        self.assertEqual(
+            canvas.scrolls, [(-1, "units"), (2, "units"), (-1, "units"), (1, "units")])
 
 
 class ScrollableFrameWheelTests(unittest.TestCase):
@@ -67,7 +82,7 @@ class ScrollableFrameWheelTests(unittest.TestCase):
 
         for widget in (popup, search, frame, row):
             self.assertEqual(
-                set(widget.bindings), {"<Button-4>", "<Button-5>"})
+                set(widget.bindings), {"<Button-4>", "<Button-5>", "<MouseWheel>"})
         row.bindings["<Button-4>"][0](SimpleNamespace(num=4))
         search.bindings["<Button-5>"][0](SimpleNamespace(num=5))
         self.assertEqual(canvas.scrolls, [(-1, "units"), (1, "units")])
@@ -80,7 +95,8 @@ class ScrollableFrameWheelTests(unittest.TestCase):
 
         self.assertTrue(_enable_scrollable_frame_wheel(frame))
 
-        self.assertEqual(set(child.bindings), {"<Button-4>", "<Button-5>"})
+        self.assertEqual(
+            set(child.bindings), {"<Button-4>", "<Button-5>", "<MouseWheel>"})
 
     def test_a_frame_without_a_canvas_is_left_alone(self):
         child = Widget()

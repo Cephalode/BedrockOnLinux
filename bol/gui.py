@@ -75,15 +75,12 @@ RE_MD_LINK = re.compile(r"^\[([^\]]+)\]\(([^)]+)\)$")
 _DIALOG_SCREEN_MARGIN = (40, 80)
 _DIALOG_MAX_PHYSICAL_SIZE = (760, 640)
 
-
 def _desktop_error(message):
     warn(message)
     desktop_notify(message)
 
-
 _X11_SOCKET_NAME = re.compile(r"^X([0-9]+)$")
 _X11_DISPLAY_NUMBER = re.compile(r"^(?:[^:]*)?:([0-9]+)(?:\.[0-9]+)?$")
-
 
 def _display_connection_error(error):
     """Return whether Tcl failed specifically while opening an X display."""
@@ -92,7 +89,6 @@ def _display_connection_error(error):
         "couldn't connect to display" in message
         or "no display name and no $display environment variable" in message
     )
-
 
 def _owned_x11_socket_displays(
         socket_dir=Path("/tmp/.X11-unix"), uid=None):
@@ -119,13 +115,11 @@ def _owned_x11_socket_displays(
         displays.append((int(match.group(1)), f":{match.group(1)}"))
     return tuple(display for _, display in sorted(displays))
 
-
 def _display_number(display):
     if not isinstance(display, str):
         return None
     match = _X11_DISPLAY_NUMBER.fullmatch(display.strip())
     return int(match.group(1)) if match else None
-
 
 def _x11_socket_is_listening(socket_dir, display, timeout=0.1):
     """Return whether the display's filesystem socket accepts a connection."""
@@ -141,7 +135,6 @@ def _x11_socket_is_listening(socket_dir, display, timeout=0.1):
         return False
     finally:
         client.close()
-
 
 def _create_gui_root(
         ctk, tk, *, environ=None, socket_dir=Path("/tmp/.X11-unix"),
@@ -200,7 +193,6 @@ def _create_gui_root(
         restore_display()
         raise first_error
 
-
 class Theme:
     BG          = ("#f2f4f7", "#0f1115")
     FG          = ("#0f1115", "#f2f4f7")
@@ -210,7 +202,7 @@ class Theme:
     CARD        = ("#ffffff", "#181b22")
     CARD_2      = ("#e8ebf0", "#20242e")
     CARD_3      = ("#d8dce4", "#2a2f3b")
-    
+
     BORDER      = ("#d0d4dc", "#2a2e38")
 
     RED         = ("#d35446", "#e2685a")
@@ -242,12 +234,10 @@ class Theme:
             return color[0] if ctk.get_appearance_mode() == "Light" else color[1]
         return color
 
-
 def _messagebox_height(message):
     lines = str(message).splitlines() or [""]
     wrapped_lines = sum(max(1, (len(line) + 47) // 48) for line in lines)
     return max(210, min(520, 170 + wrapped_lines * 19))
-
 
 def _fit_dialog_size(requested, viewport, window_scaling):
     requested_width, requested_height = requested
@@ -261,7 +251,6 @@ def _fit_dialog_size(requested, viewport, window_scaling):
         min(requested_width, max(1, int(usable_width / scale))),
         min(requested_height, max(1, int(usable_height / scale))),
     )
-
 
 def _select_monitor_bounds(owner, monitors, fallback):
     owner_x, owner_y, owner_width, owner_height = owner
@@ -292,7 +281,6 @@ def _select_monitor_bounds(owner, monitors, fallback):
 
     return max(valid_monitors, key=score)
 
-
 def _centered_window_position(owner, window, bounds):
     owner_x, owner_y, owner_width, owner_height = owner
     window_width, window_height = window
@@ -306,7 +294,6 @@ def _centered_window_position(owner, window, bounds):
         max(bound_y, min(y, max_y)),
     )
 
-
 def _geometry_position(geometry):
     match = re.search(r"([+-]{1,2}\d+)([+-]{1,2}\d+)$", geometry)
     if match is None:
@@ -317,38 +304,81 @@ def _geometry_position(geometry):
 
     return coordinate(match.group(1)), coordinate(match.group(2))
 
+def _wheel_units_from_event(event):
+    """Turn a platform-specific wheel/touchpad event into scroll "units".
+
+    - X11 legacy button events (``Button-4``/``Button-5``) fire once per
+      "click" of a mechanical wheel, so each one is exactly one unit.
+    - ``<MouseWheel>`` is used on Windows, macOS, and on X11/Wayland when the
+      toolkit reports libinput scroll events instead of the legacy buttons
+      (this is the path most touchpads take). Windows/X11 report multiples
+      of 120 per notch; macOS and libinput report small, high-frequency
+      deltas (sometimes fractional/continuous) for smooth touchpad flicks.
+      Normalizing by 120 (with a minimum magnitude of 1) keeps a single
+      mechanical-wheel notch feeling the same as before while still letting
+      touchpad flicks move smoothly instead of jumping by whole pages.
+    """
+    num = getattr(event, "num", None)
+    if num in (4, 5):
+        return -1 if num == 4 else 1
+
+    delta = getattr(event, "delta", 0)
+    if delta == 0:
+        return 0
+
+    # Large deltas (Windows, and X11 apps that emulate Windows-style wheel
+    # events) come in steps of 120; scale those down to whole units.
+    if abs(delta) >= 120:
+        units = int(delta / 120)
+        return units if units != 0 else (1 if delta > 0 else -1)
+
+    # Small deltas (macOS trackpads, libinput smooth-scroll on X11/Wayland)
+    # are already fine-grained — keep the sign, clamp magnitude to 1 unit
+    # per event so a flick scrolls smoothly instead of skipping content.
+    return -1 if delta < 0 else 1
 
 def _bind_x11_mousewheel_recursive(widget, target_canvas):
-    """Forward X11 wheel events from descendants to a scrollable canvas."""
+    """Forward wheel/touchpad events from descendants to a scrollable canvas.
+
+    Binds both the legacy X11 button events (mechanical mouse wheels) and
+    ``<MouseWheel>`` (Windows, macOS, and modern X11/Wayland touchpad/
+    libinput scroll events) through a single handler so mouse and touchpad
+    input feel consistent and smooth.
+    """
     def _on_wheel(event):
-        delta = -1 if event.num == 4 else 1
-        target_canvas.yview_scroll(delta, "units")
+        units = _wheel_units_from_event(event)
+        if units != 0:
+            target_canvas.yview_scroll(units, "units")
         return "break"
 
     def _bind(w):
         w.bind("<Button-4>", _on_wheel, add="+")
         w.bind("<Button-5>", _on_wheel, add="+")
+        w.bind("<MouseWheel>", _on_wheel, add="+")
         for child in w.winfo_children():
             _bind(child)
 
     _bind(widget)
 
-
 def _enable_scrollable_frame_wheel(scrollable_frame, container=None):
-    """Give one CustomTkinter scrollable area a working X11 wheel.
+    """Give one CustomTkinter scrollable area a smooth mouse/touchpad wheel.
 
     CustomTkinter removes its own wheel bindings as soon as the pointer enters
     a child widget, so any list built from controls — the Settings tabs, the
-    version picker — only scrolled by dragging its scrollbar. Forward the
-    events from every descendant of ``container`` to the frame's canvas.
+    version picker, the profile menu — only scrolled by dragging its
+    scrollbar. Forward the events from every descendant of ``container`` (and
+    from the frame itself) to the frame's canvas using a single handler that
+    understands both mechanical mouse wheels and touchpad/libinput scroll
+    events, so scrolling is smooth and consistent everywhere. The frame's
+    own canvas is always inside ``container``'s widget tree, so it is
+    already covered by this recursive walk — no separate binding needed.
     """
     canvas = getattr(scrollable_frame, "_parent_canvas", None)
     if canvas is None:
         return False
-    _bind_x11_mousewheel_recursive(
-        scrollable_frame if container is None else container, canvas)
+    target = scrollable_frame if container is None else container
+    _bind_x11_mousewheel_recursive(target, canvas)
     return True
-
 
 class _ThemedMessageBox:
     def __init__(
@@ -514,10 +544,8 @@ class _ThemedMessageBox:
             title, message, icon or "question", ("No", "Yes"), parent
         ) == "Yes"
 
-
 _LOADING_VERSIONS = "Loading…"
 _NO_VERSIONS = "No build listed"
-
 
 def _build_label(build):
     """Menu label for a catalogue entry.
@@ -527,7 +555,6 @@ def _build_label(build):
     """
     return f"{build['version']}  ✓" if build.get("installed") \
         else str(build["version"])
-
 
 def _create_play_icon(size=16, fg_color="white", bg_color="black"):
     import tkinter as tk
@@ -539,7 +566,7 @@ def _create_play_icon(size=16, fg_color="white", bg_color="black"):
     if fg == "black": fg = "#000000"
     if bg == "white": bg = "#ffffff"
     if bg == "black": bg = "#000000"
-    
+
     data = []
     for y in range(size):
         row = []
@@ -568,7 +595,7 @@ def _create_kill_icon(size=16, fg_color="white", bg_color="black"):
     if fg == "black": fg = "#000000"
     if bg == "white": bg = "#ffffff"
     if bg == "black": bg = "#000000"
-    
+
     data = []
     pad = 3
     thickness = 2
@@ -589,7 +616,6 @@ def _create_kill_icon(size=16, fg_color="white", bg_color="black"):
     img.put(data)
     return img
 
-
 def _gpu_incident_safety_instruction(ack_status):
     """What must have been checked before one incident can be acknowledged."""
     if ack_status.previous_boot_fault:
@@ -598,7 +624,6 @@ def _gpu_incident_safety_instruction(ack_status):
     return ("No fatal driver event was detected for this marker. Continue "
             "only after checking why the previous session or machine "
             "stopped.")
-
 
 def _offer_gpu_incident_acknowledgement(
         messagebox, parent, ack_status, prefix="",
@@ -636,7 +661,6 @@ def _offer_gpu_incident_acknowledgement(
         "GPU safety", gpu_crash_acknowledgement_status().message,
         parent=parent)
     return False
-
 
 def gui():
     if (os.environ.get("WAYLAND_DISPLAY")
@@ -830,7 +854,7 @@ def gui():
     )
 
     class Tooltip:
-        """Small delayed hover label for icon-only buttons."""
+        """Small delayed hover label for icon-only buttons, and for settings."""
 
         def __init__(self, widget, text):
             self.widget, self.text, self.win, self._job = widget, text, None, None
@@ -838,28 +862,29 @@ def gui():
             widget.bind("<Leave>", self._hide, add="+")
 
         def _schedule(self, _e=None):
-            self._job = root.after(500, self._show)
+            self._job = root.after(400, self._show)
 
         def _show(self):
-            if self.win is not None:
+            if self.win is not None or not self.text:
                 return
             try:
                 if not self.widget.winfo_exists():
                     return
                 widget_y = self.widget.winfo_rooty() - root.winfo_rooty()
                 x = self.widget.winfo_rootx() - root.winfo_rootx() + self.widget.winfo_width() // 2
-                
+
                 if widget_y > root.winfo_height() // 2:
                     y = widget_y - 8
                     anchor = "s"
                 else:
                     y = widget_y + self.widget.winfo_height() + 8
                     anchor = "n"
-                
-                self.win = ctk.CTkFrame(root, fg_color=T.CARD_3, corner_radius=6)
+
+                self.win = ctk.CTkFrame(root, fg_color=T.CARD_3, corner_radius=8,
+                                        border_width=1, border_color=T.BORDER)
                 lab = ctk.CTkLabel(self.win, text=self.text, fg_color="transparent", text_color=T.FG,
-                                   font=font(10))
-                lab.pack(padx=8, pady=4)
+                                   font=font(11), justify="left", wraplength=280)
+                lab.pack(padx=10, pady=6)
                 self.win.place(x=x, y=y, anchor=anchor)
                 self.win.lift()
             except Exception:
@@ -879,8 +904,19 @@ def gui():
                     pass
                 self.win = None
 
+    def explain(widget, text):
+        """Attach an on-hover explanation to a settings control.
+
+        This is the one-liner every settings row uses instead of a second,
+        permanently-visible caption label underneath it: the description only
+        appears while the pointer is actually over the control that it
+        explains, so a tab full of switches reads as a tab full of switches,
+        not a tab full of paragraphs.
+        """
+        return Tooltip(widget, text)
+
     na = NativeAuth()
-    ui = {"versions": [], "builds": [], "busy": False, "details": False,
+    ui = {"versions": [], "labels": [], "busy": False, "details": False,
           "launch_active": False, "changelog_active": False,
           "changelogs_loaded": False, "changelog_head": None,
           "settings_head": None,
@@ -897,7 +933,7 @@ def gui():
     brand.pack(side="left")
     icon_btn = ctk.CTkFrame(brand, fg_color=T.CARD_2, corner_radius=8)
     icon_btn.pack(side="left", padx=(6, 3), pady=5)
-    
+
     ll = logo_label(icon_btn, 24, T.CARD_2)
     if not ll:
         ll = ctk.CTkLabel(icon_btn, text="GitHub", fg_color=T.CARD_2, text_color=T.SUB, font=("sans-serif", 10, "bold"))
@@ -906,7 +942,7 @@ def gui():
     brand_lbl = ctk.CTkLabel(brand, text="What's New", font=font(16, "bold"),
                              text_color=T.FG)
     brand_lbl.pack(side="left", padx=(3, 6), pady=8)
-    
+
     brand_lbl.bind("<Button-1>", lambda _event: toggle_changelog())
     brand_lbl.bind(
         "<Enter>",
@@ -924,13 +960,13 @@ def gui():
         subprocess.Popen(
             ["xdg-open", "https://github.com/Wyze3306/BedrockOnLinux"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+
     def _icon_hover(on):
         c = T.CARD_3 if on else T.CARD_2
         icon_btn.configure(fg_color=c)
         if ll:
             ll.configure(fg_color=c)
-            
+
     for w in [icon_btn, ll]:
         w.bind("<Button-1>", _open_github)
         w.bind("<Enter>", lambda _event: _icon_hover(True))
@@ -949,7 +985,7 @@ def gui():
     acct_btn = mkbtn(acct, "Sign in", lambda: acct_click(), kind="ghost",
                       width=88, height=30, font=font(12, "bold"))
     acct_btn.pack(side="left", padx=(0, 8), pady=8)
-    
+
     acct_txt_lbl._tooltip = Tooltip(acct_txt_lbl, "")
     acct_btn._tooltip = Tooltip(acct_btn, "")
 
@@ -1129,7 +1165,6 @@ def gui():
                     except Exception as ex:
                         messagebox.showerror("Rename Profile", str(ex), parent=d)
 
-
                 def do_delete(name=p_name, is_act=is_p_active):
                     if is_act:
                         messagebox.showwarning(
@@ -1175,6 +1210,10 @@ def gui():
                             d.destroy()
                     sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: do_switch_custom(p), kind="ghost", height=28, width=60)
                     sw_btn.pack(side="right", padx=(0, 6))
+
+            # Rows are destroyed and rebuilt on every refresh, so the wheel
+            # handler has to be re-applied to the fresh widgets each time.
+            _enable_scrollable_frame_wheel(sf, d)
 
         refresh_manager()
 
@@ -1353,7 +1392,7 @@ def gui():
     dock = ctk.CTkFrame(root, fg_color=T.CARD, corner_radius=16,
                          border_width=1, border_color=T.BORDER)
     dock.pack(fill="x", padx=22, pady=(10, 16))
-    
+
     _sash_state = {"y": 0, "h": 220, "max_h": 600}
     def sash_click(e):
         if not ui.get("details"): return
@@ -1368,7 +1407,7 @@ def gui():
         if new_h > _sash_state["max_h"]: new_h = _sash_state["max_h"]
         detwrap.configure(height=new_h)
         root.minsize(860, 640 + new_h)
-        
+
     for _w in (status, status_lbl, prog, getattr(prog, "_canvas", prog)):
         _w.bind("<Button-1>", sash_click, add="+")
         _w.bind("<B1-Motion>", sash_drag, add="+")
@@ -1378,305 +1417,229 @@ def gui():
 
     vbox = ctk.CTkFrame(bar, fg_color="transparent")
     vbox.pack(side="left")
-    # The Store serves one build per edition, so there is nothing to pick from
-    # a list: the choice is Minecraft or Minecraft Preview, and both fit in a
-    # two-segment toggle that is always visible.
-    edition_var = tk.StringVar(value="release")
-    version_var = tk.StringVar(value=_LOADING_VERSIONS)
-    edition_buttons = {}
-    _builds_ui = {"dialog": None, "pending": False}
 
-    def current_edition():
-        return next((v for v in (ui.get("versions") or [])
-                     if v["id"] == edition_var.get()), None)
+    # ==================================================================
+    # Version picker (old style with search + filter)
+    # ==================================================================
+    mc_var = tk.StringVar(value="")
+    _pick = {"win": None, "hover": False, "bind_id": None}
 
-    def selected_build():
-        """The catalogue entry the build menu names, or None while loading."""
-        label = version_var.get()
-        return next((b for b in (ui.get("builds") or [])
-                     if _build_label(b) == label), None)
-
-    def _edition_name(edition_id):
-        """Short display name, usable before the edition list has loaded."""
-        entry = next((v for v in (ui.get("versions") or [])
-                      if v["id"] == edition_id), None)
-        if entry:
-            return entry["name"].replace(" for Windows", "")
-        return "Minecraft Preview" if edition_id == "preview" else "Minecraft"
-
-    def select_edition(edition_id):
-        if edition_var.get() == edition_id:
-            return
-        edition_var.set(edition_id)
-        # Show the switch immediately and blank the build list, so the click
-        # is visibly taken even though the new list arrives a moment later --
-        # and so nothing persists a build belonging to the other edition.
-        ui["builds"] = []
-        _builds_ui["pending"] = False
-        close_build_list()
-        version_var.set(_LOADING_VERSIONS)
-        _update_selected_chip()
-        # Pass the edition explicitly: the click decides, and re-reading it
-        # from settings here is what used to lose clicks.
-        threading.Thread(target=refresh_versions, args=(edition_id,),
-                         daemon=True).start()
-
-    def select_version(label=None):
-        if label is not None:
-            version_var.set(label)
-        close_build_list()
-        _update_selected_chip()
-
-    def _sync_theme(w, is_beta=None):
-        if w == acct_dot:
-            return
-        if is_beta is None:
-            is_beta = edition_var.get() == "preview"
-            
-        c_new = T.GOLD if is_beta else T.GREEN
-        h_new = T.GOLD_HOV if is_beta else T.GREEN_HOV
-        d_new = T.GOLD_DIM if is_beta else T.GREEN_DIM
-        c_old = T.GREEN if is_beta else T.GOLD
-        h_old = T.GREEN_HOV if is_beta else T.GOLD_HOV
-        d_old = T.GREEN_DIM if is_beta else T.GOLD_DIM
-        
-        T.THEME_ACCENT = c_new
-        T.THEME_HOV = h_new
-        T.THEME_DIM = d_new
-        
-        for attr in ("fg_color", "text_color", "progress_color", "hover_color", "segmented_button_selected_color", "segmented_button_selected_hover_color"):
-            try:
-                cur = w.cget(attr)
-                if cur == c_old:
-                    w.configure(**{attr: c_new})
-                elif cur == h_old:
-                    w.configure(**{attr: h_new})
-                elif cur == d_old:
-                    w.configure(**{attr: d_new})
-            except Exception:
-                pass
-        if hasattr(w, "_segmented_button"):
-            try: w._segmented_button.configure(selected_color=c_new, selected_hover_color=h_new)
-            except Exception: pass
-        if hasattr(w, "tag_configure"):
-            try: w.tag_configure("link", foreground=T.r(c_new))
-            except Exception: pass
-            try: w.tag_configure("release_title", foreground=T.r(c_new))
-            except Exception: pass
-        elif hasattr(w, "_textbox"):
-            try: w._textbox.tag_configure("link", foreground=T.r(c_new))
-            except Exception: pass
-            try: w._textbox.tag_configure("release_title", foreground=T.r(c_new))
-            except Exception: pass
-            
-        if w.__class__.__name__ == "Text" and getattr(w, "_is_logbox", False):
-            try:
-                w.configure(bg=T.r(T.CONSOLE_BG), fg=T.r(T.CONSOLE_FG), insertbackground=T.r(T.FG))
-            except Exception:
-                pass
-            
-        if getattr(w, "_is_play_btn", False):
-            try:
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    if ui.get("busy"):
-                        w.configure(fg_color=T.RED, hover_color=T.RED, text_color=T.FG)
-                        w._img_norm = _create_kill_icon(16, T.FG, T.RED)
-                    else:
-                        w.configure(fg_color=T.THEME_ACCENT, hover_color=T.THEME_ACCENT, text_color=T.FG)
-                        w._img_norm = _create_play_icon(16, T.FG, T.THEME_ACCENT)
-                    w.configure(image=w._img_norm)
-            except Exception:
-                pass
-            
-        for child in w.winfo_children():
-            _sync_theme(child, is_beta)
-
-    def _update_selected_chip():
-        chosen = edition_var.get()
-        is_beta = chosen == "preview"
-
-        s = load_settings()
-        changed = False
-        if s.get("ui_is_beta") != is_beta:
-            s["ui_is_beta"] = is_beta
-            changed = True
-        if s.get("mc_edition") != chosen:
-            s["mc_edition"] = chosen
-            changed = True
-        build = selected_build()
-        if build and s.get("mc_version") != build["version"]:
-            s["mc_version"] = build["version"]
-            changed = True
-        # show_betas is no longer a setting of its own; it is what picking
-        # Preview means, and util.mc_releases() still reads it to choose which
-        # release notes to show.
-        if s.get("show_betas") != is_beta:
-            s["show_betas"] = is_beta
-            changed = True
-        if changed:
-            save_settings(s)
-
-        name = _edition_name(chosen)
-        shown = build["version"] if build else ""
-        selected_chip.configure(
-            text=f"  {name}{'  ·  ' + shown if shown else ''}  ",
-            text_color=T.GOLD if is_beta else T.GREEN,
-            fg_color=T.GOLD_DIM if is_beta else T.GREEN_DIM)
+    def close_picker():
+        bid = _pick.get("bind_id")
+        if bid:
+            root.unbind("<Configure>", bid)
+            _pick["bind_id"] = None
 
         try:
-            if hasattr(play_btn, "_tooltip"):
-                is_kill = "Kill" in play_btn._tooltip.text
-                play_btn._tooltip.text = (
-                    f"{'Kill' if is_kill else 'Play'} {name}")
+            ver_arrow.configure(text="▾")
+            if not _pick.get("hover"):
+                ver_field.configure(fg_color=T.CARD_2)
+                ver_lbl.configure(text_color=T.FG)
+        except NameError:
+            pass
+        w = _pick["win"]
+        _pick["win"] = None
+        if w is not None:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+    def set_version(label):
+        mc_var.set(label or "")
+        _update_selected_chip()
+        close_picker()
+
+    def open_picker():
+        if _pick["win"] is not None:
+            close_picker()
+            return
+        labels = ui.get("labels") or []
+        if not labels:
+            return
+        x = ver_field.winfo_rootx() - root.winfo_rootx()
+        y = ver_field.winfo_rooty() - root.winfo_rooty()
+        w = ver_field.winfo_width()
+
+        s = load_settings()
+        saved_h = s.get("picker_height")
+        if saved_h is not None:
+            h = min(max(100, int(saved_h)), y - 24)
+        else:
+            h = min(360, 40 + 32 * min(len(labels), 8))
+
+        win = ctk.CTkFrame(root, width=w, height=h, fg_color=T.CARD_2, bg_color=T.CARD, border_width=1, border_color=T.BORDER, corner_radius=12)
+        _pick["win"] = win
+        win.pack_propagate(False)
+        win.place(x=x, y=y - h - 4)
+        win.lift()
+
+        def drag_resize(event):
+            cur_y = ver_field.winfo_rooty() - root.winfo_rooty()
+            mouse_y = event.y_root - root.winfo_rooty()
+            mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
+            new_h = cur_y - 4 - mouse_y
+            win.configure(height=new_h)
+            win.place(y=mouse_y)
+
+        def end_drag(event):
+            cur_y = ver_field.winfo_rooty() - root.winfo_rooty()
+            mouse_y = event.y_root - root.winfo_rooty()
+            mouse_y = max(24, min(mouse_y, cur_y - 4 - 100))
+            new_h = cur_y - 4 - mouse_y
+            s2 = load_settings()
+            s2["picker_height"] = new_h
+            save_settings(s2)
+
+        def update_position(e=None):
+            if _pick["win"] != win: return
+            try:
+                cur_x = ver_field.winfo_rootx() - root.winfo_rootx()
+                cur_y = ver_field.winfo_rooty() - root.winfo_rooty()
+                cur_h = win.cget("height")
+                win.place(x=cur_x, y=cur_y - int(cur_h) - 4)
+            except Exception:
+                pass
+
+        _pick["bind_id"] = root.bind("<Configure>", update_position, add="+")
+
+        grip_container = ctk.CTkFrame(win, width=w - 40, height=18, fg_color="transparent", cursor="sb_v_double_arrow")
+        grip_container.pack(side="top", pady=(2, 0))
+        grip_container.pack_propagate(False)
+
+        grip = ctk.CTkFrame(grip_container, width=40, height=4, fg_color=T.BORDER, corner_radius=2)
+        grip.place(relx=0.5, rely=0.5, anchor="center")
+
+        for widget in (grip_container, grip):
+            widget.bind("<B1-Motion>", drag_resize)
+            widget.bind("<ButtonRelease-1>", end_drag)
+            widget.bind("<Button-1>", lambda e: search.focus_set())
+
+        ver_arrow.configure(text="▴")
+
+        search = ctk.CTkEntry(win, placeholder_text="Filter versions…",
+                               fg_color=T.CARD_3, border_width=0,
+                               text_color=T.FG, corner_radius=8, height=30,
+                               font=font(12))
+        search.pack(fill="x", padx=6, pady=(6, 4))
+        search.focus_set()
+
+        sf = ctk.CTkScrollableFrame(win, fg_color=T.CARD_2, corner_radius=8)
+        sf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        cur = mc_var.get()
+
+        _pick["no_match"] = ctk.CTkLabel(sf, text="No matches", text_color=T.MUTED, font=font(12))
+        _pick["buttons"] = []
+        for lab in labels:
+            is_beta = "BETA" in lab
+            c_bg = T.GOLD if is_beta else T.GREEN
+            c_dim = T.GOLD_DIM if is_beta else T.GREEN_DIM
+
+            row = ctk.CTkButton(
+                sf, text=lab, anchor="w", height=30, corner_radius=6,
+                fg_color=c_dim if lab == cur else "transparent",
+                hover_color=c_dim,
+                text_color=c_bg if lab == cur else T.FG,
+                font=font(12), command=lambda l=lab: set_version(l))
+            if lab != cur:
+                def _enter(e, r=row, c=c_bg): r.configure(text_color=c)
+                def _leave(e, r=row): r.configure(text_color=T.FG)
+                row.bind("<Enter>", _enter, add="+")
+                row.bind("<Leave>", _leave, add="+")
+            _pick["buttons"].append((lab, row))
+            row.pack(fill="x", pady=1)
+
+        # The version picker's scrollable list never had a wheel handler,
+        # so it only scrolled by dragging the scrollbar. Bind the same
+        # smooth mouse/touchpad handler used elsewhere in the app, covering
+        # the frame itself plus every row button already built above.
+        _enable_scrollable_frame_wheel(sf, win)
+
+        def rebuild(_e=None):
+            q = search.get().strip().lower()
+            shown_any = False
+            for lab, row in _pick["buttons"]:
+                if not q or q in lab.lower():
+                    row.pack(fill="x", pady=1)
+                    shown_any = True
+                else:
+                    row.pack_forget()
+
+            if not shown_any:
+                _pick["no_match"].pack(pady=10)
+            else:
+                _pick["no_match"].pack_forget()
+
+        def on_enter(_e=None):
+            q = search.get().strip().lower()
+            shown = [lab for lab in labels if q in lab.lower()] if q else labels
+            if shown:
+                set_version(shown[0])
+                return "break"
+            return "break"
+
+        search.bind("<KeyRelease>", rebuild)
+        search.bind("<Return>", on_enter)
+        search.bind("<Escape>", lambda e: close_picker())
+        search.bind("<KeyRelease>", rebuild)
+        search.bind("<Return>", on_enter)
+        search.bind("<Escape>", lambda e: close_picker())
+
+        rebuild()
+        win.bind("<Escape>", lambda e: close_picker())
+
+    def global_click(event):
+        w = _pick.get("win")
+        if w is None:
+            return
+        try:
+            wx, wy = w.winfo_rootx(), w.winfo_rooty()
+            ww, wh = w.winfo_width(), w.winfo_height()
+            vx, vy = ver_field.winfo_rootx(), ver_field.winfo_rooty()
+            vw, vh = ver_field.winfo_width(), ver_field.winfo_height()
+            mx, my = event.x_root, event.y_root
+
+            in_w = (wx <= mx <= wx + ww) and (wy <= my <= wy + wh)
+            in_v = (vx <= mx <= vx + vw) and (vy <= my <= vy + vh)
+
+            if not in_w and not in_v:
+                close_picker()
         except Exception:
             pass
 
-        _sync_theme(root, is_beta)
-        # After _sync_theme: it recolours theme-coloured widgets wholesale, and
-        # the selected segment carries a theme colour of its own.
-        _paint_edition_toggle()
-
-        if ui.get("changelogs_loaded") and tab_game is not None and changelog_view.winfo_ismapped():
-            from .util import mc_releases
-            load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
-
-    # Edition on the left, build on the right. The old picker was a custom
-    # popup with a search box, a resizable window, a saved height and
-    # outside-click handling; the edition is two buttons and the build is a
-    # stock option menu, so none of that has to exist.
-    row = ctk.CTkFrame(vbox, fg_color="transparent")
-    row.pack(anchor="w")
-    ed_field = ctk.CTkFrame(row, fg_color=T.CARD_2, bg_color=T.CARD,
-                            corner_radius=12, height=52)
-    ed_field.pack(side="left")
-    ed_field.pack_propagate(False)
-
-    def _paint_edition_toggle():
-        chosen = edition_var.get()
-        for eid, button in edition_buttons.items():
-            on = eid == chosen
-            beta = eid == "preview"
-            button.configure(
-                fg_color=(T.GOLD_DIM if beta else T.GREEN_DIM)
-                if on else "transparent",
-                hover_color=T.CARD_3,
-                text_color=(T.GOLD if beta else T.GREEN) if on else T.SUB)
-
-    for _eid, _text in (("release", "Minecraft"), ("preview", "Preview")):
-        _button = mkbtn(ed_field, _text,
-                        (lambda e=_eid: select_edition(e)), kind="flat",
-                        width=106, height=40, font=font(14, "bold"),
-                        corner_radius=9)
-        _button.pack(side="left", padx=(6, 0) if _eid == "release" else (2, 6),
-                     pady=6)
-        edition_buttons[_eid] = _button
-    Tooltip(ed_field, "Minecraft, or the Preview build")
-    _paint_edition_toggle()
-
-    # The build list lives inside the launcher window rather than in a menu
-    # the window manager owns. A CTkOptionMenu posts a Tk menu as its own
-    # top-level window, and here that window could not be clicked reliably --
-    # the click opened it, and then nothing. Placing the list in root sidesteps
-    # stacking and grabs entirely, and it still costs a fraction of the old
-    # picker: no search box, no resizing, no remembered height.
-    build_field = ctk.CTkFrame(row, fg_color=T.CARD_2, bg_color=T.CARD,
-                               corner_radius=12, width=168, height=52)
-    build_field.pack(side="left", padx=(10, 0))
-    build_field.pack_propagate(False)
-    build_label = ctk.CTkLabel(build_field, textvariable=version_var,
-                               text_color=T.FG, font=font(14), anchor="w")
-    build_label.pack(side="left", fill="x", expand=True, padx=(14, 0))
-    build_arrow = ctk.CTkLabel(build_field, text="▾", text_color=T.SUB,
-                               font=font(15, "bold"))
-    build_arrow.pack(side="right", padx=(0, 12))
-    Tooltip(build_field, "Which build to play")
-
-    def open_build_list(_event=None):
-        """Choose a build from a small dialog.
-
-        Not a dropdown: a CTkOptionMenu posts a Tk menu that the window manager
-        owns, and here that menu opened but could not be clicked -- which is
-        why the old picker rolled its own. A dialog with a scrollable list is
-        the same shape as the Settings panes, which already work, and it needs
-        no search box, no resizing and no remembered height.
-        """
-        if _builds_ui["dialog"] is not None:
-            return
-        builds = ui.get("builds") or []
-        if not builds:
-            # The list is still being fetched. Remember the click instead of
-            # dropping it: a click that does nothing at all is why this felt
-            # like it needed several tries.
-            _builds_ui["pending"] = True
-            return
-        d = dialog("Choose a build", 300, 420)
-        _builds_ui["dialog"] = d
-
-        def done(_event=None):
-            _builds_ui["dialog"] = None
-            build_arrow.configure(text="▾")
-            if d.winfo_exists():
-                d.destroy()
-        d.protocol("WM_DELETE_WINDOW", done)
-        d.bind("<Destroy>", lambda e: done() if e.widget is d else None)
-        build_arrow.configure(text="▴")
-
-        ctk.CTkLabel(d, text=_edition_name(edition_var.get()),
-                     text_color=T.SUB, font=font(12)).pack(pady=(12, 6))
-        listing = ctk.CTkScrollableFrame(d, fg_color=T.CARD_2,
-                                         corner_radius=10)
-        listing.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        current = version_var.get()
-        for build in builds:
-            label = _build_label(build)
-            chosen = label == current
-            entry = mkbtn(listing, label,
-                          (lambda v=label: (select_version(v), done())),
-                          kind="ghost", height=32, font=font(13),
-                          corner_radius=8, anchor="w",
-                          fg_color=T.THEME_DIM if chosen else T.CARD_2,
-                          hover_color=T.CARD_3,
-                          text_color=T.THEME_ACCENT if chosen else T.FG)
-            entry.pack(fill="x", padx=6, pady=2)
-        _enable_scrollable_frame_wheel(listing)
-
-    def close_build_list(_event=None):
-        d = _builds_ui["dialog"]
-        if d is not None and d.winfo_exists():
-            d.destroy()
-        _builds_ui["dialog"] = None
-        build_arrow.configure(text="▾")
-
-    # The build list is a modal dialog with its own close protocol, so only
-    # the profile menu still needs dismissing when a click lands outside it.
-    def global_click(event):
-        pw = prof_menu_state.get("win")
-        if pw is not None:
-            try:
-                px, py = pw.winfo_rootx(), pw.winfo_rooty()
-                pww, pwh = pw.winfo_width(), pw.winfo_height()
-                cx, cy = prof_card.winfo_rootx(), prof_card.winfo_rooty()
-                cw, ch = prof_card.winfo_width(), prof_card.winfo_height()
-                mx, my = event.x_root, event.y_root
-
-                in_pw = (px <= mx <= px + pww) and (py <= my <= py + pwh)
-                in_pc = (cx <= mx <= cx + cw) and (cy <= my <= cy + ch)
-
-                if not in_pw and not in_pc:
-                    close_profile_menu()
-            except Exception:
-                pass
-
     root.bind_all("<Button-1>", global_click, add="+")
 
-    for _w in (build_field, build_label, build_arrow):
-        _w.bind("<Button-1>", open_build_list)
+    ver_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD, corner_radius=12,
+                              width=220, height=52)
+    ver_field.pack(anchor="w")
+    ver_field.pack_propagate(False)
+    ver_lbl = ctk.CTkLabel(ver_field, textvariable=mc_var, text_color=T.FG,
+                            font=font(16), anchor="w")
+    ver_lbl.pack(side="left", fill="x", expand=True, padx=(14, 0))
+    ver_arrow = ctk.CTkLabel(ver_field, text="▾", text_color=T.SUB, font=font(16, "bold"))
+    ver_arrow.pack(side="right", padx=(0, 12))
+    Tooltip(ver_field, "Change Version")
 
+    def _ver_hover(on):
+        _pick["hover"] = on
+        if on or _pick["win"] is not None:
+            ver_field.configure(fg_color=T.CARD_3)
+            ver_lbl.configure(text_color=T.THEME_ACCENT)
+        else:
+            ver_field.configure(fg_color=T.CARD_2)
+            ver_lbl.configure(text_color=T.FG)
+
+    for _w in (ver_field, ver_lbl, ver_arrow):
+        _w.bind("<Enter>", lambda e: _ver_hover(True))
+        _w.bind("<Leave>", lambda e: _ver_hover(False))
+        _w.bind("<Button-1>", lambda e: open_picker())
+
+    # ==================================================================
+    # Right side of dock: play, settings, details
+    # ==================================================================
     rbox = ctk.CTkFrame(bar, fg_color="transparent")
     rbox.pack(side="right")
-    
+
     hbox = ctk.CTkFrame(rbox, fg_color="transparent")
     hbox.pack(fill="x")
 
@@ -1979,7 +1942,7 @@ def gui():
         qr_frame = ctk.CTkFrame(d, fg_color="transparent", width=150, height=150)
         qr_frame.pack_propagate(False)
         qr_frame.pack(anchor="center", pady=(0, 16))
-        
+
         bg_color = d.cget("fg_color")
         if isinstance(bg_color, tuple):
             bg_color = d._apply_appearance_mode(bg_color)
@@ -2031,7 +1994,7 @@ def gui():
 
         code_row = ctk.CTkFrame(d, fg_color="transparent")
         code_row.pack(anchor="center", pady=(8, 24))
-        
+
         c_ent = ctk.CTkEntry(code_row, width=175, fg_color="transparent", border_width=0,
                              text_color=T.BLUE, justify="center",
                              font=ctk.CTkFont(family=MONO, size=32, weight="bold"))
@@ -2051,55 +2014,64 @@ def gui():
                           height=32, font=font(16), corner_radius=8)
         copy_btn.pack(side="left", padx=(2, 0))
 
-    def refresh_versions(edition_id=None):
-        """Fill the build menu for an edition.
-
-        ``edition_id`` is what the player just clicked. Only the startup call
-        omits it and lets the stored settings choose -- re-reading them on
-        every refresh meant a click could be undone by a listing that had
-        already read the previous value, which is why switching edition
-        needed several tries.
-        """
-        # Both editions are always offered; the toggle is the choice, so there
-        # is no longer a setting deciding whether Preview is even listed.
-        ui["versions"] = list_editions(include_beta=True)
-        known = {v["id"] for v in ui["versions"]}
-        chosen = edition_id
-        if chosen is None:
-            chosen = (load_settings().get("mc_edition") or "").strip()
-            if chosen not in known:
-                chosen = "release"
-            root.after(0, lambda: edition_var.set(chosen))
-        want = (load_settings().get("mc_version") or "").strip()
+    # ==================================================================
+    # Versions: using list_editions + list_versions
+    # ==================================================================
+    def refresh_versions():
+        beta = load_settings().get("show_betas", False)
         try:
-            builds = list_versions(chosen)
+            editions = list_editions(include_beta=beta)
         except Exception as e:
-            log._LOG_SINK(f"xx builds: {e}")
-            builds = []
+            log._LOG_SINK(f"xx editions: {e}")
+            return
+
+        versions = []
+        for ed in editions:
+            try:
+                builds = list_versions(ed["id"])
+                for b in builds:
+                    versions.append({
+                        "tag": b["version"],
+                        "beta": ed.get("beta", False),
+                        "edition": ed["id"],
+                        "installed": b.get("installed", False),
+                    })
+            except Exception as e:
+                log._LOG_SINK(f"xx versions for {ed['id']}: {e}")
+
+        if not versions:
+            log._LOG_SINK("xx no versions loaded")
+            return
+
+        ui["versions"] = versions
+        from .util import format_display_version
+        labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
+                  for v in versions]
 
         def ap():
-            # Ignore a listing that finished after the player moved on.
-            if edition_var.get() != chosen:
-                return
-            ui["builds"] = builds
-            labels = [_build_label(b) for b in builds]
-            # Keep the build already showing when it exists here too, so a
-            # refresh never silently moves the player to another one.
-            current = version_var.get()
-            pick = current if current in labels else next(
-                (label for label, b in zip(labels, builds)
-                 if b["version"] == want), labels[0] if labels else "")
-            version_var.set(pick or _NO_VERSIONS)
-            close_build_list()
-            _update_selected_chip()
-            if _builds_ui["pending"] and builds:
-                # Honour the click made while this was still loading.
-                _builds_ui["pending"] = False
-                open_build_list()
+            ui["labels"] = labels
+            cur = (load_settings().get("mc_version") or "")
+            # Find the best matching version: exact or starting with cur
+            pick = next((x for x in labels
+                         if x.split("  ")[0] == cur
+                         or x.split("  ")[0].startswith(cur + ".")),
+                        labels[0] if labels else "")
+            if labels:
+                mc_var.set(pick)
+                _update_selected_chip()
         root.after(0, ap)
 
     def selected_version():
-        return current_edition()
+        if not ui["versions"] or not mc_var.get():
+            return None
+        from .util import format_display_version
+        labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
+                  for v in ui["versions"]]
+        try:
+            idx = labels.index(mc_var.get())
+            return ui["versions"][idx]
+        except ValueError:
+            return None
 
     def busy(on):
         ui["busy"] = on
@@ -2117,8 +2089,8 @@ def gui():
                     command=lambda: kill_wine()
                 )
                 if hasattr(play_btn, "_tooltip"):
-                    play_btn._tooltip.text = (
-                        f"Kill {_edition_name(edition_var.get())}")
+                    cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
+                    play_btn._tooltip.text = f"Kill {cur_ver}"
             else:
                 play_btn._img_norm = _create_play_icon(16, T.FG, T.THEME_ACCENT)
                 play_btn.configure(
@@ -2130,21 +2102,178 @@ def gui():
                     command=lambda: do_play()
                 )
                 if hasattr(play_btn, "_tooltip"):
-                    play_btn._tooltip.text = (
-                        f"Play {_edition_name(edition_var.get())}")
+                    cur_ver = mc_var.get().split('  ')[0].strip() if mc_var.get() else "Game"
+                    play_btn._tooltip.text = f"Play {cur_ver}"
+
+    def _sync_theme(w, is_beta=None):
+        if w == acct_dot:
+            return
+        if is_beta is None:
+            lab = mc_var.get()
+            is_beta = "BETA" in lab if lab else False
+
+        c_new = T.GOLD if is_beta else T.GREEN
+        h_new = T.GOLD_HOV if is_beta else T.GREEN_HOV
+        d_new = T.GOLD_DIM if is_beta else T.GREEN_DIM
+        c_old = T.GREEN if is_beta else T.GOLD
+        h_old = T.GREEN_HOV if is_beta else T.GOLD_HOV
+        d_old = T.GREEN_DIM if is_beta else T.GOLD_DIM
+
+        T.THEME_ACCENT = c_new
+        T.THEME_HOV = h_new
+        T.THEME_DIM = d_new
+
+        for attr in ("fg_color", "text_color", "progress_color", "hover_color", "segmented_button_selected_color", "segmented_button_selected_hover_color"):
+            try:
+                cur = w.cget(attr)
+                if cur == c_old:
+                    w.configure(**{attr: c_new})
+                elif cur == h_old:
+                    w.configure(**{attr: h_new})
+                elif cur == d_old:
+                    w.configure(**{attr: d_new})
+            except Exception:
+                pass
+        if hasattr(w, "_segmented_button"):
+            try: w._segmented_button.configure(selected_color=c_new, selected_hover_color=h_new)
+            except Exception: pass
+        if hasattr(w, "tag_configure"):
+            try: w.tag_configure("link", foreground=T.r(c_new))
+            except Exception: pass
+            try: w.tag_configure("release_title", foreground=T.r(c_new))
+            except Exception: pass
+        elif hasattr(w, "_textbox"):
+            try: w._textbox.tag_configure("link", foreground=T.r(c_new))
+            except Exception: pass
+            try: w._textbox.tag_configure("release_title", foreground=T.r(c_new))
+            except Exception: pass
+
+        if w.__class__.__name__ == "Text" and getattr(w, "_is_logbox", False):
+            try:
+                w.configure(bg=T.r(T.CONSOLE_BG), fg=T.r(T.CONSOLE_FG), insertbackground=T.r(T.FG))
+            except Exception:
+                pass
+
+        if getattr(w, "_is_play_btn", False):
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    if ui.get("busy"):
+                        w.configure(fg_color=T.RED, hover_color=T.RED, text_color=T.FG)
+                        w._img_norm = _create_kill_icon(16, T.FG, T.RED)
+                    else:
+                        w.configure(fg_color=T.THEME_ACCENT, hover_color=T.THEME_ACCENT, text_color=T.FG)
+                        w._img_norm = _create_play_icon(16, T.FG, T.THEME_ACCENT)
+                    w.configure(image=w._img_norm)
+            except Exception:
+                pass
+
+        for child in w.winfo_children():
+            _sync_theme(child, is_beta)
+
+    def _update_selected_chip():
+        lab = mc_var.get()
+        if not lab:
+            selected_chip.configure(text="")
+            return
+        is_beta = "BETA" in lab
+
+        s = load_settings()
+        changed = False
+        if s.get("ui_is_beta") != is_beta:
+            s["ui_is_beta"] = is_beta
+            changed = True
+
+        cur_mc_ver = lab.split('  ')[0]
+        if s.get("mc_version") != cur_mc_ver:
+            s["mc_version"] = cur_mc_ver
+            changed = True
+
+        if changed:
+            save_settings(s)
+
+        selected_chip.configure(
+            text=f"  {lab.split('  ')[0]}"
+                 f"{'  ·  BETA' if is_beta else ''}  ",
+            text_color=T.GOLD if is_beta else T.GREEN,
+            fg_color=T.GOLD_DIM if is_beta else T.GREEN_DIM)
+
+        try:
+            active = _pick.get("hover") or _pick.get("win")
+            ver_lbl.configure(text_color=T.THEME_ACCENT if active else T.FG)
+            ver_arrow.configure(text_color=T.SUB)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(play_btn, "_tooltip"):
+                is_kill = "Kill" in play_btn._tooltip.text
+                play_btn._tooltip.text = f"{'Kill' if is_kill else 'Play'} {cur_mc_ver}"
+        except Exception:
+            pass
+
+        _sync_theme(root, is_beta)
+
+        if ui.get("changelogs_loaded") and tab_game is not None and changelog_view.winfo_ismapped():
+            from .util import mc_releases
+            load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
+
+    # ==================================================================
+    # Play & Kill
+    # ==================================================================
+    def do_play():
+        if ui["busy"]:
+            return
+        busy(True)
+        set_status("Preparing…", T.FG)
+        bar_busy()
+
+        def work():
+            try:
+                ver = selected_version()
+                # ver is a dict with tag, beta, edition, installed
+                # do_setup expects a version object with tag and beta
+                # We'll pass the tag and let do_setup figure out the edition from settings or from the version dict.
+                # The old code used to pass the whole version object. We'll pass a dict with tag and beta.
+                if ver is None:
+                    raise BolError("No version selected")
+                # Build a version object that do_setup can use (it expects 'tag' and 'beta')
+                # We'll also include 'edition' if needed.
+                version_obj = {"tag": ver["tag"], "beta": ver.get("beta", False), "edition": ver.get("edition", "release")}
+                do_setup(mc_ver=version_obj, progress=set_progress)
+                set_status("Starting Minecraft…", T.FG)
+                ui["launch_active"] = True
+                try:
+                    launch(on_started=step_aside_for_game)
+                finally:
+                    come_back_from_game()
+                set_status("Minecraft closed.", T.SUB)
+            except Exception as e:
+                message = str(e) or type(e).__name__
+                try:
+                    ack = gpu_crash_acknowledgement_status()
+                except Exception:
+                    ack = None
+                log._LOG_SINK(f"xx {message}")
+                set_status("Minecraft could not start.", T.RED)
+                if ack and ack.can_acknowledge:
+                    root.after(0, lambda text=message, status=ack:
+                               _offer_gpu_incident_acknowledgement(
+                                   messagebox, root, status,
+                                   prefix=text[:2000] + "\n\n",
+                                   title="Minecraft could not start"))
+                else:
+                    root.after(0, lambda text=message: messagebox.showerror(
+                        "Minecraft could not start", text[:2000], parent=root))
+            finally:
+                come_back_from_game()
+                ui["launch_active"] = False
+                end_progress()
+                root.after(0, lambda: busy(False))
+        threading.Thread(target=work, daemon=False).start()
 
     def step_aside_for_game():
-        """Unmap the launcher window once the game process exists.
-
-        Gamescope — Steam Game Mode — presents one application window at a
-        time, so a mapped launcher window keeps the game's own off screen: the
-        game is audible but never appears (#130). Stepping aside for as long
-        as the game runs is what makes the launcher usable there; skipping the
-        launcher is not. A desktop session shows both windows, so nothing
-        moves.
-
-        Called from the launch thread, so the window work is handed to Tk.
-        """
         if not ui.get("single_window") or ui.get("stepped_aside"):
             return
         ui["stepped_aside"] = True
@@ -2157,7 +2286,6 @@ def gui():
         root.after(0, hide)
 
     def come_back_from_game():
-        """Map the launcher window again, whether the game ran or failed."""
         if not ui.get("stepped_aside"):
             return
         ui["stepped_aside"] = False
@@ -2171,92 +2299,9 @@ def gui():
                 pass
         root.after(0, show)
 
-    def _ask_on_main(title, message):
-        """Ask a yes/no question from a worker thread and wait for the answer."""
-        answer = {}
-        done = threading.Event()
-
-        def ask():
-            try:
-                answer["yes"] = messagebox.askyesno(title, message, parent=root)
-            finally:
-                done.set()
-        root.after(0, ask)
-        done.wait()
-        return bool(answer.get("yes"))
-
-    def _setup_with_store_account(ver, version=None):
-        from . import xodus
-        try:
-            do_setup(mc_edition=ver, mc_version=version, progress=set_progress)
-        except xodus.NotSignedIn:
-            if not _ask_on_main(
-                    "Sign in to download Minecraft",
-                    "Minecraft is downloaded from the Microsoft Store using "
-                    "your own account, which has to own the game.\n\n"
-                    "Sign in now? A Microsoft sign-in window will open.\n"
-                    "Declining starts the version already installed, without "
-                    "checking for updates."):
-                # Without an edition to install, setup keeps whatever is
-                # already configured — so declining still gets you into a game.
-                do_setup(progress=set_progress)
-                return
-            set_status("Waiting for the Microsoft sign-in…", T.FG)
-            xodus.login()
-            do_setup(mc_edition=ver, mc_version=version, progress=set_progress)
-
-    def do_play():
-        if ui["busy"]:
-            return
-        busy(True)
-        set_status("Preparing…", T.FG)
-        bar_busy()
-
-        def work():
-            try:
-                ver = selected_version()
-                build = selected_build()
-                _setup_with_store_account(
-                    ver, build["version"] if build else None)
-                set_status("Starting Minecraft…", T.FG)
-                ui["launch_active"] = True
-                try:
-                    launch(on_started=step_aside_for_game)
-                finally:
-                    # Before the failure dialog below: it is a child of a
-                    # window that has to be on screen to carry it.
-                    come_back_from_game()
-                set_status("Minecraft closed.", T.SUB)
-            except Exception as e:
-                message = str(e) or type(e).__name__
-                try:
-                    ack = gpu_crash_acknowledgement_status()
-                except Exception:
-                    ack = None
-                log._LOG_SINK(f"xx {message}")
-                set_status("Minecraft could not start.", T.RED)
-                if ack and ack.can_acknowledge:
-                    # Offer the acknowledgement in the dialog that reports the
-                    # block, rather than sending the player to look for it in
-                    # Settings ▸ Tools. Same guarded action, one step from
-                    # where it is needed.
-                    root.after(0, lambda text=message, status=ack:
-                               _offer_gpu_incident_acknowledgement(
-                                   messagebox, root, status,
-                                   prefix=text[:2000] + "\n\n",
-                                   title="Minecraft could not start"))
-                else:
-                    root.after(0, lambda text=message: messagebox.showerror(
-                        "Minecraft could not start", text[:2000], parent=root))
-            finally:
-                # A launcher left unmapped would be unreachable, so restore it
-                # here too, on any path the inner handler could have missed.
-                come_back_from_game()
-                ui["launch_active"] = False
-                end_progress()
-                root.after(0, lambda: busy(False))
-        threading.Thread(target=work, daemon=False).start()
-
+    # ==================================================================
+    # Settings (tabbed) — with cards, no emojis
+    # ==================================================================
     settings_view = ctk.CTkFrame(view_area, fg_color=T.CARD, corner_radius=18,
                                   border_width=1, border_color=T.BORDER)
 
@@ -2282,6 +2327,31 @@ def gui():
             settings_btn.configure(fg_color=T.CARD_2)
             load_changelogs()
 
+    def _settings_card(parent, title, desc=None):
+        """A titled card frame that a Settings section is built into.
+
+        Every section of Settings now looks like this: a title and a body
+        instead of switches and entries pasted one after another down the tab
+        with nothing separating them. ``desc`` is an optional one-line summary
+        under the title for cards whose purpose isn't obvious from the title
+        alone; per-control explanations live in hover tooltips via ``explain()``
+        rather than permanent caption text, so the card stays compact until the
+        pointer actually asks for more detail.
+        """
+        card = ctk.CTkFrame(parent, fg_color=T.CARD_3, corner_radius=14)
+        card.pack(fill="x", pady=(0, 12), padx=2)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(14, 2 if desc else 10))
+        ctk.CTkLabel(head, text=title, font=font(13, "bold"),
+                     text_color=T.FG, anchor="w").pack(side="left")
+        if desc:
+            ctk.CTkLabel(card, text=desc, text_color=T.SUB, font=font(11),
+                         anchor="w", justify="left", wraplength=380
+                         ).pack(anchor="w", padx=16, pady=(0, 10))
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="x", padx=16, pady=(0, 14))
+        return body
+
     def _build_settings():
         d = root
         outer = ctk.CTkFrame(settings_view, fg_color="transparent")
@@ -2301,7 +2371,7 @@ def gui():
             segmented_button_unselected_color=T.CARD_2,
             text_color=T.FG, corner_radius=12)
         tabs.pack(fill="both", expand=True)
-        
+
         def _mk_sf(parent):
             sf = ctk.CTkScrollableFrame(parent, fg_color=T.CARD_2)
             def _check(*_):
@@ -2322,16 +2392,35 @@ def gui():
         tab_advanced = _mk_sf(tabs.add("Advanced"))
         tab_tools = _mk_sf(tabs.add("Tools"))
 
-        ctk.CTkLabel(tab_general, text="UI scale", text_color=T.FG,
-                     font=font(13)).pack(anchor="w", pady=(4, 2), padx=4)
-        ctk.CTkLabel(tab_general,
-                     text="Useful on high-DPI / 4K displays. "
-                          "Changing this restarts the app.",
-                     text_color=T.SUB, font=font(11)
-                     ).pack(anchor="w", pady=(0, 8), padx=4)
+        # ---------------------------------------------------- General
 
-        scale_pill = ctk.CTkFrame(tab_general, fg_color=T.CARD_2, corner_radius=10)
-        scale_pill.pack(anchor="w", pady=(0, 14), padx=4)
+        appearance = _settings_card(tab_general, "Appearance")
+
+        theme_v = tk.BooleanVar(value=load_settings().get("light_theme", False))
+
+        def save_theme():
+            s2 = load_settings()
+            s2["light_theme"] = theme_v.get()
+            save_settings(s2)
+            ctk.set_appearance_mode("Light" if theme_v.get() else "Dark")
+            _sync_theme(root)
+
+        theme_sw = ctk.CTkSwitch(appearance, text="Light theme",
+                      variable=theme_v, command=save_theme,
+                      progress_color=T.THEME_ACCENT, font=font(13))
+        theme_sw.pack(anchor="w", pady=(4, 12))
+        explain(theme_sw, "Switch the launcher between dark and light "
+                "appearance.")
+
+        scale_row = ctk.CTkFrame(appearance, fg_color="transparent")
+        scale_row.pack(fill="x")
+        scale_lbl = ctk.CTkLabel(scale_row, text="UI scale", text_color=T.FG,
+                     font=font(13))
+        scale_lbl.pack(side="left")
+        scale_pill = ctk.CTkFrame(scale_row, fg_color=T.CARD_2, corner_radius=10)
+        scale_pill.pack(side="right")
+        explain(scale_row, "Useful on high-DPI / 4K displays. Changing this "
+                "restarts the app.")
 
         _scale_opts = [("100%", 1.0), ("150%", 1.5), ("200%", 2.0)]
         _cur_scale = float(load_settings().get("ui_scale", 1.0) or 1.0)
@@ -2357,55 +2446,65 @@ def gui():
 
         for label, val in _scale_opts:
             b = ctk.CTkButton(
-                scale_pill, text=label, width=64, height=30,
-                corner_radius=8, font=font(12, "bold"),
+                scale_pill, text=label, width=58, height=28,
+                corner_radius=8, font=font(11, "bold"),
                 border_width=0, command=lambda v=val: pick_scale(v))
             b.pack(side="left", padx=3, pady=3)
             _scale_btns[val] = b
         _refresh_scale_btns(_cur_scale if _cur_scale in _scale_btns else 1.0)
 
-        theme_v = tk.BooleanVar(value=load_settings().get("light_theme", False))
-        
-        def save_theme():
-            s2 = load_settings()
-            s2["light_theme"] = theme_v.get()
-            save_settings(s2)
-            ctk.set_appearance_mode("Light" if theme_v.get() else "Dark")
-            _sync_theme(root)
-            
-        ctk.CTkSwitch(tab_general, text="Use light theme",
-                      variable=theme_v, command=save_theme,
-                      progress_color=T.THEME_ACCENT, font=font(13)
-                      ).pack(anchor="w", pady=8, padx=4)
+        # -- Startup card
+        startup = _settings_card(tab_general, "Startup")
 
-        changelog_startup_v = tk.BooleanVar(value=load_settings().get("show_changelog_on_startup", False))
-        
+        changelog_startup_v = tk.BooleanVar(
+            value=load_settings().get("show_changelog_on_startup", False))
+
         def save_changelog_startup():
             s2 = load_settings()
             s2["show_changelog_on_startup"] = changelog_startup_v.get()
             save_settings(s2)
-            
-        ctk.CTkSwitch(tab_general, text="Show changelog on startup",
-                      variable=changelog_startup_v, command=save_changelog_startup,
-                      progress_color=T.THEME_ACCENT, font=font(13)
-                      ).pack(anchor="w", pady=8, padx=4)
 
-        # Minecraft is downloaded from the Microsoft Store with the account
-        # that owns it. That is a separate, device-bound session from the
-        # in-game account chip, so it gets its own control.
-        store_row = ctk.CTkFrame(tab_general, fg_color="transparent")
-        store_row.pack(anchor="w", fill="x", pady=8, padx=4)
+        cl_sw = ctk.CTkSwitch(startup, text="Show changelog on startup",
+                      variable=changelog_startup_v, command=save_changelog_startup,
+                      progress_color=T.THEME_ACCENT, font=font(13))
+        cl_sw.pack(anchor="w", pady=4)
+        explain(cl_sw, "Open the What's New tab automatically each time the "
+                "launcher starts.")
+
+        confine_v = tk.BooleanVar(
+            value=load_settings().get("confine_cursor", False))
+
+        def save_confine():
+            s2 = load_settings()
+            s2["confine_cursor"] = confine_v.get()
+            save_settings(s2)
+
+        confine_sw = ctk.CTkSwitch(startup, text="Keep the mouse inside the window",
+                      variable=confine_v, command=save_confine,
+                      progress_color=T.THEME_ACCENT, font=font(13))
+        confine_sw.pack(anchor="w", pady=4)
+        explain(confine_sw, "Fixes the cursor escaping the game in windowed "
+                "mode.")
+
+        # -- Accounts card
+        accounts = _settings_card(
+            tab_general, "Accounts",
+            desc="Minecraft is downloaded from the Microsoft Store with the "
+                 "account that owns it — a separate, device-bound session "
+                 "from the in-game sign-in above.")
+
+        store_row = ctk.CTkFrame(accounts, fg_color="transparent")
+        store_row.pack(fill="x")
         store_txt = tk.StringVar(value="")
-        ctk.CTkLabel(store_row, textvariable=store_txt, text_color=T.FG,
-                     font=font(13), anchor="w", justify="left"
-                     ).pack(side="left")
+        store_lbl = ctk.CTkLabel(store_row, textvariable=store_txt, text_color=T.FG,
+                     font=font(13), anchor="w", justify="left")
+        store_lbl.pack(side="left")
         store_btn = None
 
         def refresh_store_row():
             from . import xodus
             linked = xodus.signed_in()
-            store_txt.set("Microsoft Store account (downloads Minecraft): "
-                          + ("linked" if linked else "not linked"))
+            store_txt.set("Store account: " + ("linked" if linked else "not linked"))
             if store_btn is not None:
                 store_btn.configure(text="Unlink" if linked else "Link…")
 
@@ -2427,33 +2526,14 @@ def gui():
 
         store_btn = mkbtn(store_row, "Link…", toggle_store_account,
                           kind="ghost", width=88, height=28, font=font(12))
-        store_btn.pack(side="left", padx=(10, 0))
+        store_btn.pack(side="right")
+        explain(store_row, "Link or unlink the Microsoft account Minecraft "
+                "is downloaded with. This must own the game.")
         refresh_store_row()
 
-        confine_v = tk.BooleanVar(
-            value=load_settings().get("confine_cursor", False))
+        # ---------------------------------------------------- Advanced
 
-        def save_confine():
-            s2 = load_settings()
-            s2["confine_cursor"] = confine_v.get()
-            save_settings(s2)
-        ctk.CTkSwitch(tab_general, text="Keep the mouse inside the window\n"
-                      "(fixes the cursor escaping in windowed mode)",
-                      variable=confine_v, command=save_confine,
-                      progress_color=T.THEME_ACCENT, font=font(13)
-                      ).pack(anchor="w", pady=8, padx=4)
-
-        diag_v = tk.BooleanVar(value=load_settings().get("diagnostics", False))
-
-        def save_diag():
-            s2 = load_settings()
-            s2["diagnostics"] = diag_v.get()
-            save_settings(s2)
-        ctk.CTkSwitch(tab_advanced, text="Advanced diagnostics\n"
-                      "(verbose logs — for bug reports)",
-                      variable=diag_v, command=save_diag,
-                      progress_color=T.THEME_ACCENT, font=font(13)
-                      ).pack(anchor="w", pady=(4, 12), padx=4)
+        graphics = _settings_card(tab_advanced, "Graphics")
 
         ray_tracing_v = tk.BooleanVar(
             value=load_settings().get("ray_tracing", True))
@@ -2463,15 +2543,14 @@ def gui():
             s2["ray_tracing"] = ray_tracing_v.get()
             save_settings(s2)
 
-        ctk.CTkSwitch(
-            tab_advanced,
-            text="Ray tracing\n"
-                 "(hands DXR to Minecraft for its Ray Traced mode — needs\n"
-                 "an RTX-class GPU and a ray-tracing-capable world;\n"
-                 "turn it off to hide the mode and save video memory)",
-            variable=ray_tracing_v, command=save_ray_tracing,
-            progress_color=T.THEME_ACCENT, font=font(13),
-        ).pack(anchor="w", pady=(0, 12), padx=4)
+        rt_sw = ctk.CTkSwitch(
+            graphics, text="Ray tracing", variable=ray_tracing_v,
+            command=save_ray_tracing, progress_color=T.THEME_ACCENT,
+            font=font(13))
+        rt_sw.pack(anchor="w", pady=(4, 10))
+        explain(rt_sw, "Hands DXR to Minecraft for its Ray Traced mode. "
+                "Needs an RTX-class GPU and a ray-tracing-capable world. "
+                "Turn off to hide the mode and save video memory.")
 
         frame_rate_v = tk.BooleanVar(
             value=load_settings().get("limit_frame_rate", True))
@@ -2481,39 +2560,39 @@ def gui():
             s2["limit_frame_rate"] = frame_rate_v.get()
             save_settings(s2)
 
-        ctk.CTkSwitch(
-            tab_advanced,
-            text="Limit the frame rate to the display\n"
-                 "(only when Minecraft has no limit of its own: with vsync\n"
-                 "off and Max Framerate on Unlimited the menu alone runs\n"
-                 "into four figures of FPS and takes most of the GPU;\n"
-                 "turn it off to render uncapped)",
+        fr_sw = ctk.CTkSwitch(
+            graphics, text="Limit frame rate to the display",
             variable=frame_rate_v, command=save_frame_rate,
-            progress_color=T.THEME_ACCENT, font=font(13),
-        ).pack(anchor="w", pady=(0, 12), padx=4)
+            progress_color=T.THEME_ACCENT, font=font(13))
+        fr_sw.pack(anchor="w", pady=(0, 10))
+        explain(fr_sw, "Only applies when Minecraft has no limit of its own "
+                "(vsync off + Max Framerate Unlimited), where the menu alone "
+                "can take most of the GPU. Turn off to render uncapped.")
 
         legacy_renderer_v = tk.BooleanVar(
             value=load_settings().get("renderer", "auto") == "opengl")
 
         def save_renderer():
             s2 = load_settings()
-            s2["renderer"] = (
-                "opengl" if legacy_renderer_v.get() else "auto"
-            )
+            s2["renderer"] = "opengl" if legacy_renderer_v.get() else "auto"
             save_settings(s2)
 
-        ctk.CTkSwitch(
-            tab_advanced,
-            text="Legacy compatibility renderer\n"
-                 "(last resort for GPUs without Vulkan 1.3: swaps D3D9–D3D12\n"
-                 "to WineD3D, dropping DXVK and vkd3d — artifacts likely)",
+        lr_sw = ctk.CTkSwitch(
+            graphics, text="Legacy compatibility renderer",
             variable=legacy_renderer_v, command=save_renderer,
-            progress_color=T.THEME_ACCENT, font=font(13),
-        ).pack(anchor="w", pady=(0, 12), padx=4)
+            progress_color=T.THEME_ACCENT, font=font(13))
+        lr_sw.pack(anchor="w")
+        explain(lr_sw, "Last resort for GPUs without Vulkan 1.3 — swaps "
+                "D3D9-D3D12 to WineD3D, dropping DXVK and vkd3d. Visual "
+                "artifacts are likely.")
 
-        ctk.CTkLabel(tab_advanced, text="Custom environment variables",
+        # -- Environment card
+        environment = _settings_card(tab_advanced, "Environment")
+
+        env_caption = ctk.CTkLabel(environment, text="Custom environment variables",
                      text_color=T.SUB, font=font(11, "bold"),
-                     anchor="w").pack(anchor="w", pady=(0, 4), padx=4)
+                     anchor="w")
+        env_caption.pack(anchor="w", pady=(0, 4))
 
         def save_custom_env(_event=None):
             s2 = load_settings()
@@ -2521,22 +2600,27 @@ def gui():
             save_settings(s2)
 
         env_entry = ctk.CTkEntry(
-            tab_advanced,
+            environment,
             placeholder_text="e.g., PROTON_USE_WINED3D=1 KEY=VALUE",
-            fg_color=T.CARD_3, border_width=0, text_color=T.FG,
+            fg_color=T.CARD_2, border_width=0, text_color=T.FG,
             placeholder_text_color=T.MUTED, corner_radius=10, height=36,
             font=font(13))
-        env_entry.pack(fill="x", pady=(0, 12), padx=4)
+        env_entry.pack(fill="x", pady=(0, 12))
         saved_env = load_settings().get("custom_env") or ""
         if saved_env:
             env_entry.insert(0, saved_env)
         env_entry.bind("<KeyRelease>", save_custom_env)
         env_entry.bind("<FocusOut>", save_custom_env)
         env_entry.bind("<Return>", lambda _event: "break")
-        
-        ctk.CTkLabel(tab_advanced, text="Gamescope arguments",
+        for _w in (env_caption, env_entry):
+            explain(_w, "Space-separated KEY=VALUE pairs applied last, "
+                    "overriding what Settings configures elsewhere. Leave "
+                    "empty unless you know you need it.")
+
+        gs_caption = ctk.CTkLabel(environment, text="Gamescope arguments",
                      text_color=T.SUB, font=font(11, "bold"),
-                     anchor="w").pack(anchor="w", pady=(0, 4), padx=4)
+                     anchor="w")
+        gs_caption.pack(anchor="w", pady=(0, 4))
 
         def save_gamescope(_event=None):
             s2 = load_settings()
@@ -2544,19 +2628,24 @@ def gui():
             save_settings(s2)
 
         gamescope_entry = ctk.CTkEntry(
-            tab_advanced,
+            environment,
             placeholder_text="1 for auto, or e.g. -w 1920 -h 1080 -f",
-            fg_color=T.CARD_3, border_width=0, text_color=T.FG,
+            fg_color=T.CARD_2, border_width=0, text_color=T.FG,
             placeholder_text_color=T.MUTED, corner_radius=10, height=36,
             font=font(13))
-        gamescope_entry.pack(fill="x", pady=(0, 4), padx=4)
+        gamescope_entry.pack(fill="x")
         saved_gamescope = load_settings().get("gamescope") or ""
         if saved_gamescope:
             gamescope_entry.insert(0, saved_gamescope)
         gamescope_entry.bind("<KeyRelease>", save_gamescope)
         gamescope_entry.bind("<FocusOut>", save_gamescope)
         gamescope_entry.bind("<Return>", lambda _event: "break")
+        for _w in (gs_caption, gamescope_entry):
+            explain(_w, "Runs Minecraft inside gamescope. Set to 1 to let "
+                    "gamescope pick sensible defaults, or pass its own "
+                    "arguments (e.g. resolution, fullscreen) directly.")
 
+        # -- Storage card
         def fmt_size(bytes_val):
             for unit in ['B', 'KB', 'MB', 'GB']:
                 if bytes_val < 1024.0:
@@ -2564,30 +2653,22 @@ def gui():
                 bytes_val /= 1024.0
             return f"{bytes_val:.1f} TB"
 
-        ctk.CTkLabel(tab_advanced, text="Game files location",
-                     text_color=T.SUB, font=font(11, "bold"),
-                     anchor="w").pack(anchor="w", pady=(12, 2), padx=4)
-
-        ctk.CTkLabel(tab_advanced,
-                     text="Moves where the engine, downloaded Minecraft "
-                          "versions, saves and settings are stored — handy "
-                          "if your home drive is low on space. Changing this "
-                          "requires a restart.",
-                     text_color=T.MUTED, font=font(10), anchor="w",
-                     justify="left", wraplength=340
-                     ).pack(anchor="w", pady=(0, 6), padx=4)
+        storage = _settings_card(
+            tab_advanced, "Storage",
+            desc="Where the engine, downloaded Minecraft versions, saves and "
+                 "settings are stored. Changing this requires a restart.")
 
         loc_var = tk.StringVar(value=get_install_location())
 
-        path_row = ctk.CTkFrame(tab_advanced, fg_color="transparent")
-        path_row.pack(fill="x", padx=4, pady=(0, 2))
+        path_row = ctk.CTkFrame(storage, fg_color="transparent")
+        path_row.pack(fill="x", pady=(0, 2))
 
         loc_field = ctk.CTkLabel(
             path_row,
             textvariable=loc_var,
             text_color=T.FG,
             font=font(12, family="monospace"),
-            fg_color=T.CARD_3,
+            fg_color=T.CARD_2,
             corner_radius=8,
             anchor="w",
             height=36,
@@ -2621,9 +2702,9 @@ def gui():
         Tooltip(open_btn, "Open in file manager")
 
         loc_free_var = tk.StringVar(value="")
-        free_lbl = ctk.CTkLabel(tab_advanced, textvariable=loc_free_var,
+        free_lbl = ctk.CTkLabel(storage, textvariable=loc_free_var,
                                 text_color=T.MUTED, font=font(10), anchor="w")
-        free_lbl.pack(anchor="w", padx=4, pady=(2, 6))
+        free_lbl.pack(anchor="w", pady=(2, 8))
 
         def _refresh_free_space():
             try:
@@ -2640,9 +2721,6 @@ def gui():
             _refresh_free_space()
 
         _refresh_free_space()
-
-        loc_row = ctk.CTkFrame(tab_advanced, fg_color="transparent")
-        loc_row.pack(fill="x", pady=(4, 2), padx=4)
 
         loc_status = tk.StringVar(value="")
 
@@ -2705,7 +2783,7 @@ def gui():
 
             if not chosen:
                 return
-                
+
             old_dir = Path(get_install_location())
             new_dir = Path(chosen).expanduser()
             if paths_overlap(old_dir, new_dir):
@@ -2833,9 +2911,9 @@ def gui():
                                 f"Could not start relocation:\n{err_msg}",
                                 parent=d)
                         d.after(0, fail)
-                        
+
             threading.Thread(target=locked_work, daemon=False).start()
-            
+
         def do_reset():
             if _relocate_blocked():
                 return
@@ -2863,17 +2941,42 @@ def gui():
                 "Location reset to default. The launcher will now restart.")
             relaunch_app()
 
-        loc_btns = ctk.CTkFrame(loc_row, fg_color="transparent")
-        loc_btns.pack(side="right")
-        mkbtn(loc_btns, "Browse…", do_browse, kind="ghost", width=84,
-              height=36, font=font(12)).pack(side="left", padx=(0, 4))
-        mkbtn(loc_btns, "Reset", do_reset, kind="flat", width=64,
-              height=36, font=font(12)).pack(side="left")
+        loc_btns = ctk.CTkFrame(storage, fg_color="transparent")
+        loc_btns.pack(anchor="e")
+        browse_btn = mkbtn(loc_btns, "Browse…", do_browse, kind="ghost", width=84,
+              height=32, font=font(12))
+        browse_btn.pack(side="left", padx=(0, 4))
+        explain(browse_btn, "Choose a new folder and move your existing "
+                "worlds, settings and login there.")
+        reset_btn = mkbtn(loc_btns, "Reset", do_reset, kind="flat", width=64,
+              height=32, font=font(12))
+        reset_btn.pack(side="left")
+        explain(reset_btn, "Clear the saved preference and go back to the "
+                "default location (files are not moved).")
 
-        ctk.CTkLabel(tab_advanced, textvariable=loc_status,
+        ctk.CTkLabel(storage, textvariable=loc_status,
                      text_color=T.GOLD, font=font(11)
-                     ).pack(anchor="w", pady=(4, 8), padx=4)
-        
+                     ).pack(anchor="w", pady=(4, 0))
+
+        # -- Diagnostics card
+        diagnostics_card = _settings_card(tab_advanced, "Diagnostics")
+
+        diag_v = tk.BooleanVar(value=load_settings().get("diagnostics", False))
+
+        def save_diag():
+            s2 = load_settings()
+            s2["diagnostics"] = diag_v.get()
+            save_settings(s2)
+
+        diag_sw = ctk.CTkSwitch(diagnostics_card, text="Advanced diagnostics",
+                      variable=diag_v, command=save_diag,
+                      progress_color=T.THEME_ACCENT, font=font(13))
+        diag_sw.pack(anchor="w", pady=4)
+        explain(diag_sw, "Verbose logs, for attaching to bug reports. Leave "
+                "off for normal play.")
+
+        # ---------------------------------------------------- Tools
+
         imp_status = tk.StringVar(value="")
 
         def do_import():
@@ -2994,56 +3097,80 @@ def gui():
             messagebox.showinfo(
                 "Direct launch shortcut", message, parent=d)
 
-        tool_actions = [
-            ("Import content (.mcpack / .mcworld / .mcaddon / .mcskin)…",
-             do_import, "ghost"),
-            ("Inject a client DLL…", do_inject, "ghost"),
-            ("Create direct launch shortcut (skips this window)…",
-             do_play_shortcut, "ghost"),
-            ("Create isolated Xbox account shortcut…",
-             do_create_profile, "ghost"),
-            ("Open Minecraft folder", lambda: subprocess.Popen(
-                ["xdg-open", str(_mojang_dir())], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL), "ghost"),
-            ("Open logs folder", lambda: subprocess.Popen(
-                ["xdg-open", str(LOGS)], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL), "ghost"),
-            ("Repair (reset Wine prefix)", lambda: threading.Thread(
-                target=reset_prefix, daemon=True).start(), "ghost"),
-            ("Force stop Minecraft", kill_wine, "danger"),
-        ]
-
         try:
             ack_status = gpu_crash_acknowledgement_status()
         except Exception:
             ack_status = None
+
+        def _tool_row(parent, label, fn, kind="ghost", tip=None):
+            btn = mkbtn(parent, label, fn, kind=kind, anchor="w", height=36)
+            btn.pack(fill="x", pady=3)
+            if tip:
+                explain(btn, tip)
+            return btn
+
+        content_card = _settings_card(tab_tools, "Content")
+        _tool_row(content_card,
+                  "Import content (.mcpack / .mcworld / .mcaddon / .mcskin)…",
+                  do_import,
+                  tip="Add worlds, resource/behaviour packs, add-ons or "
+                      "skins to Minecraft.")
+        _tool_row(content_card, "Inject a client DLL…", do_inject,
+                  tip="Load a client-side .dll into the running game. "
+                      "Native / AppImage only.")
+        _tool_row(content_card, "Open Minecraft folder", lambda: subprocess.Popen(
+            ["xdg-open", str(_mojang_dir())], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL),
+            tip="Open the folder holding worlds, resource packs and skins "
+                "in your file manager.")
+
+        shortcuts_card = _settings_card(tab_tools, "Shortcuts")
+        _tool_row(shortcuts_card,
+                  "Create direct launch shortcut (skips this window)…",
+                  do_play_shortcut,
+                  tip="Make a desktop/Steam shortcut that starts Minecraft "
+                      "straight away, without opening this window.")
+        _tool_row(shortcuts_card,
+                  "Create isolated Xbox account shortcut…", do_create_profile,
+                  tip="Make a new profile with its own Xbox login, Wine "
+                      "prefix and worlds, and a shortcut to launch it.")
+
+        maintenance_card = _settings_card(tab_tools, "Maintenance")
+        gpu_ack_btn = None
         if ack_status and ack_status.can_acknowledge:
             def do_ack_gpu():
                 if _offer_gpu_incident_acknowledgement(
                         messagebox, d, ack_status):
                     gpu_ack_btn.pack_forget()
-
-            tool_actions.insert(
-                0,
-                ("Acknowledge previous GPU incident…", do_ack_gpu, "danger"),
-            )
-
-        gpu_ack_btn = None
-        for label, fn, kind in tool_actions:
-            button = mkbtn(tab_tools, label, fn, kind=kind, anchor="w",
-                           height=38)
-            button.pack(fill="x", pady=3, padx=4)
-            if label.startswith("Acknowledge previous GPU"):
-                gpu_ack_btn = button
+            gpu_ack_btn = _tool_row(
+                maintenance_card, "Acknowledge previous GPU incident…",
+                do_ack_gpu, kind="danger",
+                tip="Confirm the previous graphics-driver incident has been "
+                    "checked, so PLAY is unblocked again.")
+        _tool_row(maintenance_card, "Open logs folder", lambda: subprocess.Popen(
+            ["xdg-open", str(LOGS)], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL),
+            tip="Open the folder with launch and activity logs, useful for "
+                "bug reports.")
+        _tool_row(maintenance_card, "Repair (reset Wine prefix)",
+                  lambda: threading.Thread(target=reset_prefix, daemon=True).start(),
+                  tip="Reset the Wine prefix Minecraft runs in. Fixes most "
+                      "'won't start' problems; worlds and settings are kept.")
+        _tool_row(maintenance_card, "Force stop Minecraft", kill_wine, kind="danger",
+                  tip="Immediately terminate Minecraft and any Wine "
+                      "processes for this profile.")
 
         ctk.CTkLabel(tab_tools, textvariable=imp_status, text_color=T.GOLD,
-                     font=font(11)).pack(anchor="w", pady=(6, 0), padx=4)
+                     font=font(11)).pack(anchor="w", pady=(2, 8), padx=2)
 
         for _sf in (tab_general, tab_advanced, tab_tools):
             _enable_scrollable_frame_wheel(_sf)
 
     _build_settings()
 
+    # ==================================================================
+    # Changelog
+    # ==================================================================
     changelog_view = ctk.CTkFrame(view_area, fg_color=T.CARD, corner_radius=18,
                                    border_width=1, border_color=T.BORDER)
 
@@ -3165,12 +3292,11 @@ def gui():
 
     def render_game_changelog(widget, data, dividers):
         from .util import format_display_version
-        ui_wants_beta = edition_var.get() == "preview"
-        # The picker names an edition, not a build, so scroll to the release
-        # notes of the build actually installed.
-        target_version = (load_settings().get("mc_version") or "").strip() or None
+        ui_sel = mc_var.get()
+        ui_wants_beta = "BETA" in ui_sel if ui_sel else False
+        target_version = ui_sel.split('  ')[0].strip() if ui_sel else None
         target_index = None
-        
+
         filtered = []
         for art in data.get("articles", []):
             title = art.get("title", "Unknown Release")
@@ -3179,7 +3305,7 @@ def gui():
             is_beta = "beta" in title.lower() or "preview" in title.lower()
             if is_beta == ui_wants_beta:
                 filtered.append(art)
-                
+
         articles = filtered[:40]
         for i, art in enumerate(articles):
             title = art.get("title", "Unknown Release")
@@ -3270,9 +3396,9 @@ def gui():
                     def handle_data(self, d_text):
                         in_li = getattr(self, "in_li", False)
                         in_link = self.current_href is not None
-                        
+
                         d_text = d_text.replace("\n", " ")
-                        
+
                         if not d_text.strip():
                             if d_text and (in_li or in_link):
                                 if in_li and not getattr(self, "li_has_content", False):
@@ -3362,7 +3488,7 @@ def gui():
                                 text_color=T.FG, font=font(11), wrap="word")
             tb._x_scrollbar.grid = lambda *_args, **_kwargs: None
             tb._x_scrollbar.grid_forget()
-            
+
             def _tb_check(*_):
                 try:
                     yv = tb._textbox.yview()
@@ -3371,7 +3497,7 @@ def gui():
                     else:
                         tb._yscrollbar.grid()
                 except Exception: pass
-            
+
             tb._textbox.bind("<Configure>", _tb_check, add="+")
             def _poll_tb():
                 if tb.winfo_exists():
@@ -3431,7 +3557,7 @@ def gui():
                             for i in range(0, len(ranges), 2):
                                 widget.tag_add("link_hover", ranges[i], ranges[i+1])
                         break
-                        
+
             def on_link_leave(_event):
                 widget.configure(cursor="arrow")
                 widget.tag_remove("link_hover", "1.0", "end")
@@ -3540,6 +3666,9 @@ def gui():
 
     _build_changelog_view()
 
+    # ==================================================================
+    # Self-update
+    # ==================================================================
     def relaunch_app():
         na.stop()
         try:
@@ -3621,7 +3750,7 @@ def gui():
     acct_state("in" if msa_signed_in() else "out")
     threading.Thread(target=refresh_versions, daemon=True).start()
     threading.Thread(target=update_check, daemon=True).start()
-    
+
     hero.pack(fill="both", expand=True)
 
     root.update_idletasks()
@@ -3654,8 +3783,8 @@ def gui():
         do_play()
 
     root.bind("<Return>", on_enter_pressed)
-    
+
     if load_settings().get("show_changelog_on_startup", False):
         toggle_changelog()
-        
+
     root.mainloop()
