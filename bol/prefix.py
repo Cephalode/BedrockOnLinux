@@ -253,27 +253,40 @@ def prefix_ready(prefix: Path):
     return True
 
 
-def seed_managed_bootstrap_cryptbase(prefix: Path):
-    """Install native cryptbase before managed-prefix services start.
+def managed_bootstrap_prefix(prefix):
+    """Whether this is the app's own prefix running on the app's own engine.
 
-    GDK-Proton's advapi32 forwards SystemFunction036 to cryptbase.  With the
-    managed pure-WoW64 engine, forcing only Wine's builtin cryptbase during an
-    engine upgrade can leave that forward unresolved and make every wineboot
-    service repeatedly abort.  Never materialise or modify an explicitly
-    supplied prefix or a prefix used with a custom engine.
+    Only that pair is ours to prepare before Wine has created it; an explicit
+    ``BOL_WINEPREFIX`` or a user-supplied engine is left alone.
     """
     if os.environ.get("BOL_WINEPREFIX", "").strip():
         return False
-    pfx = Path(prefix)
     engine = proton_path()
     if engine is None:
         return False
     try:
-        if pfx.resolve(strict=False) != PFX.resolve(strict=False) or \
-                Path(engine).resolve(strict=False) != \
-                WINEGDK_OUT.resolve(strict=False):
-            return False
+        return (
+            Path(prefix).resolve(strict=False) == PFX.resolve(strict=False)
+            and Path(engine).resolve(strict=False)
+            == WINEGDK_OUT.resolve(strict=False)
+        )
     except (OSError, RuntimeError):
+        return False
+
+
+def seed_managed_bootstrap_cryptbase(prefix: Path):
+    """Install native cryptbase before managed-prefix services start.
+
+    GDK-Proton's advapi32 forwards SystemFunction036 to cryptbase, and until
+    wineboot's own ``wine.inf`` pass materialises that DLL there is no
+    ``cryptbase.dll`` in a brand-new prefix for the forward to resolve to — no
+    ``WINEDLLOVERRIDES`` spelling substitutes for the file.  Every wineboot
+    service then aborts on its first RtlGenRandom call and the prefix can only
+    time out (#144).  Never materialise or modify an explicitly supplied
+    prefix or a prefix used with a custom engine.
+    """
+    pfx = Path(prefix)
+    if not managed_bootstrap_prefix(pfx):
         return False
 
     if pfx.is_symlink():
@@ -347,6 +360,29 @@ def _log_size(path: Path):
         return 0
 
 
+# Wine's own budget for creating a prefix from Proton's template.
+WINEBOOT_TIMEOUT = 300
+# umu-launcher installs the Steam Linux Runtime the first time it is invoked,
+# and it does so *inside* the process we are timing.  That is close to 900 MB
+# to download, unpack and verify, so on an ordinary connection it alone can
+# outlast Wine's budget and report a wineboot timeout for a wineboot that never
+# even started (#144).  Give that one-time bootstrap its own allowance.
+RUNTIME_SETUP_TIMEOUT = 1500
+
+
+def runtime_setup_pending():
+    """Whether the next umu run still has to install the Steam Linux Runtime.
+
+    Mirrors umu-launcher's own check: it looks for an unpacked
+    ``sniper_platform_*`` under the runtime directory and rebuilds the whole
+    runtime when none is there.
+    """
+    try:
+        return not any((UMU_DIR / "steamrt3").glob("sniper_platform_*"))
+    except OSError:
+        return True
+
+
 def _wineboot_hit_rng_abort(log_path: Path, offset=0):
     """Whether this attempt's own log section shows the cryptbase RNG abort.
 
@@ -369,15 +405,21 @@ def _run_wineboot(pfx: Path, log_path: Path, native_cryptbase):
     cmd.append("-u")
     env = headless_setup_env(env, native_cryptbase=native_cryptbase)
     env.setdefault("WINEDEBUG", "-all")
+    timeout = WINEBOOT_TIMEOUT
+    if runtime_setup_pending():
+        # This first run pays for the Steam Linux Runtime as well as for Wine.
+        timeout += RUNTIME_SETUP_TIMEOUT
+        info("Downloading the Steam Linux Runtime for the first prefix "
+             "(close to 900 MB) — this run takes much longer than later ones.")
     failure = None
     try:
         with log_path.open("a") as log:
             try:
                 completed = subprocess.run(
                     cmd, env=env, stdout=log, stderr=subprocess.STDOUT,
-                    timeout=300)
+                    timeout=timeout)
             except subprocess.TimeoutExpired:
-                failure = "timed out after 300 seconds"
+                failure = f"timed out after {timeout} seconds"
             except Exception as exc:
                 failure = f"raised {type(exc).__name__}: {exc}"
             else:
@@ -415,6 +457,7 @@ def boot_prefix(prefix=None):
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / "native-login.log"
     retried = False
+    rng_abort = False
     while True:
         attempt_offset = _log_size(log_path)
         failure = _run_wineboot(pfx, log_path, native_cryptbase)
@@ -426,7 +469,8 @@ def boot_prefix(prefix=None):
                 _record_managed_engine_rev_if_managed(pfx)
                 repair_managed_prefix_user32(pfx)
                 return True
-        if retried or not _wineboot_hit_rng_abort(log_path, attempt_offset):
+        rng_abort = _wineboot_hit_rng_abort(log_path, attempt_offset)
+        if retried or not rng_abort:
             break
         retried = True
         # The engine's first run creates the prefix from Proton's template and
@@ -437,12 +481,30 @@ def boot_prefix(prefix=None):
              "verified RNG component and retrying the prefix once.")
         native_cryptbase = repair_bootstrap_cryptbase(pfx)
         if not native_cryptbase:
-            warn("No verified cryptbase.dll is available for this prefix. "
-                 "Connect to the network and re-run 'Install / Update' so the "
-                 "online-login components can be downloaded.")
+            if managed_bootstrap_prefix(pfx):
+                warn("No verified cryptbase.dll is available for this prefix. "
+                     "Connect to the network and re-run 'Install / Update' so "
+                     "the online-login components can be downloaded.")
+            else:
+                # Nothing the launcher can repair: seeding a prefix or engine
+                # the user supplied is exactly what this path refuses to do.
+                warn("This Wine prefix or engine is user-supplied, so the "
+                     "launcher will not write to its system32. Copy a "
+                     "cryptbase.dll exporting SystemFunction036 (a Wine or "
+                     "Proton build ships one under "
+                     "files/lib/wine/x86_64-windows/) into "
+                     "drive_c/windows/system32, or switch back to the managed "
+                     "engine and prefix.")
             break
     if failure:
-        warn(f"Wine prefix initialisation failed: wineboot {failure}. "
+        cause = ""
+        if rng_abort:
+            # A bare "timed out" sent this failure's reporters chasing Wine
+            # packages and file-descriptor limits (#144); name what aborted.
+            cause = (" Wine aborted every prefix service on the unresolved "
+                     "advapi32.SystemFunction036 (RtlGenRandom → cryptbase) "
+                     "forward, so the prefix could never finish.")
+        warn(f"Wine prefix initialisation failed: wineboot {failure}.{cause} "
              f"Details: {log_path}")
         return False
     warn("Wine prefix initialisation finished without valid system.reg, "

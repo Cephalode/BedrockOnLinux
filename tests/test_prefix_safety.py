@@ -131,31 +131,62 @@ class PrefixShutdownTests(unittest.TestCase):
             self.assertIn(
                 str(logs / "native-login.log"), warn.call_args.args[0])
 
+    def _timed_out_boot(self, td, runtime_pending):
+        logs = Path(td) / "logs"
+        with mock.patch.object(prefix, "LOGS", logs), \
+                mock.patch(
+                    "bol.gpu_safety.require_safe_graphics_session"), \
+                mock.patch.object(
+                    prefix, "proton_umu_cmd",
+                    return_value=(["umu", "wineboot"], {})), \
+                mock.patch.object(
+                    prefix, "seed_managed_bootstrap_cryptbase",
+                    return_value=False), \
+                mock.patch.object(
+                    prefix, "runtime_setup_pending",
+                    return_value=runtime_pending), \
+                mock.patch.object(
+                    prefix.subprocess, "run",
+                    side_effect=prefix.subprocess.TimeoutExpired(
+                        ["umu", "wineboot"], 300)) as run, \
+                mock.patch.object(prefix, "stop_prefix_procs"), \
+                mock.patch.object(prefix, "info"), \
+                mock.patch.object(prefix, "warn") as warn:
+            self.assertFalse(prefix.boot_prefix(Path(td) / "pfx"))
+        return logs, run, warn
+
     def test_wineboot_timeout_is_logged_and_fails(self):
         with tempfile.TemporaryDirectory() as td:
-            logs = Path(td) / "logs"
-            with mock.patch.object(prefix, "LOGS", logs), \
-                    mock.patch(
-                        "bol.gpu_safety.require_safe_graphics_session"), \
-                    mock.patch.object(
-                        prefix, "proton_umu_cmd",
-                        return_value=(["umu", "wineboot"], {})), \
-                    mock.patch.object(
-                        prefix, "seed_managed_bootstrap_cryptbase",
-                        return_value=False), \
-                    mock.patch.object(
-                        prefix.subprocess, "run",
-                        side_effect=prefix.subprocess.TimeoutExpired(
-                            ["umu", "wineboot"], 300)), \
-                    mock.patch.object(prefix, "stop_prefix_procs"), \
-                    mock.patch.object(prefix, "warn") as warn:
-                self.assertFalse(prefix.boot_prefix(Path(td) / "pfx"))
+            logs, run, warn = self._timed_out_boot(td, runtime_pending=False)
 
+            self.assertEqual(run.call_args.kwargs["timeout"], 300)
             self.assertIn(
                 "wineboot timed out after 300 seconds",
                 (logs / "native-login.log").read_text(),
             )
             self.assertIn("timed out", warn.call_args.args[0])
+
+    def test_first_run_does_not_charge_the_runtime_download_to_wine(self):
+        """umu-launcher downloads close to 900 MB of Steam Linux Runtime
+        inside the process we are timing, so Wine's own budget must not be
+        what a slow connection runs out of (#144)."""
+        with tempfile.TemporaryDirectory() as td:
+            _logs, run, _warn = self._timed_out_boot(td, runtime_pending=True)
+
+            self.assertEqual(
+                run.call_args.kwargs["timeout"],
+                prefix.WINEBOOT_TIMEOUT + prefix.RUNTIME_SETUP_TIMEOUT,
+            )
+
+    def test_runtime_setup_is_pending_until_the_platform_is_unpacked(self):
+        with tempfile.TemporaryDirectory() as td:
+            runtime = Path(td) / "steamrt3"
+            with mock.patch.object(prefix, "UMU_DIR", Path(td)):
+                self.assertTrue(prefix.runtime_setup_pending())
+                runtime.mkdir()
+                self.assertTrue(prefix.runtime_setup_pending())
+                (runtime / "sniper_platform_3.0.1").mkdir()
+                self.assertFalse(prefix.runtime_setup_pending())
 
     def test_wineboot_exception_is_logged_and_fails(self):
         with tempfile.TemporaryDirectory() as td:
@@ -309,6 +340,9 @@ class PrefixShutdownTests(unittest.TestCase):
                         prefix, "repair_bootstrap_cryptbase",
                         return_value=False), \
                     mock.patch.object(
+                        prefix, "managed_bootstrap_prefix",
+                        return_value=True), \
+                    mock.patch.object(
                         prefix.subprocess, "run",
                         side_effect=self._rng_abort_writer(attempts)), \
                     mock.patch.object(prefix, "stop_prefix_procs"), \
@@ -320,6 +354,89 @@ class PrefixShutdownTests(unittest.TestCase):
             messages = " ".join(call.args[0] for call in warn.call_args_list)
             self.assertIn("No verified cryptbase.dll", messages)
             self.assertIn("Install / Update", messages)
+
+    def test_rng_abort_on_a_user_supplied_prefix_names_the_manual_fix(self):
+        """A prefix or engine we refuse to seed cannot be repaired for the
+        user, so point at the file they have to place themselves rather than
+        at a download that would change nothing."""
+        with tempfile.TemporaryDirectory() as td:
+            pfx = Path(td) / "pfx"
+            attempts = []
+            with mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
+                        prefix, "repair_bootstrap_cryptbase",
+                        return_value=False), \
+                    mock.patch.object(
+                        prefix, "managed_bootstrap_prefix",
+                        return_value=False), \
+                    mock.patch.object(
+                        prefix.subprocess, "run",
+                        side_effect=self._rng_abort_writer(attempts)), \
+                    mock.patch.object(prefix, "stop_prefix_procs"), \
+                    mock.patch.object(prefix, "warn") as warn:
+                self.assertFalse(prefix.boot_prefix(pfx))
+
+            messages = " ".join(call.args[0] for call in warn.call_args_list)
+            self.assertIn("user-supplied", messages)
+            self.assertIn("drive_c/windows/system32", messages)
+            self.assertNotIn("No verified cryptbase.dll", messages)
+
+    def test_wineboot_failure_names_the_rng_abort_that_caused_it(self):
+        """A bare "timed out" sent this failure's reporters chasing Wine
+        packages and file-descriptor limits; the abort has to be named."""
+        with tempfile.TemporaryDirectory() as td:
+            pfx = Path(td) / "pfx"
+            with mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=True), \
+                    mock.patch.object(
+                        prefix, "repair_bootstrap_cryptbase",
+                        return_value=True), \
+                    mock.patch.object(
+                        prefix.subprocess, "run",
+                        side_effect=self._rng_abort_writer([])), \
+                    mock.patch.object(prefix, "stop_prefix_procs"), \
+                    mock.patch.object(prefix, "warn") as warn:
+                self.assertFalse(prefix.boot_prefix(pfx))
+
+            self.assertIn(
+                "advapi32.SystemFunction036", warn.call_args.args[0])
+
+    def test_unrelated_wineboot_failure_is_not_blamed_on_the_rng(self):
+        with tempfile.TemporaryDirectory() as td:
+            pfx = Path(td) / "pfx"
+            with mock.patch.object(prefix, "LOGS", Path(td) / "logs"), \
+                    mock.patch(
+                        "bol.gpu_safety.require_safe_graphics_session"), \
+                    mock.patch.object(
+                        prefix, "proton_umu_cmd",
+                        return_value=(["umu", "wineboot"], {})), \
+                    mock.patch.object(
+                        prefix, "seed_managed_bootstrap_cryptbase",
+                        return_value=True), \
+                    mock.patch.object(
+                        prefix.subprocess, "run",
+                        return_value=SimpleNamespace(returncode=3)), \
+                    mock.patch.object(prefix, "stop_prefix_procs"), \
+                    mock.patch.object(prefix, "warn") as warn:
+                self.assertFalse(prefix.boot_prefix(pfx))
+
+            self.assertNotIn(
+                "SystemFunction036", warn.call_args.args[0])
 
     def test_only_this_attempt_s_log_section_triggers_the_retry(self):
         with tempfile.TemporaryDirectory() as td:
