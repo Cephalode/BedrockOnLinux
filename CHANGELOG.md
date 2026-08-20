@@ -75,6 +75,14 @@
   sized, `tools/dxr-probe.c` prints it from inside the prefix with the game
   not involved.
 
+- **The version picker asks for the edition first**
+  ([#190](https://github.com/Wyze3306/BedrockOnLinux/pull/190)). Minecraft and
+  Minecraft Preview are two buttons above the list rather than a choice buried
+  in it, the builds below follow whichever is selected, and the list is filled
+  through the same beta setting the rest of the launcher honours, so a picker
+  opened on Preview cannot offer a build it would refuse to install.
+  Contributed by [@Hultwl](https://github.com/Hultwl).
+
 ### Fixed
 
 - **The Microsoft sign-in window no longer dies on Wayland**
@@ -125,6 +133,37 @@
   every other Xbox Live call uses, and the refusal — reading the tokens the
   launcher already holds, printing none of them, and attempting its unlock on
   an achievement id that does not exist, so it cannot change anything.
+
+- **A first run no longer fails with "wineboot timed out"**
+  ([#144](https://github.com/Wyze3306/BedrockOnLinux/issues/144)). "Could not
+  initialise the Wine prefix ... wineboot timed out after 300 seconds" was
+  reported from CachyOS, Artix and Kubuntu alike, on the Flatpak, the AppImage
+  and the packages, and it sent everyone hunting for missing Wine packages that
+  were never the cause. The first launch has to fetch the Steam Linux Runtime,
+  close to 900 MB unpacked and verified, and it does that inside the very call
+  the launcher was timing: the budget meant for booting a prefix was being spent
+  downloading a runtime, so only the first run failed and pressing Install again
+  looked like a fix. That bootstrap now gets its own allowance, decided in
+  advance from whether the runtime is already unpacked rather than measured
+  afterwards, and the timeout message names the budget that actually ran out.
+
+- **A failed Minecraft download can be retried**. Three attempts at the same
+  build could all fail with `cache ended before cached_len`, or install nothing
+  at all, alternating between the two forever: the downloader caches the
+  encrypted package beside the game and re-opens it next time, and once that
+  file was left short it stayed short, every later run either reading past its
+  end or concluding there was nothing left to fetch. Deleting the version
+  directory by hand was the only way out. A failed download now drops that
+  cache, so the next attempt starts from a clean state, while a cache belonging
+  to a playable install is kept, because an encrypted game reads from it at
+  every launch.
+
+- **The launcher scrolls under the mouse wheel everywhere**
+  ([#187](https://github.com/Wyze3306/BedrockOnLinux/pull/187)). Wheel and
+  touchpad events are normalised in one place and bound on the widgets that
+  scroll, so the version list, the settings pages and the activity log all
+  answer the wheel the same way instead of only some of them doing it.
+  Contributed by [@Hultwl](https://github.com/Hultwl).
 
 - **A Store-downloaded Minecraft starts on the Flatpak**
   ([#193](https://github.com/Wyze3306/BedrockOnLinux/issues/193)). PLAY went to
