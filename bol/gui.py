@@ -304,34 +304,81 @@ def _geometry_position(geometry):
 
     return coordinate(match.group(1)), coordinate(match.group(2))
 
+def _wheel_units_from_event(event):
+    """Turn a platform-specific wheel/touchpad event into scroll "units".
+
+    - X11 legacy button events (``Button-4``/``Button-5``) fire once per
+      "click" of a mechanical wheel, so each one is exactly one unit.
+    - ``<MouseWheel>`` is used on Windows, macOS, and on X11/Wayland when the
+      toolkit reports libinput scroll events instead of the legacy buttons
+      (this is the path most touchpads take). Windows/X11 report multiples
+      of 120 per notch; macOS and libinput report small, high-frequency
+      deltas (sometimes fractional/continuous) for smooth touchpad flicks.
+      Normalizing by 120 (with a minimum magnitude of 1) keeps a single
+      mechanical-wheel notch feeling the same as before while still letting
+      touchpad flicks move smoothly instead of jumping by whole pages.
+    """
+    num = getattr(event, "num", None)
+    if num in (4, 5):
+        return -1 if num == 4 else 1
+
+    delta = getattr(event, "delta", 0)
+    if delta == 0:
+        return 0
+
+    # Large deltas (Windows, and X11 apps that emulate Windows-style wheel
+    # events) come in steps of 120; scale those down to whole units.
+    if abs(delta) >= 120:
+        units = int(delta / 120)
+        return units if units != 0 else (1 if delta > 0 else -1)
+
+    # Small deltas (macOS trackpads, libinput smooth-scroll on X11/Wayland)
+    # are already fine-grained — keep the sign, clamp magnitude to 1 unit
+    # per event so a flick scrolls smoothly instead of skipping content.
+    return -1 if delta < 0 else 1
+
 def _bind_x11_mousewheel_recursive(widget, target_canvas):
-    """Forward X11 wheel events from descendants to a scrollable canvas."""
+    """Forward wheel/touchpad events from descendants to a scrollable canvas.
+
+    Binds both the legacy X11 button events (mechanical mouse wheels) and
+    ``<MouseWheel>`` (Windows, macOS, and modern X11/Wayland touchpad/
+    libinput scroll events) through a single handler so mouse and touchpad
+    input feel consistent and smooth.
+    """
     def _on_wheel(event):
-        delta = -1 if event.num == 4 else 1
-        target_canvas.yview_scroll(delta, "units")
+        units = _wheel_units_from_event(event)
+        if units != 0:
+            target_canvas.yview_scroll(units, "units")
         return "break"
 
     def _bind(w):
         w.bind("<Button-4>", _on_wheel, add="+")
         w.bind("<Button-5>", _on_wheel, add="+")
+        w.bind("<MouseWheel>", _on_wheel, add="+")
         for child in w.winfo_children():
             _bind(child)
 
     _bind(widget)
 
 def _enable_scrollable_frame_wheel(scrollable_frame, container=None):
-    """Give one CustomTkinter scrollable area a working X11 wheel.
+    """Give one CustomTkinter scrollable area a smooth mouse/touchpad wheel.
 
     CustomTkinter removes its own wheel bindings as soon as the pointer enters
     a child widget, so any list built from controls — the Settings tabs, the
-    version picker — only scrolled by dragging its scrollbar. Forward the
-    events from every descendant of ``container`` to the frame's canvas.
+    version picker, the profile menu — only scrolled by dragging its
+    scrollbar. Forward the events from every descendant of ``container`` (and
+    from the frame itself) to the frame's canvas using a single handler that
+    understands both mechanical mouse wheels and touchpad/libinput scroll
+    events, so scrolling is smooth and consistent everywhere.
     """
     canvas = getattr(scrollable_frame, "_parent_canvas", None)
     if canvas is None:
         return False
-    _bind_x11_mousewheel_recursive(
-        scrollable_frame if container is None else container, canvas)
+    target = scrollable_frame if container is None else container
+    _bind_x11_mousewheel_recursive(target, canvas)
+    # Also bind the canvas itself (and the frame), in case the pointer is
+    # over empty space rather than a specific descendant widget.
+    _bind_x11_mousewheel_recursive(canvas, canvas)
     return True
 
 class _ThemedMessageBox:
@@ -1165,6 +1212,10 @@ def gui():
                     sw_btn = mkbtn(r_right, "Switch", lambda p=p_path: do_switch_custom(p), kind="ghost", height=28, width=60)
                     sw_btn.pack(side="right", padx=(0, 6))
 
+            # Rows are destroyed and rebuilt on every refresh, so the wheel
+            # handler has to be re-applied to the fresh widgets each time.
+            _enable_scrollable_frame_wheel(sf, d)
+
         refresh_manager()
 
     def open_profile_menu():
@@ -1498,6 +1549,12 @@ def gui():
                 row.bind("<Leave>", _leave, add="+")
             _pick["buttons"].append((lab, row))
             row.pack(fill="x", pady=1)
+
+        # The version picker's scrollable list never had a wheel handler,
+        # so it only scrolled by dragging the scrollbar. Bind the same
+        # smooth mouse/touchpad handler used elsewhere in the app, covering
+        # the frame itself plus every row button already built above.
+        _enable_scrollable_frame_wheel(sf, win)
 
         def rebuild(_e=None):
             q = search.get().strip().lower()
