@@ -24,6 +24,10 @@ Two details make the bundle work anywhere:
 * Everything else WebKit looks up by path — the injected bundle, the GIO TLS
   backend, the pixbuf loaders, the GSettings schemas — is redirected with
   environment variables that are set for xodus-cli alone.
+
+Whichever library ends up being used, it is asked to render the sign-in page
+without the DMABUF renderer, which is how that window dies on a good many
+Wayland desktops (issue #186).
 """
 # SPDX-License-Identifier: MIT
 
@@ -70,6 +74,17 @@ _VARS = ("LD_LIBRARY_PATH", "WEBKIT_INJECTED_BUNDLE_PATH", "GIO_EXTRA_MODULES",
 
 _PACKAGES = (("apt-get", "libwebkit2gtk-4.1-0"), ("dnf", "webkit2gtk4.1"),
              ("pacman", "webkit2gtk-4.1"), ("zypper", "libwebkit2gtk-4_1-0"))
+
+# WebKitGTK composites into a DMABUF buffer and hands that to the display
+# server. Where the handoff is refused the connection is torn down instead of
+# degraded: the sign-in window disappears the moment it is created and the
+# launcher only gets "Gdk-Message: Error 71 (Protocol error) dispatching to
+# Wayland display" to show for it -- reported on KDE Plasma and GNOME alike,
+# and it takes the Minecraft download down with it since nobody can sign in
+# (issue #186). Turning it off falls back to shared-memory rendering, which for
+# one login page costs nothing anybody can measure, so it is not worth making
+# conditional on a compositor or a driver we would have to guess at.
+_RENDERER = "WEBKIT_DISABLE_DMABUF_RENDERER"
 
 
 def host_package_name():
@@ -385,6 +400,20 @@ def runtime_env(env, root=None):
     return env, previous
 
 
+def portable_renderer(env):
+    """Ask WebKitGTK for the renderer that survives every compositor.
+
+    Returns what it replaced, in restore_env()'s shape, so the game can be
+    handed back the environment it would have had. A value the session already
+    set is left alone: that is how someone whose desktop is fine asks for the
+    accelerated path back.
+    """
+    previous = {_RENDERER: env.get(_RENDERER)}
+    if not (env.get(_RENDERER) or "").strip():
+        env[_RENDERER] = "1"
+    return previous
+
+
 def restore_env(env, previous):
     """Undo runtime_env() on ``env`` (a mapping, usually os.environ)."""
     for name, value in (previous or {}).items():
@@ -405,19 +434,27 @@ def missing_message(detail=None):
 
 
 def apply(binary, env, force=False):
-    """Make ``binary`` loadable from ``env``; return what runtime_env() replaced.
+    """Make ``binary`` usable from ``env``; return what that replaced.
 
-    Returns None when the host's own WebKitGTK is enough, which is the case
-    everywhere the library is packaged. Raises BolError, with the host-package
-    alternative spelled out, when neither route works.
+    The renderer setting goes in either way -- the sign-in window is just as
+    fragile against the host's WebKitGTK as against the bundled one. The
+    library itself is only added where the host has none, which is the
+    exception; everywhere it is packaged, that half is a no-op.
+
+    The return value is always a restore map, in restore_env()'s shape. A
+    failure leaves ``env`` exactly as it was found, and raises BolError with
+    the host-package alternative spelled out.
     """
+    previous = portable_renderer(env)
     if not force and _host_can_run(binary):
-        return None
+        return previous
     try:
         root = prepare()
     except BolError as exc:
+        restore_env(env, previous)
         raise BolError(missing_message(str(exc))) from exc
-    _, previous = runtime_env(env, root)
+    _, replaced = runtime_env(env, root)
+    previous.update(replaced)
     if not binary_loads(binary, env):
         restore_env(env, previous)
         raise BolError(missing_message(

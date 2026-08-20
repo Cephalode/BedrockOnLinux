@@ -35,6 +35,35 @@
 
 ### Fixed
 
+- **The Microsoft sign-in window no longer dies on Wayland**
+  ([#186](https://github.com/Wyze3306/BedrockOnLinux/issues/186)). Signing in to
+  download Minecraft failed the moment the window should have appeared, with
+  nothing to go on but `Gdk-Message: Error 71 (Protocol error) dispatching to
+  Wayland display` — reported on Bazzite, Fedora and KDE Plasma, and fatal in
+  the plainest sense: the download comes from your own Microsoft account, so a
+  sign-in that cannot open is a game that cannot be installed. The window is
+  WebKitGTK's, and by default WebKitGTK composites the page into a DMABUF
+  buffer and hands that to the compositor. Where the handoff is refused, the
+  connection is not degraded but torn down, taking the window with it. The
+  launcher now runs the downloader with WebKitGTK's DMABUF renderer switched
+  off, so the page is drawn through shared memory instead — the same
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` that people were setting by hand, applied
+  to every `xodus-cli` call rather than the sign-in alone, since the download
+  and an encrypted game's launch load the same library. For one login page the
+  accelerated path is worth nothing measurable, so this is not conditional on
+  guessing at a compositor or a driver; a value you set yourself still wins,
+  and the game is never started with it.
+
+- **An encrypted game launch prepares the environment it runs in again**.
+  `xodus-cli run` — the outermost process of a Store-installed Minecraft, since
+  its executable stays encrypted on disk — was no longer being shown the
+  environment the launch had assembled: the call that hands it over lost its
+  `env=` to an unrelated indentation fix. The game itself was started with it
+  regardless, so nothing changed on an ordinary desktop, but on a host with no
+  WebKitGTK of its own the bundled runtime never reached the process that
+  cannot start without it — SteamOS above all — and, until now, neither did the
+  renderer setting above.
+
 - **A Store-downloaded Minecraft starts on the Flatpak**
   ([#193](https://github.com/Wyze3306/BedrockOnLinux/issues/193)). PLAY went to
   a black screen and came straight back with `ShellExecuteEx failed: File not

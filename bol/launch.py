@@ -672,7 +672,7 @@ def _launch_once(lock_fds=(), on_started=None):
     if encrypted_exe:
         # Must wrap before gamescope: gamescope has to stay outermost so it
         # owns the compositor the game renders into.
-        cmd = xodus.wrap_encrypted_launch(cmd, Path(gd), DATA / "run")
+        cmd = xodus.wrap_encrypted_launch(cmd, Path(gd), DATA / "run", env=env)
     if use_gamescope:
         if gs_opt and not env_flag(gs_opt):
             gs_argv = ["gamescope"] + shlex.split(gs_opt)

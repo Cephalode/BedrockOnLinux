@@ -19,9 +19,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from bol import webview, xodus
+from bol import launch, webview, xodus
 
 _EXEC_DIR = webview.XODUS_WEBVIEW_EXEC_DIR
+
+
+def _restore_map(wrapper):
+    """The environment the generated wrapper puts back before the game runs."""
+    line = next(text for text in wrapper.splitlines()
+                if text.startswith("WEBVIEW_ENV = "))
+    return json.loads(ast.literal_eval(
+        line.split("json.loads(", 1)[1].rsplit(")", 1)[0]))
 
 
 def _library(extra=b""):
@@ -271,14 +279,47 @@ class EnvironmentTests(unittest.TestCase):
         webview.restore_env(updated, previous)
         self.assertEqual(updated, env)
 
-    def test_a_host_that_can_run_the_binary_is_left_alone(self):
+    def test_the_dmabuf_renderer_is_turned_off(self):
+        """Issue #186: with it on, the sign-in window dies on Wayland."""
+        env = {"PATH": "/usr/bin"}
+        previous = webview.portable_renderer(env)
+        self.assertEqual(env[webview._RENDERER], "1")
+
+        webview.restore_env(env, previous)
+        self.assertEqual(env, {"PATH": "/usr/bin"})
+
+    def test_an_explicit_renderer_setting_wins(self):
+        """Someone whose desktop is fine can ask for the accelerated path."""
+        env = {webview._RENDERER: "0"}
+        self.assertEqual(webview.portable_renderer(env),
+                         {webview._RENDERER: "0"})
+        self.assertEqual(env, {webview._RENDERER: "0"})
+
+    def test_every_xodus_command_gets_the_renderer_setting(self):
+        """Not the sign-in alone: the download draws the same window."""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "xodus-cli"
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(webview._RENDERER, None)
+                self.assertEqual(xodus._env(binary)[webview._RENDERER], "1")
+            # The launcher's own environment is never touched by that.
+            self.assertNotIn(webview._RENDERER, os.environ)
+
+    def test_a_host_that_can_run_the_binary_keeps_its_own_library(self):
+        """Nothing of the bundle is added -- but the renderer setting is."""
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "xodus-cli"
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
             env = {"PATH": "/usr/bin"}
 
-            self.assertIsNone(webview.apply(binary, env))
+            previous = webview.apply(binary, env)
+            self.assertEqual(previous, {webview._RENDERER: None})
+            self.assertEqual(env, {"PATH": "/usr/bin", webview._RENDERER: "1"})
+            webview.restore_env(env, previous)
             self.assertEqual(env, {"PATH": "/usr/bin"})
 
     def test_a_host_without_webkitgtk_gets_the_bundle(self):
@@ -393,27 +434,44 @@ class LauncherIntegrationTests(unittest.TestCase):
             self.assertEqual(command[:2], [str(binary), "run"])
             self.assertEqual(env["LD_LIBRARY_PATH"], "/bundle/lib")
             wrapper = (base / "run" / "xodus-launch-wrapper.py").read_text()
-            restored = next(line for line in wrapper.splitlines()
-                            if line.startswith("WEBVIEW_ENV = "))
-            payload = json.loads(ast.literal_eval(
-                restored.split("json.loads(", 1)[1].rsplit(")", 1)[0]))
-            self.assertEqual(payload, {"LD_LIBRARY_PATH": "/game/lib"})
+            self.assertEqual(_restore_map(wrapper),
+                             {"LD_LIBRARY_PATH": "/game/lib"})
 
-    def test_a_host_with_webkitgtk_writes_no_restore_map(self):
+    def test_a_host_with_webkitgtk_restores_only_the_renderer(self):
+        """No bundle to take back out, but the game still loses #186's fix."""
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             binary = base / "xodus" / "xodus-cli"
             binary.parent.mkdir()
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
+            env = {"PATH": "/usr/bin"}
 
             with mock.patch.object(xodus, "ensure_cli", lambda: binary):
                 xodus.wrap_encrypted_launch(
                     ["/bin/wine", "Minecraft.Windows.exe"], base / "game",
-                    base / "run", env={"PATH": "/usr/bin"})
+                    base / "run", env=env)
 
+            self.assertEqual(env[webview._RENDERER], "1")
             wrapper = (base / "run" / "xodus-launch-wrapper.py").read_text()
-            self.assertIn("WEBVIEW_ENV = json.loads('{}')", wrapper)
+            self.assertEqual(_restore_map(wrapper), {webview._RENDERER: None})
+
+    def test_the_game_launch_hands_over_its_environment(self):
+        """env= is what carries both the bundle and #186 into xodus-cli run.
+
+        It was dropped once already, by an unrelated indentation fix, which
+        left every encrypted launch running against the session's environment
+        instead -- with no library on the hosts that need the bundle.
+        """
+        tree = ast.parse(Path(launch.__file__).read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr == "wrap_encrypted_launch"]
+        self.assertTrue(calls, "bol.launch no longer wraps encrypted launches")
+        for call in calls:
+            self.assertIn("env", [word.arg for word in call.keywords],
+                          "wrap_encrypted_launch() was called without env=")
 
 
 if __name__ == "__main__":

@@ -308,7 +308,11 @@ layouts, not in the Flatpak sandbox.
   `bedrock-on-linux doctor` reports it if it is missing. Immutable systems
   that cannot install it — SteamOS above all — need nothing: the launcher
   downloads that stack once (~80 MB) and runs the downloader against it. It
-  is used for nothing else, and the game is never started with it.
+  is used for nothing else, and the game is never started with it. That window
+  is drawn without WebKitGTK's DMABUF renderer, which is what killed it
+  outright on several Wayland desktops (`Error 71 (Protocol error)`,
+  [#186](https://github.com/Wyze3306/BedrockOnLinux/issues/186)); setting
+  `WEBKIT_DISABLE_DMABUF_RENDERER` yourself overrides that either way.
 
 GPUs stuck on Vulkan 1.2 can try **Settings ▸ Advanced ▸ Legacy compatibility
 renderer**, but treat it as a last resort: it swaps the entire Direct3D stack —
