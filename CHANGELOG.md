@@ -4,6 +4,21 @@
 
 ### Added
 
+- **The launcher can close itself when the game starts**. *Settings ▸ General
+  ▸ Startup ▸ Close the launcher when Minecraft starts*, off by default. With
+  it on, the window goes as soon as Minecraft is running instead of waiting
+  around behind it — no second entry in the taskbar, nothing to alt-tab past.
+  Only the window closes: the process behind it stays, invisibly, until the
+  game exits, because what it does afterwards is not optional. It arms a GPU
+  safety marker before starting the game and clears it by watching the wrapper
+  return — a marker nobody watches back blocks the next launch until a reboot
+  — and it repairs and patches Minecraft's settings file once the game has
+  stopped writing to it. When that is done it exits on its own, with nothing
+  left behind. Leaving the switch off keeps what the window is worth during a
+  session: KILL, the activity log, and the launcher reporting how the game
+  ended. In Steam Game Mode the window still steps aside on its own, switch or
+  no switch, and comes back when the game closes.
+
 - **The AppImage updates itself in place, one changed block at a time**
   ([#191](https://github.com/Wyze3306/BedrockOnLinux/issues/191)). It now
   carries standard AppImage update information, and every release publishes the

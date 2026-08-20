@@ -662,6 +662,29 @@ def _offer_gpu_incident_acknowledgement(
         parent=parent)
     return False
 
+def window_action_for_launch(settings, single_window):
+    """What the launcher window does the moment the game process exists.
+
+    ``"close"`` — the player asked for it in Settings ▸ General. The window
+    goes for good; the process behind it stays to see the session out, since
+    the GPU safety marker armed before the game started is only cleared by
+    watching it return, and an abandoned marker blocks the next launch until
+    a reboot.
+
+    ``"step-aside"`` — a session that shows one application window at a time
+    (Steam Game Mode) hides the game behind a mapped launcher window (#130),
+    so the window unmaps for as long as the game runs and comes back after.
+
+    ``"stay"`` — an ordinary desktop shows both windows. Nothing moves.
+
+    Closing wins over stepping aside: both take the window off the screen,
+    and only one of them was asked for.
+    """
+    if (settings or {}).get("close_on_launch", False):
+        return "close"
+    return "step-aside" if single_window else "stay"
+
+
 def gui():
     if (os.environ.get("WAYLAND_DISPLAY")
             and not os.environ.get("DISPLAY")
@@ -922,7 +945,10 @@ def gui():
           "settings_head": None,
           # Probed once: it opens the X display to read Gamescope's own root
           # properties, and the answer cannot change while the window lives.
-          "single_window": single_window_session(), "stepped_aside": False}
+          "single_window": single_window_session(), "stepped_aside": False,
+          # What the window does when the game starts, and whether it is
+          # still there — set for each launch, read by the launch thread.
+          "window_action": "stay", "window_gone": False}
     tab_game = None
     tab_launcher = None
 
@@ -1803,9 +1829,26 @@ def gui():
             detwrap.pack_forget()
             det_btn.configure(text_color=T.FG, fg_color=T.CARD_2)
 
+    def ui_after(fn, *args):
+        """Hand work to Tk, unless the launcher window is already gone.
+
+        Everything the launch thread reports goes through here. With *Close
+        the launcher when Minecraft starts* the window is destroyed while
+        that thread is still supervising the game, so its status updates,
+        dialogs and progress bar have nothing left to draw on: they are
+        dropped rather than raising out of the thread that still has the
+        session to finish.
+        """
+        if ui.get("window_gone"):
+            return
+        try:
+            root.after(0, fn, *args)
+        except Exception:
+            pass
+
     def set_status(t, color=T.SUB):
-        root.after(0, lambda: (status_txt.set(t),
-                                status_lbl.configure(text_color=color)))
+        ui_after(lambda: (status_txt.set(t),
+                          status_lbl.configure(text_color=color)))
 
     def _show_bar():
         if not prog.winfo_ismapped():
@@ -1816,7 +1859,7 @@ def gui():
             _show_bar()
             prog.configure(mode="indeterminate")
             prog.start()
-        root.after(0, ap)
+        ui_after(ap)
 
     def _size(count):
         """A download size the way the rest of the world writes it."""
@@ -1837,13 +1880,13 @@ def gui():
                            f"{int(100 * g / max(1, t))}%   "
                            f"({_size(g)} of {_size(t)})")
             status_lbl.configure(text_color=T.FG)
-        root.after(0, ap)
+        ui_after(ap)
 
     def end_progress():
         def ap():
             prog.stop()
             prog.pack_forget()
-        root.after(0, ap)
+        ui_after(ap)
 
     def _friendly(line):
         m = line
@@ -1902,7 +1945,7 @@ def gui():
             else:
                 set_status(txt, T.FG)
                 bar_busy()
-    log._LOG_SINK = lambda m: root.after(0, glog, m)
+    log._LOG_SINK = lambda m: ui_after(glog, m)
 
     def acct_state(ph):
         gt = msa_gamertag() or "Xbox Live"
@@ -2336,8 +2379,13 @@ def gui():
                 )
                 set_status("Starting Minecraft…", T.FG)
                 ui["launch_active"] = True
+                # Read once, here: the answer decides what happens to the
+                # window in the middle of the launch, and a switch flipped
+                # while the game starts must not split that decision in two.
+                ui["window_action"] = window_action_for_launch(
+                    load_settings(), ui.get("single_window"))
                 try:
-                    launch(on_started=step_aside_for_game)
+                    launch(on_started=window_steps_out_for_game)
                 finally:
                     come_back_from_game()
                 set_status("Minecraft closed.", T.SUB)
@@ -2349,24 +2397,71 @@ def gui():
                     ack = None
                 log._LOG_SINK(f"xx {message}")
                 set_status("Minecraft could not start.", T.RED)
-                if ack and ack.can_acknowledge:
-                    root.after(0, lambda text=message, status=ack:
-                               _offer_gpu_incident_acknowledgement(
-                                   messagebox, root, status,
-                                   prefix=text[:2000] + "\n\n",
-                                   title="Minecraft could not start"))
+                if ui.get("window_gone"):
+                    # The window the player closed is not coming back to
+                    # carry a dialog, so the failure goes where it can still
+                    # be seen at all.
+                    desktop_notify(message[:400], "Minecraft could not start")
+                elif ack and ack.can_acknowledge:
+                    ui_after(lambda text=message, status=ack:
+                             _offer_gpu_incident_acknowledgement(
+                                 messagebox, root, status,
+                                 prefix=text[:2000] + "\n\n",
+                                 title="Minecraft could not start"))
                 else:
-                    root.after(0, lambda text=message: messagebox.showerror(
+                    ui_after(lambda text=message: messagebox.showerror(
                         "Minecraft could not start", text[:2000], parent=root))
             finally:
                 come_back_from_game()
                 ui["launch_active"] = False
                 end_progress()
-                root.after(0, lambda: busy(False))
+                ui_after(lambda: busy(False))
         threading.Thread(target=work, daemon=False).start()
 
+    def window_steps_out_for_game():
+        """Called once the game process exists, from the launch thread."""
+        action = ui.get("window_action")
+        if action == "close":
+            close_for_game()
+        elif action == "step-aside":
+            step_aside_for_game()
+
+    def close_for_game():
+        """Take the launcher window away for good — the player asked for it.
+
+        Only the window goes. This process stays until the game exits,
+        because the work that follows it is not optional: the GPU safety
+        marker armed before the game started is cleared by watching the
+        wrapper return, an interrupted one blocks the next launch until a
+        reboot, and Minecraft's settings file is repaired and patched after
+        the game has stopped writing to it. Nothing of it is visible, and
+        with no window left to keep alive the process exits on its own the
+        moment that thread is done.
+        """
+        if ui.get("window_gone"):
+            return
+        info("Minecraft is running, so the launcher window closes — you "
+             "asked for that in Settings ▸ General. The session finishes in "
+             "the background and nothing stays behind once the game exits.")
+        # Set after the log line: it is what stops the sink from drawing.
+        ui["window_gone"] = True
+
+        def shut():
+            try:
+                na.stop()
+            except Exception:
+                pass
+            try:
+                root.destroy()
+            except Exception:
+                pass
+        try:
+            root.after(0, shut)
+        except Exception:
+            pass
+
     def step_aside_for_game():
-        if not ui.get("single_window") or ui.get("stepped_aside"):
+        if ui.get("stepped_aside"):
             return
         ui["stepped_aside"] = True
 
@@ -2383,7 +2478,7 @@ def gui():
                 root.withdraw()
             except Exception:
                 pass
-        root.after(0, hide)
+        ui_after(hide)
 
     def come_back_from_game():
         if not ui.get("stepped_aside"):
@@ -2397,7 +2492,7 @@ def gui():
                 root.focus_force()
             except Exception:
                 pass
-        root.after(0, show)
+        ui_after(show)
 
     # ==================================================================
     # Settings (tabbed) — with cards, no emojis
@@ -2585,6 +2680,25 @@ def gui():
         confine_sw.pack(anchor="w", pady=4)
         explain(confine_sw, "Fixes the cursor escaping the game in windowed "
                 "mode.")
+
+        close_on_launch_v = tk.BooleanVar(
+            value=load_settings().get("close_on_launch", False))
+
+        def save_close_on_launch():
+            s2 = load_settings()
+            s2["close_on_launch"] = close_on_launch_v.get()
+            save_settings(s2)
+
+        close_sw = ctk.CTkSwitch(startup,
+                      text="Close the launcher when Minecraft starts",
+                      variable=close_on_launch_v, command=save_close_on_launch,
+                      progress_color=T.THEME_ACCENT, font=font(13))
+        close_sw.pack(anchor="w", pady=4)
+        explain(close_sw, "The window closes as soon as the game starts, "
+                "instead of waiting for it. It finishes the session in the "
+                "background — no window, and it is gone once the game exits. "
+                "Off by default; leave it off to keep KILL and the activity "
+                "log while you play.")
 
         # -- Accounts card
         accounts = _settings_card(
