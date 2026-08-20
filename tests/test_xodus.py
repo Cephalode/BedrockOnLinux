@@ -288,6 +288,33 @@ class ProgressTests(unittest.TestCase):
             tail, lambda done, total: captured.append((done, total)))
         self.assertEqual(captured, [(431 << 20, 862 << 20)])
 
+    def test_a_session_without_a_terminal_still_gets_the_bars_drawn(self):
+        # A launcher started from a desktop entry, Steam or Game Mode passes
+        # no TERM, and indicatif draws nothing when TERM says the terminal
+        # cannot be drawn on -- the download then arrives completely silent
+        # and the launcher can only sweep a busy bar for gigabytes.
+        for value in (None, "", "dumb", "unknown"):
+            env = {} if value is None else {"TERM": value}
+            self.assertEqual(xodus._drawable_term(env)["TERM"],
+                             "xterm-256color")
+
+    def test_a_terminal_the_session_named_is_left_alone(self):
+        self.assertEqual(
+            xodus._drawable_term({"TERM": "screen-256color"})["TERM"],
+            "screen-256color")
+
+    def test_the_first_bar_of_a_download_reports_real_progress(self):
+        # Exactly what xodus-cli prints once it is drawing (captured from a
+        # live download), padding and all: the launcher has to read progress
+        # out of its opening "Initializing" phase, not only out of the later
+        # "Downloading" one, or the bar sits at nothing for the whole package.
+        captured = []
+        xodus._consume(
+            "Initializing                      12.44 MiB/    2.32 GiB  "
+            "20.83 MiB/s [>---------------------------------------]   1%",
+            [], lambda done, total: captured.append((done, total)))
+        self.assertEqual(captured, [(int(12.44 * (1 << 20)), int(2.32 * (1 << 30)))])
+
     def test_non_progress_output_is_kept_for_the_error_message(self):
         tail = []
         xodus._consume("could not reach the CDN", tail, None)

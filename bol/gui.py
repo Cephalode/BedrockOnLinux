@@ -1774,13 +1774,24 @@ def gui():
             prog.start()
         root.after(0, ap)
 
+    def _size(count):
+        """A download size the way the rest of the world writes it."""
+        if count >= 1 << 30:
+            return f"{count / (1 << 30):.1f} GiB"
+        return f"{count / (1 << 20):.0f} MiB"
+
     def set_progress(g, t):
         def ap():
             _show_bar()
             prog.stop()
             prog.configure(mode="determinate")
             prog.set(g / max(1, t))
-            status_txt.set(f"Downloading Minecraft…  {int(100 * g / max(1, t))}%")
+            # The size matters as much as the percentage here: a Minecraft
+            # download is gigabytes, and knowing how many are left is what
+            # tells you whether to wait for it.
+            status_txt.set(f"Downloading Minecraft…  "
+                           f"{int(100 * g / max(1, t))}%   "
+                           f"({_size(g)} of {_size(t)})")
             status_lbl.configure(text_color=T.FG)
         root.after(0, ap)
 

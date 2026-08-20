@@ -410,6 +410,23 @@ def _failure_line(tail):
                  if not line.startswith("note:")), "")
 
 
+def _drawable_term(env):
+    """Name a terminal indicatif is willing to draw its bars on.
+
+    A pty is necessary but not sufficient: indicatif also stays silent when
+    TERM says the terminal cannot be drawn on, and a launcher started from a
+    desktop entry, Steam or Game Mode passes no TERM at all. That is the
+    ordinary case, so the whole multi-gigabyte download used to arrive without
+    a single progress line and the launcher could only sweep a busy bar.
+
+    A TERM the session already set is left alone -- it describes the terminal
+    someone is actually watching.
+    """
+    if (env.get("TERM") or "").strip().lower() in ("", "dumb", "unknown"):
+        env["TERM"] = "xterm-256color"
+    return env
+
+
 def _run_streaming(cmd, progress=None):
     """Run xodus-cli and translate its progress bars into progress(done, total).
 
@@ -417,7 +434,7 @@ def _run_streaming(cmd, progress=None):
     child gets a pty; without one there would be no progress to report at all.
     """
     tail = []
-    env = _env(cmd[0])
+    env = _drawable_term(_env(cmd[0]))
     master, slave = pty.openpty()
     try:
         proc = subprocess.Popen(cmd, stdout=slave, stderr=slave, stdin=slave,

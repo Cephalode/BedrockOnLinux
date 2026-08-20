@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **The Minecraft download reports how far along it is**. Installing an
+  edition left a working bar labelled *Installing Minecraft…* sweeping for the
+  whole package — over two gigabytes with nothing to say whether any of it was
+  moving. Xodus draws the progress it streams with indicatif, which stays
+  silent unless `TERM` names a terminal it is willing to draw on, and a
+  launcher started from a desktop entry, from Steam or in Game Mode inherits
+  no `TERM` at all: the pty the launcher opens precisely to catch those bars
+  carried, measured here, exactly zero lines while 334 MB arrived. The
+  download now names a terminal for its own child when the session named
+  none — a `TERM` the session did set is left alone — so the real byte counts
+  come back, 25 updates in the first twelve seconds of a fresh install, and
+  the status line spends them: *Downloading Minecraft… 37% (0.9 GiB of 2.3
+  GiB)*. The size is there beside the percentage because on a download this
+  large it is what tells you whether to wait for it.
+
 - **SteamOS can install and start the game again**
   ([#184](https://github.com/Wyze3306/BedrockOnLinux/issues/184)). On a Steam
   Deck, linking the Microsoft account failed with `No such file or directory`.
