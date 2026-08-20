@@ -30,6 +30,7 @@ from pathlib import Path
 from . import webview
 from .archive import safe_extract_tar
 from .config import (
+    APP,
     CACHE,
     GDK_LINKS_URL,
     MC_PRODUCTS,
@@ -581,19 +582,49 @@ def exe_is_encrypted(exe: Path):
         return False
 
 
-def _sweep_staged_images(older_than=60):
+def staging_dir(environ=None, info_path=Path("/.flatpak-info")):
+    """Return the RAM-backed directory the decrypted image is staged in.
+
+    Wine opens that file from inside the Steam Linux Runtime container, so the
+    directory has to be one the container can reach. /dev/shm is, except under
+    Flatpak: pressure-vessel builds the container as a *new* app instance and
+    says so itself -- "/dev/shm not shared between app instances
+    (flatpak#4214)" -- so the image staged by the launcher was simply not
+    there, the loader fell through to the ciphertext on disk, and the game
+    died on "ShellExecuteEx failed: File not found" (issue #193).
+
+    $XDG_RUNTIME_DIR is the way through: Flatpak binds one tmpfs per
+    application at that same path in every instance of it, so a file written
+    here is readable -- and unlinkable -- inside the container. It is RAM like
+    /dev/shm and mode 0700, so nothing about the handoff weakens.
+    """
+    source = os.environ if environ is None else environ
+    if source.get("FLATPAK_ID") or Path(info_path).is_file():
+        runtime = (source.get("XDG_RUNTIME_DIR") or "").strip()
+        if runtime:
+            return Path(runtime) / APP
+    return Path("/dev/shm")
+
+
+def _sweep_staged_images(older_than=60, directories=None):
     """Drop staged images a previous launch left behind.
 
     The loader unlinks its copy within milliseconds of opening it, and the
     wrapper execs and never returns, so anything still named here is from a
     launch that died before the image was mapped. Each one is the size of the
-    game executable and /dev/shm is RAM, so they cannot be left to accumulate.
+    game executable and both staging directories are RAM, so they cannot be
+    left to accumulate. Sweep every location the launcher stages in, not just
+    today's: which one that is depends on how the launcher was installed.
     """
     cutoff = time.time() - older_than
-    try:
-        leftovers = list(Path("/dev/shm").glob("bol-*"))
-    except OSError:
-        return
+    if directories is None:
+        directories = [staging_dir(), Path("/dev/shm")]
+    leftovers = []
+    for directory in dict.fromkeys(Path(d) for d in directories):
+        try:
+            leftovers += list(directory.glob("bol-*"))
+        except OSError:
+            continue
     for path in leftovers:
         try:
             if path.is_file() and path.stat().st_mtime < cutoff:
@@ -613,10 +644,12 @@ launch command -- and what converts the map.
 
 The game runs inside the Steam Linux Runtime container, where a descriptor
 number means nothing: Wine reported "sendmsg: Bad file descriptor" and died.
-So each descriptor is copied into a private file on /dev/shm and the map hands
-over that path instead. /dev/shm is RAM, the copy is created 0600, and the
-loader unlinks it the instant it opens it, so the decrypted image carries a
-name for milliseconds and never reaches durable storage.
+So each descriptor is copied into a private file the container can open and
+the map hands over that path instead. STAGE_DIR is RAM -- /dev/shm, or the
+application's $XDG_RUNTIME_DIR under Flatpak, where /dev/shm is not shared
+with the container (see bol.xodus.staging_dir) -- the copy is created 0600,
+and the loader unlinks it the instant it opens it, so the decrypted image
+carries a name for milliseconds and never reaches durable storage.
 """
 import json
 import os
@@ -627,6 +660,7 @@ import tempfile
 ARGV = json.loads({argv!r})
 LAUNCHER_PATH = {launcher_path!r}
 EXE_NAME = {exe_name!r}
+STAGE_DIR = {stage_dir!r}
 # What the game's environment looked like before the bundled WebKitGTK runtime
 # was added for `xodus-cli run` (empty when the host provided its own). That
 # runtime exists so xodus-cli can load; the game below must not inherit it,
@@ -655,7 +689,8 @@ if not nt_name:
 
 def stage(fd_number):
     """Copy an inherited descriptor into a file the container can open."""
-    handle, path = tempfile.mkstemp(prefix="bol-", dir="/dev/shm")
+    os.makedirs(STAGE_DIR, mode=0o700, exist_ok=True)
+    handle, path = tempfile.mkstemp(prefix="bol-", dir=STAGE_DIR)
     try:
         os.fchmod(handle, 0o600)
         os.lseek(fd_number, 0, os.SEEK_SET)
@@ -677,7 +712,7 @@ except OSError as exc:
             os.unlink(path)
         except OSError:
             pass
-    sys.exit("could not stage the decrypted game: %s" % exc)
+    sys.exit("could not stage the decrypted game in %s: %s" % (STAGE_DIR, exc))
 
 # Raise the PE stack reserve exactly as the plaintext path does (issue #27).
 # The loader reads the field when it maps the image, so it has to happen
@@ -727,10 +762,21 @@ def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
     wrapper = work_dir / "xodus-launch-wrapper.py"
     if launcher_path is None:
         launcher_path = str(Path(__file__).resolve().parent.parent)
+    stage_dir = staging_dir()
+    if not stage_dir.is_dir():
+        # Only ever created, never adjusted: /dev/shm is the system's, and the
+        # one under $XDG_RUNTIME_DIR is born 0700 like everything else there.
+        # Not fatal either -- the wrapper creates it too, and it is the one
+        # whose failure has to stop the launch, holding the plaintext.
+        try:
+            stage_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            warn(f"Could not create {stage_dir} for the decrypted game: {exc}")
     wrapper.write_text(
         _WRAPPER.format(argv=json.dumps(list(argv[:-1])),
                         launcher_path=launcher_path,
                         exe_name=Path(argv[-1]).name,
+                        stage_dir=str(stage_dir),
                         webview_env=json.dumps(restore or {})),
         encoding="utf-8")
     wrapper.chmod(0o755)

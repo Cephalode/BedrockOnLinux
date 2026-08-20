@@ -1,9 +1,11 @@
 """Regression tests for the Xodus acquisition wrapper."""
 # SPDX-License-Identifier: MIT
 
+import contextlib
 import hashlib
 import io
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -479,13 +481,52 @@ def _stack_reserve(data):
     return struct.unpack_from("<Q", data, opt + 72)[0]
 
 
+class StagingDirTests(unittest.TestCase):
+    FLATPAK = {"FLATPAK_ID": "io.github.wyze3306.BedrockOnLinux",
+               "XDG_RUNTIME_DIR": "/run/user/1000"}
+
+    def test_a_plain_install_stages_on_dev_shm(self):
+        self.assertEqual(xodus.staging_dir(environ={},
+                                           info_path="/nonexistent"),
+                         Path("/dev/shm"))
+
+    def test_flatpak_stages_where_the_container_can_look(self):
+        # pressure-vessel builds the container as a new Flatpak app instance,
+        # which gets its own /dev/shm ("not shared between app instances",
+        # flatpak#4214): the staged image was invisible to Wine and the game
+        # died on "ShellExecuteEx failed: File not found" (issue #193). The
+        # per-application $XDG_RUNTIME_DIR is bound into every instance.
+        self.assertEqual(
+            xodus.staging_dir(environ=self.FLATPAK, info_path="/nonexistent"),
+            Path("/run/user/1000/bedrock-on-linux"))
+
+    def test_flatpak_is_recognised_without_the_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = Path(tmp) / ".flatpak-info"
+            info.write_text("[Application]\n", encoding="utf-8")
+            self.assertEqual(
+                xodus.staging_dir(environ={"XDG_RUNTIME_DIR": "/run/user/9"},
+                                  info_path=info),
+                Path("/run/user/9/bedrock-on-linux"))
+
+    def test_a_flatpak_without_a_runtime_dir_keeps_the_old_location(self):
+        self.assertEqual(
+            xodus.staging_dir(environ={"FLATPAK_ID": "io.github.x"},
+                              info_path="/nonexistent"),
+            Path("/dev/shm"))
+
+
 class WrapEncryptedLaunchTests(unittest.TestCase):
     EXE = "/games/release/1.26.44.3/Minecraft.Windows.exe"
     NT = "\\??\\Z:\\games\\release\\1.26.44.3\\Minecraft.Windows.exe"
 
-    def _wrap(self, tmp, argv):
-        with mock.patch.object(xodus, "ensure_cli",
-                               return_value=Path("/opt/xodus-cli")):
+    def _wrap(self, tmp, argv, stage_dir=None):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                xodus, "ensure_cli", return_value=Path("/opt/xodus-cli")))
+            if stage_dir is not None:
+                stack.enter_context(mock.patch.object(
+                    xodus, "staging_dir", return_value=Path(stage_dir)))
             return xodus.wrap_encrypted_launch(argv, Path(tmp) / "game",
                                                Path(tmp) / "run")
 
@@ -506,6 +547,52 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
         self.assertFalse(stale.exists())
         # A copy a concurrent launch just staged must survive.
         self.assertTrue(fresh.exists())
+
+    def test_both_staging_locations_are_swept(self):
+        # An install that switches layout (Flatpak or not) must not leave the
+        # other location's leftovers sitting in RAM forever.
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "run-user"
+            runtime.mkdir()
+            stale = Path(tempfile.mkstemp(prefix="bol-", dir=runtime)[1])
+            os.utime(stale, (0, 0))
+            shm = Path(tempfile.mkstemp(prefix="bol-", dir="/dev/shm")[1])
+            self.addCleanup(lambda: shm.unlink(missing_ok=True))
+            os.utime(shm, (0, 0))
+
+            self._wrap(tmp, [sys.executable, "-c", "pass", self.EXE],
+                       stage_dir=runtime)
+
+            self.assertFalse(stale.exists())
+            self.assertFalse(shm.exists())
+
+    def test_the_staging_directory_is_created_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "run-user" / "bedrock-on-linux"
+
+            self._wrap(tmp, [sys.executable, "-c", "pass", self.EXE],
+                       stage_dir=stage)
+
+            # $XDG_RUNTIME_DIR/<app> does not exist until something makes it,
+            # and the decrypted image must be no more readable there than the
+            # 0600 copies it holds.
+            self.assertTrue(stage.is_dir())
+            self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
+
+    def test_an_existing_staging_directory_is_left_alone(self):
+        # The default one is /dev/shm, which belongs to the system: the
+        # launcher creates its staging directory, it never re-permissions one.
+        before = Path("/dev/shm").stat().st_mode
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "already-there"
+            existing.mkdir(mode=0o755)
+
+            self._wrap(tmp, [sys.executable, "-c", "pass", self.EXE])
+            self._wrap(tmp, [sys.executable, "-c", "pass", self.EXE],
+                       stage_dir=existing)
+
+            self.assertEqual(existing.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(Path("/dev/shm").stat().st_mode, before)
 
     def test_command_runs_xodus_over_the_game_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -574,6 +661,39 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
         # RAM-backed and private: the decrypted image is readable by nobody
         # else while it briefly has a name.
         self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
+
+    def test_the_image_is_staged_where_the_launcher_asked(self):
+        # Under Flatpak that is $XDG_RUNTIME_DIR, the only RAM the nested
+        # container shares with the launcher (issue #193).
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "run-user" / "bedrock-on-linux"
+            recorder, argv = self._recorder(
+                tmp, 'os.environ["WINE_DLL_FILE_MAP"]')
+            cmd = self._wrap(tmp, argv, stage_dir=stage)
+            fd = self._memfd()
+
+            self._run(cmd[3], self.NT, f"{fd}:{self.NT}", (fd,), check=True)
+            path, _, mapped = recorder.read_text().partition(":")
+
+            self.assertEqual(mapped, self.NT)
+            self.assertEqual(Path(path).parent, stage)
+            self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
+
+    def test_a_staging_directory_that_vanished_is_recreated(self):
+        # $XDG_RUNTIME_DIR is cleaned out from under long-lived processes;
+        # the wrapper runs one exec before the game and cannot bail there.
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "run-user" / "bedrock-on-linux"
+            recorder, argv = self._recorder(
+                tmp, 'os.environ["WINE_DLL_FILE_MAP"]')
+            cmd = self._wrap(tmp, argv, stage_dir=stage)
+            shutil.rmtree(stage)
+            fd = self._memfd()
+
+            self._run(cmd[3], self.NT, f"{fd}:{self.NT}", (fd,), check=True)
+            staged = Path(recorder.read_text().partition(":")[0])
+
+            self.assertEqual(staged.parent, stage)
 
     def test_the_staged_image_carries_the_raised_stack_reserve(self):
         with tempfile.TemporaryDirectory() as tmp:
