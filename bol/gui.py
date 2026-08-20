@@ -1419,8 +1419,15 @@ def gui():
     vbox.pack(side="left")
 
     # ==================================================================
-    # Version picker (old style with search + filter)
+    # Version picker (search + filter) + Stable/Preview toggle
     # ==================================================================
+    edition_var = tk.StringVar(
+        value="preview" if load_settings().get("show_betas", False) else "release")
+
+    def _edition_matches(v, wanted=None):
+        wanted = (wanted or edition_var.get()) == "preview"
+        return bool(v.get("beta", False)) == wanted
+
     mc_var = tk.StringVar(value="")
     _pick = {"win": None, "hover": False, "bind_id": None}
 
@@ -1454,7 +1461,9 @@ def gui():
         if _pick["win"] is not None:
             close_picker()
             return
-        labels = ui.get("labels") or []
+        labels = [l for l, v in zip(ui.get("labels") or [],
+                                     ui.get("versions") or [])
+                  if _edition_matches(v)]
         if not labels:
             return
         x = ver_field.winfo_rootx() - root.winfo_rootx()
@@ -1609,9 +1618,30 @@ def gui():
 
     root.bind_all("<Button-1>", global_click, add="+")
 
+    def global_click_profile(event):
+        w = prof_menu_state.get("win")
+        if w is None:
+            return
+        try:
+            wx, wy = w.winfo_rootx(), w.winfo_rooty()
+            ww, wh = w.winfo_width(), w.winfo_height()
+            px, py = prof_card.winfo_rootx(), prof_card.winfo_rooty()
+            pw, ph = prof_card.winfo_width(), prof_card.winfo_height()
+            mx, my = event.x_root, event.y_root
+
+            in_w = (wx <= mx <= wx + ww) and (wy <= my <= wy + wh)
+            in_p = (px <= mx <= px + pw) and (py <= my <= py + ph)
+
+            if not in_w and not in_p:
+                close_profile_menu()
+        except Exception:
+            pass
+
+    root.bind_all("<Button-1>", global_click_profile, add="+")
+
     ver_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD, corner_radius=12,
                               width=220, height=52)
-    ver_field.pack(anchor="w")
+    ver_field.pack(side="left")
     ver_field.pack_propagate(False)
     ver_lbl = ctk.CTkLabel(ver_field, textvariable=mc_var, text_color=T.FG,
                             font=font(16), anchor="w")
@@ -1633,6 +1663,57 @@ def gui():
         _w.bind("<Enter>", lambda e: _ver_hover(True))
         _w.bind("<Leave>", lambda e: _ver_hover(False))
         _w.bind("<Button-1>", lambda e: open_picker())
+
+    # Stable/Preview toggle — sits to the RIGHT of the version field, since
+    # the version is the primary choice and the edition is a secondary
+    # refinement of it. Same pill shape and corner radius as the version
+    # field itself, so the two read as one control group.
+    ed_field = ctk.CTkFrame(vbox, fg_color=T.CARD_2, bg_color=T.CARD,
+                             corner_radius=12, height=52)
+    ed_field.pack(side="left", padx=(10, 0))
+    ed_field.pack_propagate(False)
+    edition_buttons = {}
+
+    def _paint_edition_toggle():
+        chosen = edition_var.get()
+        for eid, button in edition_buttons.items():
+            on = eid == chosen
+            beta = eid == "preview"
+            button.configure(
+                fg_color=(T.GOLD_DIM if beta else T.GREEN_DIM)
+                if on else "transparent",
+                hover_color=T.CARD_3,
+                text_color=(T.GOLD if beta else T.GREEN) if on else T.SUB)
+
+    def select_edition(edition_id):
+        if edition_var.get() == edition_id:
+            return
+        edition_var.set(edition_id)
+        _paint_edition_toggle()
+        s2 = load_settings()
+        s2["show_betas"] = edition_id == "preview"
+        save_settings(s2)
+        close_picker()
+        # Jump to a build of the newly chosen edition, if one is already
+        # loaded, so PLAY never silently launches the other kind.
+        matches = [l for l, v in zip(ui.get("labels") or [],
+                                      ui.get("versions") or [])
+                   if _edition_matches(v, edition_id)]
+        if matches:
+            set_version(matches[0])
+        else:
+            selected_chip.configure(text="")
+
+    for _eid, _text in (("release", "Stable"), ("preview", "Preview")):
+        _button = mkbtn(ed_field, _text,
+                        (lambda e=_eid: select_edition(e)), kind="flat",
+                        width=78, height=32, font=font(13, "bold"),
+                        corner_radius=8)
+        _button.pack(side="left", padx=(6, 0) if _eid == "release" else (2, 6),
+                     pady=10)
+        edition_buttons[_eid] = _button
+    Tooltip(ed_field, "Minecraft, or the Preview build")
+    _paint_edition_toggle()
 
     # ==================================================================
     # Right side of dock: play, settings, details
@@ -2029,9 +2110,8 @@ def gui():
     # Versions: using list_editions + list_versions
     # ==================================================================
     def refresh_versions():
-        beta = load_settings().get("show_betas", False)
         try:
-            editions = list_editions(include_beta=beta)
+            editions = list_editions(include_beta=True)
         except Exception as e:
             log._LOG_SINK(f"xx editions: {e}")
             return
@@ -2062,11 +2142,11 @@ def gui():
         def ap():
             ui["labels"] = labels
             cur = (load_settings().get("mc_version") or "")
-            # Find the best matching version: exact or starting with cur
-            pick = next((x for x in labels
+            wanted = [l for l, v in zip(labels, versions) if _edition_matches(v)]
+            pick = next((x for x in wanted
                          if x.split("  ")[0] == cur
                          or x.split("  ")[0].startswith(cur + ".")),
-                        labels[0] if labels else "")
+                        wanted[0] if wanted else (labels[0] if labels else ""))
             if labels:
                 mc_var.set(pick)
                 _update_selected_chip()
@@ -2226,6 +2306,10 @@ def gui():
 
         _sync_theme(root, is_beta)
 
+        if edition_var.get() != ("preview" if is_beta else "release"):
+            edition_var.set("preview" if is_beta else "release")
+            _paint_edition_toggle()
+
         if ui.get("changelogs_loaded") and tab_game is not None and changelog_view.winfo_ismapped():
             from .util import mc_releases
             load_tab_changelog(tab_game, lambda: mc_releases(fetch_all=False), render_game_changelog)
@@ -2243,14 +2327,8 @@ def gui():
         def work():
             try:
                 ver = selected_version()
-                # ver is a dict with tag, beta, edition, installed
-                # do_setup expects a version object with tag and beta
-                # We'll pass the tag and let do_setup figure out the edition from settings or from the version dict.
-                # The old code used to pass the whole version object. We'll pass a dict with tag and beta.
                 if ver is None:
                     raise BolError("No version selected")
-                # Build a version object that do_setup can use (it expects 'tag' and 'beta')
-                # We'll also include 'edition' if needed.
                 version_obj = {"tag": ver["tag"], "beta": ver.get("beta", False), "edition": ver.get("edition", "release")}
                 do_setup(mc_ver=version_obj, progress=set_progress)
                 set_status("Starting Minecraft…", T.FG)
