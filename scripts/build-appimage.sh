@@ -108,9 +108,8 @@ find "$PYHOME" -name '*.pyc' -delete 2>/dev/null || true
 # including binary Python wheels, against the Debian 11/sniper baseline.
 command -v readelf >/dev/null 2>&1 \
   || { echo "!!|
-  |-|-|is required for the|
-  |-|-| ABI audit" >&2; exit |
-  |-|-|on3 - "$APPDIR" "$GLIBC_CEILING" <<'PY'
+  |-|-||-|-|quired for the AppImage ABI audit" >&2; exit 1; }
+python3 - "$APPDIR" "$GLIBC_CEILING" <<'PY'
 import os
 import re
 import subprocess
@@ -231,9 +230,8 @@ exec "$PY" "$HERE/usr/bin/bedrock-on-linux" "$@"
 EOF
 chmod 755 "$APPDIR/AppRun"
 /bin/sh -n "$APPDIR/AppRun" \
-  || { echo "!! AppRun is not compatible with|
-  |-|-| >&|
-  |-|-|; }
+  || { echo "!! AppRun is not compatible|
+  |-|-|n/sh" >&2; exit 1; }
 
 echo "== verifying the bundle: PySide6/Qt + cryptography + HTTPS, all self-contained"
 env -i SSL_CERT_FILE="$PYLIB/python3.12/site-packages/certifi/cacert.pem" \
@@ -367,16 +365,15 @@ download_verified \
 runtime_header="$(readelf -h "$RUNTIME")"
 [[ "$runtime_header" == *"Class:"*"ELF64"* \
    && "$runtime_header" == *"Machine:"*"X86-64"* ]] \
-  || { echo "|
-  |-|-|ge runtime is not|
-  |-|-|6-64" >&2;|
-  |-|-|}
-runtime_dynamic="$(readelf -d "$RUNTIME")"
+  || {|
+  |-|-| AppImage runtime is not ELF64|
+  |-|-|>&2; exit 1|
+  |-|-|me_dynamic="$(readelf -d "$RUNTIME")"
 [[ "$runtime_dynamic" != *"(NEEDED)"* ]] \
-  || { echo "!! AppImage runtime is not|
-  |-|-|ly linked" >&|
-  |-|-|;|
-  |-|-|="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"
+  ||
+  |-|o "!! AppImage|
+  |-|-|is not statically linked" >&2; exit|
+  |-|-|IMG="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"
 ZSYNC="$APPIMG.zsync"
 rm -f "$APPIMG" "$ZSYNC"
 declare -a UPDATE_ARGS=()
@@ -408,72 +405,4 @@ if [[ -n "$UPDATE_INFO" ]]; then
 import email.utils
 import fnmatch
 import re
-import subprocess
-import sys
-from pathlib import Path
-
-image, sidecar = Path(sys.argv[1]), Path(sys.argv[2])
-expected, epoch = sys.argv[3], int(sys.argv[4])
-
-# The updaters read the string back out of the runtime's .upd_info section, so
-# check it there rather than trusting the command line we passed.
-headers = subprocess.run(
-    ["readelf", "--section-headers", "--wide", str(image)],
-    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-if headers.returncode:
-    raise SystemExit(f"readelf failed for {image}: {headers.stderr.strip()}")
-section = re.search(
-    r"\.upd_info\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", headers.stdout)
-if not section:
-    raise SystemExit("the AppImage runtime carries no .upd_info section")
-offset, size = (int(value, 16) for value in section.groups())
-with image.open("rb") as stream:
-    stream.seek(offset)
-    embedded = stream.read(size).split(b"\0", 1)[0].decode("utf-8", "replace")
-if embedded != expected:
-    raise SystemExit(f"embedded update information is {embedded!r}, "
-                     f"expected {expected!r}")
-
-fields = expected.split("|")
-if fields[0] == "gh-releases-zsync" and len(fields) == 5:
-    # The release asset has to be the file the embedded pattern looks for,
-    # otherwise every updater reports "no matching asset" on a release that
-    # does carry the update.
-    if not fnmatch.fnmatch(sidecar.name, fields[4]):
-        raise SystemExit(f"{sidecar.name} does not match the pattern the "
-                         f"AppImage advertises ({fields[4]})")
-
-raw = sidecar.read_bytes()
-end = raw.find(b"\n\n")          # text headers, blank line, binary checksums
-if end < 0:
-    raise SystemExit(f"{sidecar.name} has no zsync header block")
-zsync = {}
-for line in raw[:end].decode("utf-8", "replace").splitlines():
-    key, _, value = line.partition(": ")
-    zsync[key] = value
-for key in ("Filename", "URL"):
-    # URL is relative, so it resolves next to the .zsync -- i.e. the AppImage
-    # asset of the same release.
-    if zsync.get(key) != image.name:
-        raise SystemExit(f"{sidecar.name} {key} is {zsync.get(key)!r}, "
-                         f"expected {image.name!r}")
-if zsync.get("Length") != str(image.stat().st_size):
-    raise SystemExit(f"{sidecar.name} describes {zsync.get('Length')} bytes, "
-                     f"but the AppImage is {image.stat().st_size}")
-
-# zsyncmake stamps the input file's mtime, which is the one value here that is
-# not derived from the bytes. Pin it to SOURCE_DATE_EPOCH like every other
-# timestamp in this build, so rebuilding the same source reproduces the sidecar
-# too. RFC-822 dates are fixed width, so the header block keeps its length.
-stamp = email.utils.formatdate(epoch).replace("-0000", "+0000")
-sidecar.write_bytes(
-    re.sub(rb"(?m)^MTime: .*$", ("MTime: " + stamp).encode(), raw[:end],
-           count=1) + raw[end:])
-print(f"  update information: {embedded}")
-print(f"  delta updates: {sidecar.name} "
-      f"({zsync['Blocksize']}-byte blocks, MTime {stamp})")
-PY
-fi
-
-rm -rf "$APPDIR"
-echo "
+import
