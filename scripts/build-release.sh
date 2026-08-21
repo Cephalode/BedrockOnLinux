@@ -155,8 +155,8 @@ else
   required_failures+=(".rpm")
 fi
 
-# The zipapp needs host Python 3 and tkinter; login dependencies can be
-# installed on first use by bol/deps.py.
+# The zipapp needs host Python 3; GUI and login dependencies (PySide6-Essentials,
+# cryptography, …) can be installed on first use by bol/deps.py.
 STAGE="$OUT/pyz-stage"
 PYZ="$OUT/bedrock-on-linux-${VER}.pyz"
 rm -rf "$STAGE"
