@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import html
+import inspect
 import os
 import re
 import shutil
@@ -439,11 +440,31 @@ class Worker(QThread):
         self._args = args
         self._kwargs = kwargs
 
+    def _takes_progress(self):
+        """Whether the callable accepts a `progress` keyword.
+
+        Read from the signature, not from __code__.co_varnames: co_varnames
+        lists local variables as well as parameters, so a callee that merely
+        assigns to a name called `progress` would be handed a keyword it
+        cannot take -- and the resulting TypeError arrives through failed(),
+        where it reads as a real failure of the work itself. Builtins and
+        functools.partial have no __code__ at all.
+        """
+        try:
+            parameters = inspect.signature(self._fn).parameters
+        except (TypeError, ValueError):
+            return False
+        if "progress" in parameters:
+            return True
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD
+                   for p in parameters.values())
+
     def run(self):
         try:
-            result = self._fn(*self._args, progress=self._emit_progress, **self._kwargs) \
-                if "progress" in self._fn.__code__.co_varnames else self._fn(*self._args, **self._kwargs)
-            self.done.emit(result)
+            kwargs = dict(self._kwargs)
+            if self._takes_progress():
+                kwargs["progress"] = self._emit_progress
+            self.done.emit(self._fn(*self._args, **kwargs))
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI
             self.failed.emit(str(exc) or type(exc).__name__)
 
@@ -786,6 +807,8 @@ class MainWindow(QMainWindow):
             "launch_active": False, "window_gone": False, "stepped_aside": False,
         }
         self._force_close = False
+        # slot name -> the QThread currently held for it; see _start_worker.
+        self._workers: dict[str, QThread] = {}
         self.na = NativeAuth()
         self._switches: list[SwitchRow] = []
         self._log_bridge = LogBridge()
@@ -832,13 +855,34 @@ class MainWindow(QMainWindow):
         self._refresh_account_row("in" if msa_signed_in() else "out")
 
         self._changelog_loaded = False
-        self._version_worker = None
 
         QTimer.singleShot(50, self.refresh_versions)
         QTimer.singleShot(200, self.check_for_update_async)
 
         if self.settings.get("show_changelog_on_startup", False):
             QTimer.singleShot(0, self.toggle_changelog)
+
+    def _start_worker(self, slot, worker) -> bool:
+        """Start `worker`, holding the only reference the GUI thread keeps.
+
+        A QThread whose last Python reference goes away is destroyed by the
+        C++ side while it is still running, which Qt reports as "QThread:
+        Destroyed while thread is still running" and then aborts on. Every
+        background job here was stored in a plain attribute, so triggering
+        the same action twice -- two clicks on Import, a quick Stable/Preview
+        toggle -- overwrote a running thread with its successor.
+
+        Slots are never emptied, only replaced once idle: dropping the
+        reference from finished() would put it back in the same race it
+        exists to prevent. Returns False when the slot is still busy, which
+        is also how repeat clicks are refused.
+        """
+        previous = self._workers.get(slot)
+        if previous is not None and previous.isRunning():
+            return False
+        self._workers[slot] = worker
+        worker.start()
+        return True
 
     # ------------------------------------------------------------ icon
     def _load_icon(self):
@@ -1200,15 +1244,23 @@ class MainWindow(QMainWindow):
             editions = list_editions(include_beta=beta)
             versions = []
             for ed in editions:
-                for b in list_versions(ed["id"]):
+                # Per edition, so one catalogue being unreachable costs that
+                # edition and not the whole picker. Without this a Preview
+                # outage left the player with no Stable builds either.
+                try:
+                    builds = list_versions(ed["id"])
+                except Exception as exc:
+                    log._LOG_SINK(f"xx versions for {ed['id']}: {exc}")
+                    continue
+                for b in builds:
                     versions.append({"tag": b["version"], "beta": ed.get("beta", False),
                                       "edition": ed, "installed": b.get("installed", False)})
             return versions
 
-        self._version_worker = Worker(work)
-        self._version_worker.done.connect(self._on_versions_loaded)
-        self._version_worker.failed.connect(lambda e: log._LOG_SINK(f"xx versions: {e}"))
-        self._version_worker.start()
+        worker = Worker(work)
+        worker.done.connect(self._on_versions_loaded)
+        worker.failed.connect(lambda e: log._LOG_SINK(f"xx versions: {e}"))
+        self._start_worker("versions", worker)
 
     def _on_versions_loaded(self, versions):
         if not versions:
@@ -1482,9 +1534,8 @@ class MainWindow(QMainWindow):
         w.close_window.connect(self._close_for_game)
         w.step_aside.connect(self._step_aside_for_game)
         w.come_back.connect(self._come_back_from_game)
-        self._play_worker = w
         self.ui_state["launch_active"] = True
-        w.start()
+        self._start_worker("play", w)
 
     def _close_for_game(self):
         """The player asked for this in Settings ▸ General: the window goes
@@ -1676,8 +1727,7 @@ class MainWindow(QMainWindow):
         w = Worker(work)
         w.done.connect(lambda _r: self._refresh_store_row())
         w.failed.connect(lambda e: self.error_box("Microsoft Store account", e))
-        self._store_worker = w
-        w.start()
+        self._start_worker("store-account", w)
 
     def _build_advanced_tab(self) -> QWidget:
         w = QWidget()
@@ -1883,8 +1933,7 @@ class MainWindow(QMainWindow):
 
         w.done.connect(ok)
         w.failed.connect(fail)
-        self._relocate_worker = w
-        w.start()
+        self._start_worker("relocate", w)
 
     def _do_reset_location(self):
         if self._relocate_blocked():
@@ -1986,10 +2035,14 @@ class MainWindow(QMainWindow):
                 msg += "\n\nMinecraft is running — restart it to see the new content."
             self.info_box("Import", msg)
 
+        def failed(message):
+            self.tools_status_label.setText("")
+            self.error_box("Import", f"Could not import:\n{message}")
+
         w = Worker(work)
         w.done.connect(finished)
-        self._import_worker = w
-        w.start()
+        w.failed.connect(failed)
+        self._start_worker("import", w)
 
     def _do_inject(self):
         if not _mc_running():
@@ -2005,24 +2058,24 @@ class MainWindow(QMainWindow):
         self.tools_status_label.setText("Injecting…")
 
         def work():
-            name = run_injector(dll)
-            self._save_setting("injector_dll", dll)
-            return name
+            return run_injector(dll)
 
         def finished(name):
+            # Written here rather than in work(): _save_setting reloads and
+            # reassigns self.settings, which the GUI thread reads.
+            self._save_setting("injector_dll", dll)
             self.tools_status_label.setText("")
             self.info_box("DLL injector", f"Injected {name} into Minecraft. ✓\n\n"
                            "(Native / AppImage only — not inside the Flatpak sandbox.)")
 
         def failed(msg):
             self.tools_status_label.setText("")
-            self.info_box("DLL injector", f"Couldn't inject:\n{msg}")
+            self.error_box("DLL injector", f"Couldn't inject:\n{msg}")
 
         w = Worker(work)
         w.done.connect(finished)
         w.failed.connect(failed)
-        self._inject_worker = w
-        w.start()
+        self._start_worker("inject", w)
 
     def _do_create_profile_shortcut(self):
         name, ok = QInputDialog.getText(self, "Create account profile",
@@ -2098,14 +2151,12 @@ class MainWindow(QMainWindow):
         gw = Worker(lambda: mc_releases(fetch_all=False))
         gw.done.connect(lambda data: self.game_changelog_view.setHtml(self._render_game_changelog_html(data)))
         gw.failed.connect(lambda e: self.game_changelog_view.setHtml(error_html(e)))
-        self._game_changelog_worker = gw
-        gw.start()
+        self._start_worker("changelog-game", gw)
 
         lw = Worker(lambda: gh_releases(SELF_REPO))
         lw.done.connect(lambda data: self.launcher_changelog_view.setHtml(self._render_launcher_changelog_html(data)))
         lw.failed.connect(lambda e: self.launcher_changelog_view.setHtml(error_html(e)))
-        self._launcher_changelog_worker = lw
-        lw.start()
+        self._start_worker("changelog-launcher", lw)
 
     def _changelog_css(self) -> str:
         """Shared typography for both changelog tabs."""
@@ -2245,8 +2296,7 @@ class MainWindow(QMainWindow):
     def check_for_update_async(self):
         w = Worker(check_for_update)
         w.done.connect(lambda rel: rel and self._show_update_banner(rel))
-        self._update_check_worker = w
-        w.start()
+        self._start_worker("update-check", w)
 
     def _show_update_banner(self, rel):
         bar = QFrame(); bar.setObjectName("CardFlat")
@@ -2277,8 +2327,7 @@ class MainWindow(QMainWindow):
                 self._restart_prompt()
 
         w.done.connect(done)
-        self._update_worker = w
-        w.start()
+        self._start_worker("update", w)
 
     def _restart_prompt(self):
         if self.question_box("Update installed", "Restart now to run the new version?"):
