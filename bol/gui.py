@@ -1277,8 +1277,18 @@ class MainWindow(QMainWindow):
 
     def refresh_versions(self):
         def work():
-            beta = load_settings().get("show_betas", False)
-            editions = list_editions(include_beta=beta)
+            # Always fetch the full catalogue, stable and preview alike.
+            # Which edition is *shown* is a purely client-side filter
+            # (_edition_matches / open_picker / select_edition all filter
+            # self.ui_state["versions"] after the fact) -- this only runs
+            # once per app launch, so gating the fetch itself by the
+            # currently-saved show_betas left the other edition's versions
+            # never loaded for the rest of the session. That's what made
+            # Preview un-selectable after a restart that happened to land
+            # on Stable: the version list was fetched with
+            # include_beta=False and never refetched, so no amount of
+            # clicking "Preview" afterward could produce a match.
+            editions = list_editions(include_beta=True)
             versions = []
             for ed in editions:
                 # Per edition, so one catalogue being unreachable costs that
