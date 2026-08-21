@@ -16,6 +16,11 @@ jobs:
   tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      # The GUI toolkit is PySide6 (Qt); the runner has no display, so any
+      # test that constructs a QApplication needs the offscreen platform
+      # plugin instead of trying to open a real X11/Wayland connection.
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -24,7 +29,7 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install --quiet --disable-pip-version-check \
-            pytest 'cryptography==43.0.3'
+            pytest 'cryptography==43.0.3' 'PySide6-Essentials==6.9.3'
           .venv/bin/python -m pytest -q
   static:
     runs-on: ubuntu-24.04
