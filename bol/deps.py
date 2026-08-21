@@ -90,10 +90,16 @@ def ensure_login_deps(install=True):
 
 
 # The packaged builds bundle these; a portable .pyz or bare checkout installs
-# them on first GUI launch.
+# them on first GUI launch. PySide6-Essentials (not the PySide6 meta-package)
+# is deliberately pinned: the meta-package pulls in PySide6-Addons too (167 MB
+# of Qt modules — Multimedia, WebEngine, Charts, …) that this app never uses,
+# and Essentials alone already provides the QtCore/QtGui/QtWidgets namespace
+# under `PySide6.*`. 6.9.3 is also the newest PySide6 line still built on the
+# manylinux_2_28 (glibc 2.28) baseline; 6.10+ wheels require glibc 2.34 and
+# would break the same Debian 11/Ubuntu 22.04/Steam Runtime targets the
+# cryptography==43.0.3 pin above exists to protect.
 GUI_DEPS = {
-    "customtkinter": "customtkinter==5.2.2",
-    "darkdetect": "darkdetect==0.8.0",
+    "PySide6": "PySide6-Essentials==6.9.3",
     "packaging": "packaging==26.2",
     "Xlib": "python-xlib==0.33",
 }
