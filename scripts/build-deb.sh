@@ -26,11 +26,11 @@ mkdir -p "$OUT" \
 
 install -m755 "$SRC/bedrock-on-linux" "$PKG/usr/lib/bedrock-on-linux/bedrock-on-linux"
 cp -r "$SRC/bol"                       "$PKG/usr/lib/bedrock-on-linux/bol"
-# Bundle the GUI toolkit (customtkinter + darkdetect + packaging — pure Python,
-# not packaged by Debian) next to bol/ so it's on sys.path; a real dir means
-# customtkinter's theme/font assets load fine. cryptography/tk stay apt deps.
-# python-xlib (+ six) provides structured RandR monitor geometry; bol.x11
-# falls back to the xrandr CLI when it is unavailable.
+# Bundle the GUI toolkit (PySide6-Essentials + shiboken6, packaging, and
+# python-xlib — none of these are apt dependencies) next to bol/ so it's on
+# sys.path. cryptography stays an apt dep. python-xlib (+ six) provides
+# structured RandR monitor geometry; bol.x11 falls back to the xrandr CLI
+# when it is unavailable.
 # Hash-pinned, wheels only, no sdist builds: closure + SHA-256s live in
 # third_party/requirements-deb.txt (--require-hashes rejects any mismatch).
 python3 -m pip install --quiet --no-cache-dir --no-compile --no-deps \
@@ -40,8 +40,8 @@ python3 -m pip install --quiet --no-cache-dir --no-compile --no-deps \
 rm -rf "$PKG/usr/lib/bedrock-on-linux"/bin 2>/dev/null || true
 find "$PKG/usr/lib/bedrock-on-linux" -name __pycache__ -type d -exec rm -rf {} +
 for metadata in \
-  "$PKG/usr/lib/bedrock-on-linux/customtkinter-5.2.2.dist-info" \
-  "$PKG/usr/lib/bedrock-on-linux/darkdetect-0.8.0.dist-info" \
+  "$PKG/usr/lib/bedrock-on-linux/shiboken6-6.9.3.dist-info" \
+  "$PKG/usr/lib/bedrock-on-linux/pyside6_essentials-6.9.3.dist-info" \
   "$PKG/usr/lib/bedrock-on-linux/packaging-26.2.dist-info" \
   "$PKG/usr/lib/bedrock-on-linux/python_xlib-0.33.dist-info" \
   "$PKG/usr/lib/bedrock-on-linux/six-1.17.0.dist-info"; do
@@ -72,7 +72,7 @@ Version: ${VER}
 Section: games
 Priority: optional
 Architecture: amd64
-Depends: python3 (>= 3.9), python3-tk, python3-cryptography, tar, zstd, xdg-utils, x11-xserver-utils, ca-certificates, curl | wget, libwebkit2gtk-4.1-0
+Depends: python3 (>= 3.9), python3-cryptography, tar, zstd, xdg-utils, x11-xserver-utils, ca-certificates, curl | wget, libwebkit2gtk-4.1-0, libxcb1, libxcb-cursor0, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1, libfreetype6, libglib2.0-0, libdbus-1-3, libgl1
 Recommends: mesa-vulkan-drivers | nvidia-driver
 Maintainer: BedrockOnLinux contributors <noreply@bedrockonlinux.invalid>
 Homepage: https://github.com/Wyze3306/BedrockOnLinux
