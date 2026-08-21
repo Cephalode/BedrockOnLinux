@@ -57,6 +57,28 @@ from .util import load_settings, save_settings, format_display_version, mc_relea
 RE_MD_TOKENS = re.compile(r"(\*\*|`|__|\[[^\]]+\]\([^)]+\))")
 RE_MD_LINK = re.compile(r"^\[([^\]]+)\]\(([^)]+)\)$")
 
+try:
+    import shiboken6
+except ImportError:  # pragma: no cover - shiboken6 ships alongside PySide6
+    shiboken6 = None
+
+
+def _alive(widget) -> bool:
+    """True if `widget`'s underlying C++ object hasn't been destroyed.
+
+    Worker threads and QTimer.singleShot callbacks are asynchronous: they
+    can still be pending when the window that owns them goes away (the
+    window closed, or torn down between tests, while a background job is
+    in flight). Without this guard the callback runs anyway and touches a
+    widget whose C++ side is already gone, raising "libshiboken: Internal
+    C++ object already deleted" from inside the Qt event loop.
+    """
+    if widget is None:
+        return False
+    if shiboken6 is None:
+        return True
+    return shiboken6.isValid(widget)
+
 
 def _desktop_error(message: str) -> None:
     warn(message)
@@ -1083,7 +1105,7 @@ class MainWindow(QMainWindow):
     def _copy_log(self):
         QApplication.clipboard().setText(self.log_view.toPlainText())
         self.copy_log_btn.setText("Copied ✓")
-        QTimer.singleShot(1200, lambda: self.copy_log_btn.setText("Copy"))
+        QTimer.singleShot(1200, lambda: _alive(self.copy_log_btn) and self.copy_log_btn.setText("Copy"))
 
     def toggle_details(self):
         self.ui_state["details"] = not self.ui_state["details"]
@@ -1365,6 +1387,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ account
     def _refresh_account_row(self, phase):
+        if not _alive(self) or not _alive(self.acct_dot):
+            return
         gt = msa_gamertag() or "Xbox Live"
         if phase == "in":
             self.acct_dot.setStyleSheet(f"color:{self.theme.green};")
@@ -1458,11 +1482,12 @@ class MainWindow(QMainWindow):
                               daemon=True).start()
 
     def _on_auth(self, url, code):
-        QTimer.singleShot(0, lambda: (self._refresh_account_row("auth"), self._code_dialog(url, code)))
+        QTimer.singleShot(0, lambda: _alive(self) and (
+            self._refresh_account_row("auth"), self._code_dialog(url, code)))
 
     def _on_online(self):
-        QTimer.singleShot(0, lambda: self._refresh_account_row("in"))
-        if getattr(self, "_auth_dialog", None):
+        QTimer.singleShot(0, lambda: _alive(self) and self._refresh_account_row("in"))
+        if getattr(self, "_auth_dialog", None) and _alive(self._auth_dialog):
             QTimer.singleShot(0, self._auth_dialog.close)
         self._warm_xbox_preauth()
 
@@ -1489,7 +1514,7 @@ class MainWindow(QMainWindow):
                 epoch = _account_cache_epoch(DATA / "winegdk-preauth")
                 if xbl_preauth(fresh.get("access_token"), epoch):
                     QTimer.singleShot(
-                        0, lambda: self._refresh_account_row("in"))
+                        0, lambda: _alive(self) and self._refresh_account_row("in"))
             except Exception:
                 # Best-effort warm-up: PLAY re-runs the whole chain and is
                 # where a real failure has to be reported, with its
@@ -2171,13 +2196,17 @@ class MainWindow(QMainWindow):
                 f"style='text-transform:none;margin-top:6px;'>{html.escape(e)}</div>")
 
         gw = Worker(lambda: mc_releases(fetch_all=False))
-        gw.done.connect(lambda data: self.game_changelog_view.setHtml(self._render_game_changelog_html(data)))
-        gw.failed.connect(lambda e: self.game_changelog_view.setHtml(error_html(e)))
+        gw.done.connect(lambda data: _alive(self) and _alive(self.game_changelog_view)
+                         and self.game_changelog_view.setHtml(self._render_game_changelog_html(data)))
+        gw.failed.connect(lambda e: _alive(self) and _alive(self.game_changelog_view)
+                           and self.game_changelog_view.setHtml(error_html(e)))
         self._start_worker("changelog-game", gw)
 
         lw = Worker(lambda: gh_releases(SELF_REPO))
-        lw.done.connect(lambda data: self.launcher_changelog_view.setHtml(self._render_launcher_changelog_html(data)))
-        lw.failed.connect(lambda e: self.launcher_changelog_view.setHtml(error_html(e)))
+        lw.done.connect(lambda data: _alive(self) and _alive(self.launcher_changelog_view)
+                         and self.launcher_changelog_view.setHtml(self._render_launcher_changelog_html(data)))
+        lw.failed.connect(lambda e: _alive(self) and _alive(self.launcher_changelog_view)
+                           and self.launcher_changelog_view.setHtml(error_html(e)))
         self._start_worker("changelog-launcher", lw)
 
     def _changelog_css(self) -> str:
@@ -2284,6 +2313,8 @@ class MainWindow(QMainWindow):
         return self._wrap_changelog_html("".join(parts))
 
     def _render_game_changelog_html(self, data) -> str:
+        if not _alive(self) or not _alive(self.ver_label):
+            return ""
         lab = self.ver_label.text()
         ui_wants_beta = "BETA" in lab if lab else False
         articles = []
