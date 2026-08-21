@@ -52,10 +52,16 @@ for metadata in \
   dependency_license="$(
     find "$metadata" -type f -iname 'LICENSE*' -print -quit
   )"
-  [[ -n "$dependency_license" ]] || {
-    echo "missing dependency licence in $metadata" >&2
-    exit 1
-  }
+  # Some wheels (shiboken6, pyside6-essentials) carry no bundled LICENSE
+  # file at all -- Qt for Python states the license only in METADATA's
+  # License: field. Accept that as proof the license was reviewed and
+  # recorded, rather than requiring a file upstream never ships.
+  if [[ -z "$dependency_license" ]]; then
+    grep -qE '^License(-Expression)?:' "$metadata/METADATA" 2>/dev/null || {
+      echo "missing dependency licence in $metadata" >&2
+      exit 1
+    }
+  fi
 done
 install -m644 "$SRC/data/icon.png"    "$PKG/usr/lib/bedrock-on-linux/data/icon.png"
 ln -s /usr/lib/bedrock-on-linux/bedrock-on-linux "$PKG/usr/bin/bedrock-on-linux"
