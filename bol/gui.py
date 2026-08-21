@@ -1310,6 +1310,8 @@ class MainWindow(QMainWindow):
         self._start_worker("versions", worker)
 
     def _on_versions_loaded(self, versions):
+        if not _alive(self) or not _alive(self.ver_label):
+            return
         if not versions:
             log._LOG_SINK("xx no versions loaded")
             return
@@ -1760,6 +1762,8 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def _refresh_store_row(self):
+        if not _alive(self) or not _alive(self.store_label) or not _alive(self.store_btn):
+            return
         from . import xodus
         linked = xodus.signed_in()
         self.store_label.setText("Store account: " + ("linked" if linked else "not linked"))
@@ -1776,7 +1780,7 @@ class MainWindow(QMainWindow):
 
         w = Worker(work)
         w.done.connect(lambda _r: self._refresh_store_row())
-        w.failed.connect(lambda e: self.error_box("Microsoft Store account", e))
+        w.failed.connect(lambda e: _alive(self) and self.error_box("Microsoft Store account", e))
         self._start_worker("store-account", w)
 
     def _build_advanced_tab(self) -> QWidget:
@@ -2358,10 +2362,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ self-update
     def check_for_update_async(self):
         w = Worker(check_for_update)
-        w.done.connect(lambda rel: rel and self._show_update_banner(rel))
+        w.done.connect(lambda rel: rel and _alive(self) and self._show_update_banner(rel))
         self._start_worker("update-check", w)
 
     def _show_update_banner(self, rel):
+        if not _alive(self) or self.centralWidget() is None:
+            return
         bar = QFrame(); bar.setObjectName("CardFlat")
         h = QHBoxLayout(bar)
         lab = QLabel(f"⟳  Update available — v{rel['version']}  (you have {VERSION})")
