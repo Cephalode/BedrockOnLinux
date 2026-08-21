@@ -18,6 +18,26 @@
 
 ### Fixed
 
+- **Minecraft now appears in Steam Deck Game Mode instead of only being
+  heard** ([#199](https://github.com/Wyze3306/BedrockOnLinux/issues/199)).
+  Pressing ▶ PLAY from the Flatpak started the game, the launcher stepped out
+  of the way as it should, the menu music played — and Steam stayed on screen
+  with the game nowhere to be found. Nothing had crashed: Minecraft was
+  running, rendering, and simply had no identity Game Mode could recognise it
+  by. Gamescope decides what to show by asking each window which Steam
+  application it belongs to, and it gets that answer either from the window
+  itself or by following the game's process back to the one Steam started. The
+  Flatpak had neither. It starts the game through the portal, which puts it
+  outside the process tree Steam launched, and the property that would have
+  said so is one Proton's own Wine sets and this engine does not. So the
+  launcher now says it: the game window is given the application ID of the
+  shortcut this session was started from, as soon as it opens, and again if
+  the game later replaces it. Game Mode brings Minecraft to the front by
+  itself. Along with it, UMU is no longer left to invent an identity — it was
+  turning a launch Steam had started into the literal `SteamAppId=default` —
+  and if no window ever turns up the log now says so instead of leaving a
+  silent, audible game to be guessed at. Desktop sessions are untouched.
+
 - **The Microsoft Store sign-in now survives closing the launcher — and stops
   spending the account's device slots**
   ([#198](https://github.com/Wyze3306/BedrockOnLinux/issues/198)). Xodus keeps

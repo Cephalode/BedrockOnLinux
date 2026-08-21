@@ -35,7 +35,7 @@ from .config import (
 from .log import BolError, die, info, ok, warn
 from .perfcheck import find_game_data_dirs, find_options_files
 from .proton import proton_path
-from .util import download, sha256_file
+from .util import download, sha256_file, steam_app_id
 
 # Records the engine revision a managed prefix was last built/refreshed with,
 # so an engine upgrade can refresh the prefix's cached Windows system DLLs
@@ -232,9 +232,16 @@ def proton_umu_cmd(exe, prefix=None):
             env["PROTON_USE_WOW64"] = "1"
     except (OSError, RuntimeError):
         pass
-    # GAMEID selects protonfixes, not the inherited Steam session identity.
+    # GAMEID selects protonfixes, but UMU also rebuilds the Steam session
+    # identity from it: SteamAppId and SteamGameId inside the container become
+    # whatever follows "umu-". Its own `umu-default` fallback therefore turns
+    # a launch Steam started into the literal strings "SteamAppId=default"
+    # and "SteamGameId=default" (#199). Hand it back the inherited application
+    # ID so the container keeps the identity Steam gave this session, and keep
+    # the neutral default for every launch that never had one.
     game_id = env.get("GAMEID", "").strip()
-    env["GAMEID"] = game_id or "umu-default"
+    app_id = steam_app_id(env)
+    env["GAMEID"] = game_id or (f"umu-{app_id}" if app_id else "umu-default")
     return [sys.executable, str(ensure_umu()), exe], env
 
 

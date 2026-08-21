@@ -1,8 +1,11 @@
-"""X11 RandR monitor geometry helpers."""
+"""X11 helpers: RandR monitor geometry, and the Steam identity of a window."""
 # SPDX-License-Identifier: MIT
+import ctypes
+import os
 import re
 import shutil
 import subprocess
+from contextlib import contextmanager
 
 from .deps import have
 
@@ -249,3 +252,281 @@ def primary_output_size(runner=None):
     CLI fallback.
     """
     return _primary_via_xlib() or _primary_via_xrandr_cli(runner)
+
+
+# ---------------------------------------------------------------------------
+# The Steam application ID a window belongs to
+# ---------------------------------------------------------------------------
+#
+# Gamescope attributes every window to a Steam application, and Game Mode only
+# presents windows it could attribute to the application Steam launched. It
+# reads that identity from the window's ``STEAM_GAME`` property and follows it
+# live, so stamping the property on a window that is already mapped is enough
+# to make it focusable.
+
+_STEAM_GAME_PROPERTY = "STEAM_GAME"
+_XA_CARDINAL = 6                # Xatom.h
+_PROP_MODE_REPLACE = 0          # X.h
+_IS_VIEWABLE = 2                # X.h, XWindowAttributes.map_state
+# One level for a plain compositing manager such as gamescope's, which leaves
+# toplevels as children of the root, and one more for a desktop window manager
+# that reparents each of them into a frame. The budget bounds the walk on a
+# session whose tree is neither.
+_WINDOW_SEARCH_DEPTH = 3
+_WINDOW_SEARCH_BUDGET = 512
+
+
+class _XClassHint(ctypes.Structure):
+    """XClassHint, with both strings as raw pointers so both can be freed."""
+
+    _fields_ = [("res_name", ctypes.c_void_p),
+                ("res_class", ctypes.c_void_p)]
+
+
+class _XWindowAttributes(ctypes.Structure):
+    """XWindowAttributes, in full: Xlib fills the whole struct."""
+
+    _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int),
+                ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("border_width", ctypes.c_int), ("depth", ctypes.c_int),
+                ("visual", ctypes.c_void_p), ("root", ctypes.c_ulong),
+                ("class", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+                ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int),
+                ("backing_planes", ctypes.c_ulong),
+                ("backing_pixel", ctypes.c_ulong),
+                ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+                ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int),
+                ("all_event_masks", ctypes.c_long),
+                ("your_event_mask", ctypes.c_long),
+                ("do_not_propagate_mask", ctypes.c_long),
+                ("override_redirect", ctypes.c_int),
+                ("screen", ctypes.c_void_p)]
+
+
+_X_ERROR_HANDLER = ctypes.CFUNCTYPE(
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+
+
+def _ignore_x_error(_display, _error):
+    """Xlib's default error handler exits the process; this one must not.
+
+    Every window here belongs to another client and may be destroyed between
+    the moment the tree is read and the moment the property is set, which is
+    an ordinary BadWindow and never a reason to take the launcher down.
+    """
+    return 0
+
+
+# Xlib stores the pointer, so this object has to outlive every call using it.
+_IGNORE_X_ERROR = _X_ERROR_HANDLER(_ignore_x_error)
+
+
+def _load_xlib():
+    """libX11 with the entry points the window tagger uses, or None."""
+    try:
+        xlib = ctypes.cdll.LoadLibrary("libX11.so.6")
+        xlib.XOpenDisplay.restype = ctypes.c_void_p
+        xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        xlib.XSetErrorHandler.restype = ctypes.c_void_p
+        xlib.XSetErrorHandler.argtypes = [ctypes.c_void_p]
+        xlib.XDefaultRootWindow.restype = ctypes.c_ulong
+        xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        xlib.XInternAtom.restype = ctypes.c_ulong
+        xlib.XInternAtom.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        xlib.XQueryTree.restype = ctypes.c_int
+        xlib.XQueryTree.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+            ctypes.POINTER(ctypes.c_uint)]
+        xlib.XGetClassHint.restype = ctypes.c_int
+        xlib.XGetClassHint.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_XClassHint)]
+        xlib.XGetWindowAttributes.restype = ctypes.c_int
+        xlib.XGetWindowAttributes.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong,
+            ctypes.POINTER(_XWindowAttributes)]
+        xlib.XChangeProperty.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong,
+            ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        xlib.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        xlib.XFree.argtypes = [ctypes.c_void_p]
+        return xlib
+    except (OSError, AttributeError):
+        return None
+
+
+class _XlibWindows:
+    """The few X operations the window tagger needs, over libX11.
+
+    Kept behind this handful of methods so the walk that uses them stays
+    ordinary Python: the ctypes marshalling is the part no test can drive.
+    """
+
+    def __init__(self, lib, display):
+        self._lib = lib
+        self._display = display
+        self._atoms = {}
+
+    def root(self):
+        return int(self._lib.XDefaultRootWindow(self._display))
+
+    def children(self, window):
+        root = ctypes.c_ulong()
+        parent = ctypes.c_ulong()
+        children = ctypes.POINTER(ctypes.c_ulong)()
+        count = ctypes.c_uint()
+        if not self._lib.XQueryTree(
+                self._display, ctypes.c_ulong(window), ctypes.byref(root),
+                ctypes.byref(parent), ctypes.byref(children),
+                ctypes.byref(count)):
+            return ()
+        if not children:
+            return ()
+        try:
+            return tuple(int(children[i]) for i in range(count.value))
+        finally:
+            self._lib.XFree(ctypes.cast(children, ctypes.c_void_p))
+
+    def wm_classes(self, window):
+        """Lowercased WM_CLASS instance and class names of `window`."""
+        hint = _XClassHint()
+        if not self._lib.XGetClassHint(
+                self._display, ctypes.c_ulong(window), ctypes.byref(hint)):
+            return ()
+        names = []
+        for pointer in (hint.res_name, hint.res_class):
+            if not pointer:
+                continue
+            try:
+                names.append(ctypes.string_at(pointer)
+                             .decode("utf-8", "replace").lower())
+            finally:
+                self._lib.XFree(ctypes.c_void_p(pointer))
+        return tuple(names)
+
+    def is_presentable(self, window):
+        """Whether `window` is one a compositor could actually present."""
+        attributes = _XWindowAttributes()
+        if not self._lib.XGetWindowAttributes(
+                self._display, ctypes.c_ulong(window),
+                ctypes.byref(attributes)):
+            return False
+        return (attributes.map_state == _IS_VIEWABLE
+                and not attributes.override_redirect)
+
+    def set_cardinal(self, window, name, value):
+        atom = self._atoms.get(name)
+        if atom is None:
+            atom = int(self._lib.XInternAtom(
+                self._display, name.encode(), False))
+            self._atoms[name] = atom
+        if not atom:
+            return False
+        payload = (ctypes.c_ulong * 1)(value)
+        self._lib.XChangeProperty(
+            self._display, ctypes.c_ulong(window), ctypes.c_ulong(atom),
+            ctypes.c_ulong(_XA_CARDINAL), 32, _PROP_MODE_REPLACE,
+            ctypes.cast(payload, ctypes.c_void_p), 1)
+        return True
+
+    def flush(self):
+        self._lib.XSync(self._display, False)
+
+
+@contextmanager
+def _x_windows(display):
+    """Open `display` for the window tagger, or yield None when it cannot be.
+
+    Xlib's error handler is process-wide and the launcher's own Tk shares it,
+    so it is swapped only for the length of the walk and restored afterwards.
+    """
+    lib = _load_xlib()
+    handle = None
+    if lib is not None and display:
+        handle = lib.XOpenDisplay(str(display).encode())
+    if not handle:
+        yield None
+        return
+    handle = ctypes.c_void_p(handle)
+    previous = lib.XSetErrorHandler(_IGNORE_X_ERROR)
+    try:
+        yield _XlibWindows(lib, handle)
+    finally:
+        try:
+            lib.XSetErrorHandler(previous)
+        finally:
+            lib.XCloseDisplay(handle)
+
+
+def _tag_windows(windows, wm_class, value, skip=(),
+                 depth=_WINDOW_SEARCH_DEPTH, budget=_WINDOW_SEARCH_BUDGET):
+    """Stamp STEAM_GAME on each unstamped `wm_class` toplevel; return them.
+
+    WM_CLASS is a toplevel's property, so a window that has one is somebody's
+    toplevel and is never looked inside — that keeps the walk out of the
+    client-area children Wine creates within the game's own window, and leaves
+    only the frames a reparenting window manager inserts to descend through.
+
+    A matching window still has to be one a compositor could present. Wine
+    gives its 1x1 override-redirect helpers — the default IME window and the
+    message window — the same class as the game, and an identity would make
+    those candidates to be shown instead of it.
+
+    Windows in `skip` were stamped by an earlier pass. Writing the property
+    again would change nothing and cost gamescope a focus recomputation each
+    time, so a window is stamped once and then only watched.
+    """
+    tagged = []
+    pending = [(windows.root(), 0)]
+    while pending and budget > 0:
+        window, level = pending.pop(0)
+        budget -= 1
+        names = ()
+        if level:
+            names = tuple(str(name).lower()
+                          for name in windows.wm_classes(window))
+            if wm_class in names:
+                if (window not in skip and windows.is_presentable(window)
+                        and windows.set_cardinal(
+                            window, _STEAM_GAME_PROPERTY, value)):
+                    tagged.append(window)
+                continue
+        if not names and level < depth:
+            pending.extend(
+                (child, level + 1) for child in windows.children(window))
+    if tagged:
+        windows.flush()
+    return tuple(tagged)
+
+
+def tag_steam_game_windows(app_id, wm_class, display=None, windows=None,
+                           skip=()):
+    """Give every `wm_class` toplevel the Steam application ID `app_id`.
+
+    Returns the IDs of the windows stamped by this call, which is empty when
+    the display cannot be opened, when libX11 is unavailable, when no such
+    window exists yet, or when every one of them is already in `skip` — all
+    ordinary states a caller keeps watching from rather than errors.
+    """
+    try:
+        value = int(app_id)
+    except (TypeError, ValueError):
+        return ()
+    if not 0 < value < 2 ** 32:         # a 32-bit CARDINAL, or nothing
+        return ()
+    wanted = str(wm_class or "").strip().lower()
+    if not wanted:
+        return ()
+    if windows is not None:
+        return _tag_windows(windows, wanted, value, skip)
+    target = str(display if display is not None
+                 else os.environ.get("DISPLAY", "")).strip()
+    if not target:
+        return ()
+    with _x_windows(target) as opened:
+        if opened is None:
+            return ()
+        return _tag_windows(opened, wanted, value, skip)

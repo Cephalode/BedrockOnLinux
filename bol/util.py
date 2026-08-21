@@ -199,6 +199,23 @@ def apply_custom_env(env, custom_env):
         env[key] = value
 
 
+def steam_app_id(environ=None):
+    """The numeric Steam application ID this launch inherited, or None.
+
+    Steam exports one for its own games and one it generates for every
+    non-Steam shortcut a user adds, and everything downstream keys off that
+    32-bit number: gamescope's focus list, the overlay, the screenshot
+    manager. ``SteamGameId`` is deliberately not consulted as a fallback —
+    a non-Steam shortcut carries a 64-bit composite there, which is a
+    different identifier and would be wrong everywhere the app ID is wanted.
+    """
+    source = os.environ if environ is None else environ
+    value = str(source.get("SteamAppId", "")).strip()
+    if not (value.isascii() and value.isdigit()):
+        return None
+    return value if int(value) else None
+
+
 def launcher_command(*arguments, environ=None, argv=None,
                      info_path=Path("/.flatpak-info"), which=None):
     """Return a command line the user can actually run for this installation.

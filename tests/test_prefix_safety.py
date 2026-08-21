@@ -651,16 +651,22 @@ class PrefixEnvironmentTests(unittest.TestCase):
             self.assertEqual(list(external.iterdir()), [])
             install.assert_not_called()
 
-    def test_proton_umu_uses_neutral_gameid_without_rewriting_steam_identity(
+    def test_proton_umu_gameid_carries_the_inherited_steam_application_id(
             self):
+        # UMU rebuilds SteamAppId/SteamGameId inside the container from
+        # GAMEID, so its `umu-default` fallback turns a launch Steam started
+        # into the literal identity "default" (#199).
         cases = [
             ({"GAMEID": "umu-existing"}, "umu-existing"),
             ({"GAMEID": "17"}, "17"),
             ({"GAMEID": "0", "SteamAppId": "123",
               "SteamGameId": "456"}, "0"),
+            ({"SteamAppId": "2716672805",
+              "SteamGameId": "11668020851441139712"}, "umu-2716672805"),
             ({"SteamAppId": "invalid",
               "SteamGameId": "456"}, "umu-default"),
             ({"SteamAppId": "0", "SteamGameId": ""}, "umu-default"),
+            ({}, "umu-default"),
         ]
         for inherited, expected in cases:
             with self.subTest(inherited=inherited), \
