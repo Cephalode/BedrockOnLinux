@@ -87,11 +87,17 @@ def doctor(acknowledge_gpu_crash=False):
         print(f"  {tool:12} : {'OK' if have else 'MANQUANT'}")
         if not have and not (tool == "curl" and shutil.which("wget")):
             miss.append(pkg)
-    # GUI toolkit is PySide6 (Qt), not Tk/customtkinter anymore.
+    # The GUI toolkit is PySide6 (Qt), not Tk/customtkinter anymore. It is not
+    # named in `miss`: bol.deps.ensure_gui_deps() pip-installs the pinned
+    # PySide6-Essentials wheel on the first GUI launch, exactly as it did for
+    # customtkinter, so a portable .pyz or a bare checkout without it is ready
+    # even though the import is not there yet. Reporting it as missing would
+    # also have to name a package -- and there is no `python3-pyside6` to
+    # install on Debian or Ubuntu, where it is split per Qt module
+    # (python3-pyside6.qtcore, .qtgui, .qtwidgets).
     qt_ok = deps.have("PySide6")
-    print(f"  {'PySide6':12} : {'OK (GUI)' if qt_ok else 'MANQUANT (GUI)'}")
-    if not qt_ok:
-        miss.append("python3-pyside6")
+    print(f"  {'PySide6':12} : "
+          f"{'OK (GUI)' if qt_ok else 'auto-installed on launch'}")
     cr_ok = deps.have("cryptography")
     print(f"  {'cryptography':12} : "
           f"{'OK (login)' if cr_ok else 'MANQUANT (login)'}")

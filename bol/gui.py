@@ -161,6 +161,28 @@ def _resolve_gui_display(environ=None, socket_dir=None, uid=None,
     return current
 
 
+def icon_candidates(module_file=None):
+    """Where data/icon.png can be, in the order to try.
+
+    Every packaging layout puts it somewhere different, and one of them has
+    no copy next to bol/ at all: the Flatpak installs only the themed icon
+    under /app, so dropping that path leaves the window, the title bar and
+    the hero screen with no icon at all on the Flathub build.
+    """
+    here = Path(module_file or __file__).resolve().parent
+    return (
+        # source checkout, AppImage (usr/bin/data), .deb and .rpm
+        # (/usr/lib/bedrock-on-linux/data)
+        here.parent / "data/icon.png",
+        here / "data/icon.png",
+        # Flatpak: the manifest installs the icon under the app-id name only
+        Path("/app/share/icons/hicolor/256x256/apps/"
+             "io.github.wyze3306.BedrockOnLinux.png"),
+        # system icon theme, for a distribution package that ships only that
+        Path("/usr/share/icons/hicolor/256x256/apps/bedrock-on-linux.png"),
+    )
+
+
 # ======================================================================
 # Theme
 # ======================================================================
@@ -820,11 +842,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ icon
     def _load_icon(self):
-        here = Path(__file__).resolve().parent
-        for p in (here.parent / "data/icon.png", here / "data/icon.png",
-                  Path("/usr/share/icons/hicolor/256x256/apps/bedrock-on-linux.png")):
-            if p.exists():
-                self.icon_pixmap = QPixmap(str(p))
+        for candidate in icon_candidates():
+            if candidate.exists():
+                self.icon_pixmap = QPixmap(str(candidate))
                 self.setWindowIcon(QIcon(self.icon_pixmap))
                 return
         self.icon_pixmap = None
