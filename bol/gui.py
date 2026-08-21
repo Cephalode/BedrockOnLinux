@@ -1058,27 +1058,51 @@ class MainWindow(QMainWindow):
                 return msg, False
         return None
 
+    def set_status(self, text, color=None):
+        """The status line, colour included.
+
+        Always writing the stylesheet is the point: a failure paints the line
+        red, and nothing that came after it used to paint it back, so one
+        failed launch left "Preparing…" and "Downloading…" red for the rest
+        of the session.
+        """
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(
+            f"color:{color};" if color else "")
+
+    def _append_log_html(self, markup: str):
+        """Append pre-escaped markup and keep the view on the newest line."""
+        self.log_view.append(markup)
+        bar = self.log_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
     @Slot(str)
     def _on_log_line(self, line: str):
         lvl = _LEVELS.get(line[:2])
         if lvl:
             label, _a1, _a2, level_color, msg_color = lvl
-            self.log_view.append(
+            self._append_log_html(
                 f'<span style="color:{level_color}; font-weight:700;">{html.escape(label)}</span>'
                 f'  <span style="color:{msg_color};">{html.escape(line[2:].strip())}</span>')
         else:
-            self.log_view.append(html.escape(line))
+            # The wrapping span is not decoration. QTextEdit.append() decides
+            # between rich and plain text with Qt::mightBeRichText(), and an
+            # escaped string that contains no tag does not look like markup --
+            # so "-> downloading 1.21.130.7" was appended verbatim and rendered
+            # as "-&gt; downloading 1.21.130.7". Only `::`, `OK`, `!!` and `xx`
+            # carry a level, so `==` and `->` -- the two most common prefixes
+            # in a launch -- always took this branch.
+            self._append_log_html(f"<span>{html.escape(line)}</span>")
         if not self.ui_state.get("busy"):
             return
         if line.startswith("xx"):
-            self.status_label.setText(line[2:].strip())
-            self.status_label.setStyleSheet(f"color:{self.theme.red};")
+            self.set_status(line[2:].strip(), self.theme.red)
             return
         friendly = self._friendly(line)
         if friendly:
             txt = friendly[0] if isinstance(friendly, tuple) else friendly
             steady = friendly[1] if isinstance(friendly, tuple) else False
-            self.status_label.setText(txt)
+            self.set_status(txt, self.theme.green if steady else None)
             if steady:
                 self.progress.hide()
             else:
@@ -1092,7 +1116,7 @@ class MainWindow(QMainWindow):
         self.progress.show()
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(got)
-        self.status_label.setText(
+        self.set_status(
             f"Downloading Minecraft…  {int(100 * got / max(1, total))}%")
 
     def end_progress(self):
@@ -1372,7 +1396,7 @@ class MainWindow(QMainWindow):
             self.warn_box("No version selected", "Pick a Minecraft version first.")
             return
         self._set_busy(True)
-        self.status_label.setText("Preparing…")
+        self.set_status("Preparing…")
         self._show_bar_busy()
 
         w = LaunchWorker(ver)
@@ -1418,7 +1442,7 @@ class MainWindow(QMainWindow):
         if self.ui_state.get("window_gone"):
             QApplication.instance().quit()
             return
-        self.status_label.setText("Minecraft closed.")
+        self.set_status("Minecraft closed.")
         self.end_progress()
         self._set_busy(False)
 
@@ -1429,7 +1453,7 @@ class MainWindow(QMainWindow):
             desktop_notify(message[:400], "Minecraft could not start")
             QApplication.instance().quit()
             return
-        self.status_label.setText("Minecraft could not start.")
+        self.set_status("Minecraft could not start.", self.theme.red)
         self.end_progress()
         self._set_busy(False)
         try:
@@ -2160,7 +2184,7 @@ class MainWindow(QMainWindow):
 
     def _run_update(self, rel, banner):
         banner.setParent(None)
-        self.status_label.setText(f"Updating to v{rel['version']}…")
+        self.set_status(f"Updating to v{rel['version']}…")
         self._show_bar_busy()
 
         w = Worker(self_update, rel)
@@ -2169,7 +2193,9 @@ class MainWindow(QMainWindow):
         def done(result):
             state, msg = result
             self.end_progress()
-            self.status_label.setText(msg)
+            self.set_status(
+                msg, self.theme.green if state == "ok"
+                else (self.theme.red if state == "error" else None))
             if state == "ok":
                 self._restart_prompt()
 

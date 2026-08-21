@@ -1,0 +1,70 @@
+"""A real MainWindow with nothing reaching outside the process.
+
+Not collected by pytest (the filename does not match test_*.py). Shared by
+the GUI test modules so none of them has to import another one for it.
+
+The point of the patch list is that MainWindow.__init__ does real work:
+it arms singleShot timers for refresh_versions and the update check, calls
+xodus.signed_in() while building Settings, and installs itself as the global
+log sink. Any test that runs the event loop would otherwise reach the
+network, and the sink would outlive the window it writes to.
+"""
+# SPDX-License-Identifier: MIT
+
+import os
+from contextlib import contextmanager
+from unittest import mock
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+
+from bol import gui, log
+
+
+def qt_app():
+    """The one QApplication for the test session, configured like gui()."""
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(["bedrock-on-linux-tests"])
+    # gui() sets this, and the launcher's exit path depends on it.
+    app.setQuitOnLastWindowClosed(False)
+    return app
+
+
+@contextmanager
+def headless_window(**settings):
+    saved_sink = log._LOG_SINK
+    with mock.patch.object(gui, "NativeAuth"), \
+            mock.patch.object(gui, "msa_signed_in", return_value=False), \
+            mock.patch.object(gui, "msa_gamertag", return_value=None), \
+            mock.patch.object(gui, "current_profile_name", return_value="Default"), \
+            mock.patch.object(gui, "current_profile_info", return_value={"path": None}), \
+            mock.patch.object(gui, "list_profiles", return_value=[]), \
+            mock.patch.object(gui, "load_settings", lambda: dict(settings)), \
+            mock.patch.object(gui, "save_settings", lambda _s: None), \
+            mock.patch.object(gui.MainWindow, "refresh_versions", lambda _s: None), \
+            mock.patch.object(gui.MainWindow, "check_for_update_async", lambda _s: None), \
+            mock.patch.object(gui.MainWindow, "_refresh_store_row", lambda _s: None):
+        window = gui.MainWindow()
+        try:
+            yield window
+        finally:
+            window._force_close = True
+            window.close()
+            window.deleteLater()
+            log._LOG_SINK = saved_sink
+
+
+def run_loop_until_quit(app, timeout_ms=3000):
+    """Run the event loop; return True if something quit it before the
+    watchdog fired."""
+    timed_out = []
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    watchdog.timeout.connect(lambda: (timed_out.append(True), app.quit()))
+    watchdog.start(timeout_ms)
+    app.exec()
+    watchdog.stop()
+    return not timed_out
