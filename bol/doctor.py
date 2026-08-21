@@ -87,13 +87,11 @@ def doctor(acknowledge_gpu_crash=False):
         print(f"  {tool:12} : {'OK' if have else 'MANQUANT'}")
         if not have and not (tool == "curl" and shutil.which("wget")):
             miss.append(pkg)
-    tk_ok = deps.have("tkinter")
-    print(f"  {'tkinter':12} : {'OK (GUI)' if tk_ok else 'MANQUANT (GUI)'}")
-    if not tk_ok:
-        miss.append("python3-tk")
-    ctk_ok = deps.have("customtkinter")
-    print(f"  {'customtkinter':12} : "
-          f"{'OK (GUI)' if ctk_ok else 'auto-installed on launch'}")
+    # GUI toolkit is PySide6 (Qt), not Tk/customtkinter anymore.
+    qt_ok = deps.have("PySide6")
+    print(f"  {'PySide6':12} : {'OK (GUI)' if qt_ok else 'MANQUANT (GUI)'}")
+    if not qt_ok:
+        miss.append("python3-pyside6")
     cr_ok = deps.have("cryptography")
     print(f"  {'cryptography':12} : "
           f"{'OK (login)' if cr_ok else 'MANQUANT (login)'}")
