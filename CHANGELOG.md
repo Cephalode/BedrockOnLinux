@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The launcher window is now built on Qt instead of Tk**. Everything is
+  where it was — the hero screen, the dock with the version picker, the
+  Stable/Preview toggle and ▶ PLAY, the sliding Settings and What's New
+  panes, the collapsible activity log — but none of it is drawn by
+  CustomTkinter any more. What that buys is mostly invisible and mostly
+  overdue: dialogs that centre themselves on the right monitor without the
+  launcher doing the arithmetic, DPI scaling handled by the toolkit rather
+  than by a manual 100/150/200% picker (which is why that setting is gone),
+  real toggle switches instead of checkboxes with rounded borders, and a
+  window that draws natively under Wayland instead of always going through
+  XWayland. Background work — setup, launching, sign-in, imports, DLL
+  injection, relocation, self-update — moved onto Qt threads reporting back
+  through signals, replacing the hand-rolled polling the Tk build needed to
+  avoid drawing from the wrong thread.
+
+- **The launcher now needs Qt's runtime libraries.** The `.deb`, `.rpm`,
+  AppImage and Flatpak all bundle the toolkit itself, so there is nothing new
+  to install by hand; the distribution packages simply depend on the X and
+  OpenGL libraries Qt loads at startup, in place of `python3-tk`. A portable
+  `.pyz` or a git checkout downloads it on first launch as it did for
+  CustomTkinter. `doctor` reports the toolkit under its new name.
+
+### Removed
+
+- **Controller navigation of the launcher window is gone for now**, the one
+  thing from 2.2.1 that did not survive the move to Qt. It was written
+  directly against Tk's widget tree — walking children, drawing the highlight
+  on a Canvas, binding through `tkinter.Misc.bind` — and none of that has an
+  equivalent to port to. Reading the pad itself is untouched and `doctor`
+  still reports which controllers it can see, so nothing about playing with a
+  controller changes; it is only the launcher window that needs a mouse again,
+  until a Qt-native replacement lands. Steam Game Mode is unaffected in the
+  usual case, since the window steps aside on its own there.
+
+- The **UI scale** setting (100/150/200%). Qt scales for the display's DPI on
+  its own, and a second scale factor on top of that fought it.
+
+- The **QR code** on the Xbox sign-in dialog. The code and the button that
+  opens the sign-in page are unchanged.
+
 ## 2.2.1 — 2026-08-21
 
 ### Added
