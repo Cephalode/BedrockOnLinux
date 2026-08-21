@@ -2216,6 +2216,13 @@ class MainWindow(QMainWindow):
             return
         self.na.stop()
         event.accept()
+        # The app runs with setQuitOnLastWindowClosed(False) so that
+        # "close the launcher when Minecraft starts" can drop the window while
+        # the launch thread keeps supervising the game. That makes quitting an
+        # explicit act: without this the event loop outlives the window and the
+        # process stays resident forever. `_force_close` returns above, so the
+        # close-on-launch path still leaves the loop running for LaunchWorker.
+        QApplication.instance().quit()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not isinstance(
