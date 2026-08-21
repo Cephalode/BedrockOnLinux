@@ -53,6 +53,7 @@ from .prefix import (
     prefix_processes,
     proton_umu_cmd,
     restore_truncated_game_options,
+    seed_default_servers,
     snapshot_game_options,
 )
 from .proton import custom_proton, patch_proton, proton_path
@@ -706,6 +707,9 @@ def _launch_once(lock_fds=(), on_started=None):
     # that writes options.txt can be running, whatever wineboot left behind.
     restore_truncated_game_options(prefix_idle=True)
     snapshot_game_options()
+    # The Servers tab is read from disk at startup, so the servers this
+    # launcher ships with have to be in the list before the game opens it.
+    seed_default_servers(prefix_idle=True)
     info("Starting Minecraft … sign in with Microsoft in-game, then "
          "join your server from the Servers tab.")
     glog = open(LOGS / "minecraft.log", "w")

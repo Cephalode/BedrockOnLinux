@@ -1543,5 +1543,113 @@ class MultiplayerWarningPatchTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), body)
 
 
+_SERVERS_REL = ("drive_c/users/steamuser/AppData/Roaming/Minecraft Bedrock/"
+                "Users/%s/games/com.mojang/minecraftpe/external_servers.txt")
+
+# A server list shaped like the game's own: "<id>:<name>:<host>:<port>:<added>"
+# lines, in the order the player last left them rather than by id.
+_SERVERS_LIST = (b"2:zeqa:zeqa.net:19132:1771420844\n"
+                 b"1:my server:192.0.2.10:19133:1771420828\n")
+
+_DEFAULT = (("Linesia SkyFaction", "play.linesia.net", 19132),)
+
+
+def _write_servers(root, body, user="Shared"):
+    """One external_servers.txt inside a prefix tree, as the game leaves it."""
+    path = Path(root) / (_SERVERS_REL % user)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return path
+
+
+def _server_names(path):
+    return [line.split(":")[1]
+            for line in path.read_text().splitlines() if line]
+
+
+class DefaultServersTests(unittest.TestCase):
+    """A shipped server may only ever be added to a list the player owns."""
+
+    @contextmanager
+    def _quiet(self):
+        with mock.patch.object(prefix, "ok"):
+            yield
+
+    def test_the_default_is_appended_with_the_next_free_id(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            path = _write_servers(td, _SERVERS_LIST)
+            added = prefix.seed_default_servers(
+                td, prefix_idle=True, servers=_DEFAULT)
+            self.assertEqual(added, ["Linesia SkyFaction"])
+            written = path.read_text()
+            self.assertTrue(written.startswith(_SERVERS_LIST.decode()))
+            entry = written.splitlines()[-1].split(":")
+            self.assertEqual(entry[:4],
+                             ["3", "Linesia SkyFaction", "play.linesia.net",
+                              "19132"])
+            self.assertTrue(entry[4].isdigit())
+
+    def test_a_default_the_player_deleted_is_never_added_again(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            path = _write_servers(td, _SERVERS_LIST)
+            prefix.seed_default_servers(td, prefix_idle=True, servers=_DEFAULT)
+            # The player removes the tile in-game: the game rewrites the file.
+            path.write_bytes(_SERVERS_LIST)
+            self.assertEqual(
+                prefix.seed_default_servers(
+                    td, prefix_idle=True, servers=_DEFAULT),
+                [])
+            self.assertEqual(path.read_bytes(), _SERVERS_LIST)
+
+    def test_a_server_the_player_already_added_keeps_their_own_name(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            mine = b"1:linesia:play.linesia.net:19132:1771420828\n"
+            path = _write_servers(td, mine)
+            self.assertEqual(
+                prefix.seed_default_servers(
+                    td, prefix_idle=True, servers=_DEFAULT),
+                [])
+            self.assertEqual(path.read_bytes(), mine)
+            # And having seen it counts as offered: it must not come back if
+            # the player later deletes their own entry.
+            path.write_bytes(b"")
+            prefix.seed_default_servers(td, prefix_idle=True, servers=_DEFAULT)
+            self.assertEqual(path.read_bytes(), b"")
+
+    def test_every_account_gets_the_default_not_only_the_newest(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            shared = _write_servers(td, _SERVERS_LIST)
+            signed_in = _write_servers(td, b"", user="2533274")
+            prefix.seed_default_servers(td, prefix_idle=True, servers=_DEFAULT)
+            for path in (shared, signed_in):
+                self.assertIn("Linesia SkyFaction", _server_names(path))
+
+    def test_nothing_is_written_while_the_game_may_still_be_running(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            path = _write_servers(td, _SERVERS_LIST)
+            self.assertEqual(
+                prefix.seed_default_servers(
+                    td, prefix_idle=False, servers=_DEFAULT),
+                [])
+            self.assertEqual(path.read_bytes(), _SERVERS_LIST)
+
+    def test_a_list_left_without_a_terminator_does_not_swallow_the_entry(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            path = _write_servers(td, b"1:zeqa:zeqa.net:19132:1771420844")
+            prefix.seed_default_servers(td, prefix_idle=True, servers=_DEFAULT)
+            self.assertEqual(_server_names(path),
+                             ["zeqa", "Linesia SkyFaction"])
+
+    def test_before_the_first_launch_the_signed_out_list_is_created(self):
+        with tempfile.TemporaryDirectory() as td, self._quiet():
+            prefix.seed_default_servers(td, prefix_idle=True, servers=_DEFAULT)
+            path = Path(td) / (_SERVERS_REL % "Shared")
+            self.assertEqual(_server_names(path), ["Linesia SkyFaction"])
+
+    def test_the_shipped_default_is_the_one_the_servers_tab_shows(self):
+        self.assertIn(("Linesia SkyFaction", "play.linesia.net", 19132),
+                      prefix.DEFAULT_SERVERS)
+
+
 if __name__ == "__main__":
     unittest.main()

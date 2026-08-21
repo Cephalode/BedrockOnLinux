@@ -64,6 +64,7 @@ class ReadyLaunchHarness:
             mock.patch.object(launch, "patch_options"),
             mock.patch.object(launch, "snapshot_game_options"),
             mock.patch.object(launch, "restore_truncated_game_options"),
+            mock.patch.object(launch, "seed_default_servers"),
             mock.patch.object(launch, "diagnose", return_value=[]),
             mock.patch.object(launch, "_prefix_stably_idle_after_wrapper",
                               return_value=prefix_idle),

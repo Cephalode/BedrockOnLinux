@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The Servers tab now starts with a server to play on.** Bedrock opens that
+  tab on the featured servers Mojang sells, and under them a fresh install has
+  nothing at all: a player who wants to join something has to find an address
+  somewhere else and type it in by hand. *Linesia SkyFaction*
+  (`play.linesia.net`, port 19132) is now written into the game's own server
+  list before it starts, so it is simply there in the tab, ready to join. The
+  list belongs to the player, so it is only ever added to: the server is
+  offered once and never again — delete the tile and it stays deleted — and
+  anyone who had already added that address keeps their own entry, name and
+  place in the list included. Each account signed in on the machine gets it,
+  since the game keeps one server list per profile.
+
 ## 2.2.1 — 2026-08-21
 
 ### Added

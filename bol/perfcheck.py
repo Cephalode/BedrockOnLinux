@@ -167,6 +167,26 @@ def find_options_files(prefix):
     return found
 
 
+def find_game_data_dirs(prefix):
+    """Every com.mojang/minecraftpe folder inside a prefix.
+
+    The same one-per-account rule as the settings files: everything the game
+    keeps per profile — its settings, its server list — sits together in
+    these folders, so anything writing one has to find them all.
+    """
+    if not prefix:
+        return []
+    root = Path(prefix)
+    found = []
+    for pattern in _OPTIONS_GLOBS:
+        folder = pattern.rsplit("/", 1)[0]
+        try:
+            found.extend(item for item in root.glob(folder) if item.is_dir())
+        except OSError:
+            continue
+    return found
+
+
 def find_options_file(prefix):
     """The most recently written Minecraft options.txt inside a prefix.
 
