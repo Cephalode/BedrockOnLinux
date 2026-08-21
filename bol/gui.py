@@ -7,24 +7,24 @@ import html
 import os
 import re
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation, QRect,
-    QSize, Qt, QThread, QTimer, Signal, Slot,
+    QObject, QPoint, QPointF, Qt, QThread, QTimer, Signal, Slot,
 )
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap, QCursor
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QButtonGroup, QDialog, QFileDialog, QFrame,
-    QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+    QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSpacerItem, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -33,7 +33,7 @@ from .config import (
     LOGS, PRETTY, VERSION, get_install_location, clear_install_location,
     default_install_location, is_relocation_allowed,
 )
-from .relocation import migrate_data, paths_overlap, RelocationError, DIRS_TO_MOVE, FILES_TO_MOVE
+from .relocation import migrate_data, paths_overlap, DIRS_TO_MOVE, FILES_TO_MOVE
 from .content import game_content_dir, import_content
 from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
 from .games import list_editions, list_versions
@@ -41,7 +41,7 @@ from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
 from . import log
-from .log import BolError, _LEVELS, desktop_notify, info, warn
+from .log import BolError, _LEVELS, desktop_notify, warn
 from .prefix import _mc_running, kill_wine, prefix_operation_lock, reset_prefix
 from .profiles import (
     create_profile, current_profile_info, current_profile_name, delete_profile,
@@ -60,6 +60,105 @@ RE_MD_LINK = re.compile(r"^\[([^\]]+)\]\(([^)]+)\)$")
 def _desktop_error(message: str) -> None:
     warn(message)
     desktop_notify(message)
+
+
+# ======================================================================
+# Stale-display (XWayland) recovery
+#
+# Under Wayland, $DISPLAY commonly points at an XWayland X11 socket that can
+# go stale (e.g. XWayland restarts between login and launch). The old Tk GUI
+# recovered by constructing CTk() and catching the resulting TclError, then
+# retrying against another of the user's own X11 sockets.
+#
+# Qt's xcb platform plugin cannot be recovered the same way: on a failed
+# server connection it logs "could not connect to display" and aborts the
+# process natively, before control ever returns to Python -- there is no
+# catchable exception to retry on. So this probes and repoints $DISPLAY
+# *before* QApplication is ever constructed, by connecting directly to the
+# candidate X11 sockets, rather than construct-and-catch.
+# ======================================================================
+
+
+def _owned_x11_socket_displays(socket_dir=None, uid=None):
+    """Numeric-sorted (":N", ...) tuple of X11 sockets under socket_dir that
+    are actually AF_UNIX sockets owned by uid (defaults to the current user
+    and /tmp/.X11-unix)."""
+    if socket_dir is None:
+        socket_dir = Path("/tmp/.X11-unix")
+    else:
+        socket_dir = Path(socket_dir)
+    if uid is None:
+        uid = os.getuid()
+    try:
+        entries = list(socket_dir.iterdir())
+    except OSError:
+        return ()
+    displays = []
+    for entry in entries:
+        name = entry.name
+        if not name.startswith("X") or not name[1:].isdigit():
+            continue
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        if not stat.S_ISSOCK(st.st_mode) or st.st_uid != uid:
+            continue
+        displays.append(int(name[1:]))
+    return tuple(f":{n}" for n in sorted(displays))
+
+
+def _x11_socket_is_live(socket_dir, display, timeout=0.5):
+    """True if `display` (e.g. ':2') has a socket under socket_dir that
+    actually accepts a connection -- a bound-but-unlistened or orphaned
+    socket file is not enough."""
+    if not display or not display.startswith(":"):
+        return False
+    num = display[1:].split(".", 1)[0]
+    if not num.isdigit():
+        return False
+    path = Path(socket_dir) / f"X{num}"
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(timeout)
+        probe.connect(str(path))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _resolve_gui_display(environ=None, socket_dir=None, uid=None,
+                          attempted=None):
+    """Repoint environ['DISPLAY'] at a live, user-owned X11 socket before Qt
+    ever tries to connect. Only probes when WAYLAND_DISPLAY is set (a pure
+    X11 session has nothing more useful to recover to), and only moves off
+    the current DISPLAY if it is not actually live. Returns the display
+    string that should be used (also written back into environ when it
+    changes); never raises."""
+    if environ is None:
+        environ = os.environ
+    if socket_dir is None:
+        socket_dir = Path("/tmp/.X11-unix")
+    if uid is None:
+        uid = os.getuid()
+    current = environ.get("DISPLAY")
+    if not environ.get("WAYLAND_DISPLAY"):
+        return current
+    if attempted is not None:
+        attempted.append(current or "<unset>")
+    if current and _x11_socket_is_live(socket_dir, current):
+        return current
+    for candidate in _owned_x11_socket_displays(socket_dir, uid=uid):
+        if candidate == current:
+            continue
+        if attempted is not None:
+            attempted.append(candidate)
+        if _x11_socket_is_live(socket_dir, candidate):
+            environ["DISPLAY"] = candidate
+            return candidate
+    return current
 
 
 # ======================================================================
@@ -1339,19 +1438,9 @@ class MainWindow(QMainWindow):
         self.play_btn.style().polish(self.play_btn)
 
     def _offer_gpu_ack(self, ack_status, prefix="", title="Acknowledge previous GPU incident"):
-        instruction = (
-            "Continue only after repairing/updating the graphics driver and rebooting."
-            if ack_status.previous_boot_fault else
-            "No fatal driver event was detected for this marker. Continue only "
-            "after checking why the previous session or machine stopped.")
-        if not self.question_box(title, prefix + ack_status.message + "\n\n" + instruction + " Acknowledge now?"):
-            return False
-        if acknowledge_gpu_crash():
-            self.info_box("GPU safety", "The previous-boot incident was acknowledged. "
-                           "PLAY will still run all current graphics safety checks.")
-            return True
-        self.error_box("GPU safety", gpu_crash_acknowledgement_status().message)
-        return False
+        return _offer_gpu_incident_acknowledgement(
+            _MainWindowMessageBoxAdapter(self), self, ack_status,
+            prefix=prefix, title=title)
 
     # ------------------------------------------------------------ settings / changelog toggles
     def toggle_settings(self):
@@ -2244,6 +2333,65 @@ class ProfileManagerDialog(QDialog):
 
 
 # ======================================================================
+# GPU safety incident acknowledgement (module-level, not a MainWindow method)
+# ======================================================================
+
+def _gpu_incident_safety_instruction(status):
+    """Plain-text instruction that must be shown before an incident marker
+    can be acknowledged. Module-level so it, and the confirmation flow
+    below, are importable/testable without a QApplication."""
+    return (
+        "Continue only after repairing/updating the graphics driver and rebooting."
+        if status.previous_boot_fault else
+        "No fatal driver event was detected for this marker. Continue only "
+        "after checking why the previous session or machine stopped.")
+
+
+def _offer_gpu_incident_acknowledgement(
+        box, parent, status, prefix="",
+        title="Acknowledge previous GPU incident"):
+    """Confirm + acknowledge a GPU safety incident marker. `box` is duck-typed
+    on askyesno/showinfo/showerror(title, message, parent=None), so this
+    needs no real dialog widget to run or to test. The eligibility decision
+    itself is never made here: acknowledge_gpu_crash() re-checks it under the
+    launch lock, and a refusal is reported from its live status rather than
+    the one passed in, in case it changed in the meantime."""
+    instruction = _gpu_incident_safety_instruction(status)
+    message = prefix + status.message + "\n\n" + instruction + " Acknowledge now?"
+    if not box.askyesno(title, message, parent=parent):
+        return False
+    if acknowledge_gpu_crash():
+        box.showinfo(
+            "GPU safety",
+            "The previous-boot incident was acknowledged. "
+            "PLAY will still run all current graphics safety checks.",
+            parent=parent)
+        return True
+    box.showerror("GPU safety", gpu_crash_acknowledgement_status().message,
+                   parent=parent)
+    return False
+
+
+class _MainWindowMessageBoxAdapter:
+    """Adapts MainWindow's Qt-backed info_box/error_box/question_box onto the
+    askyesno/showinfo/showerror shape _offer_gpu_incident_acknowledgement
+    expects. `parent` is accepted for API compatibility but unused: the
+    underlying QMessageBox is already parented to the window itself."""
+
+    def __init__(self, window):
+        self._window = window
+
+    def askyesno(self, title, message, parent=None):
+        return self._window.question_box(title, message)
+
+    def showinfo(self, title, message, parent=None):
+        self._window.info_box(title, message)
+
+    def showerror(self, title, message, parent=None):
+        self._window.error_box(title, message)
+
+
+# ======================================================================
 # Entry point
 # ======================================================================
 
@@ -2251,6 +2399,7 @@ def gui():
     """Launch the PySide6 GUI."""
     from .deps import ensure_gui_deps
     ensure_gui_deps()
+    _resolve_gui_display(os.environ)
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(PRETTY)
