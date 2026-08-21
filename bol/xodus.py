@@ -448,6 +448,13 @@ def _env(binary=None):
 
 # ---------------------------------------------------------------- install
 
+# What xodus-cli names the package it keeps beside the game once a download
+# completed. It is not a leftover: the segments a GDK title flags
+# KEEP_ENCRYPTED_ON_DISK -- the game executable -- are only ever stored in
+# here, so it is read again at every launch as well as by the next delta.
+PACKAGE_CACHE = ".xodus-streaming.msixvc"
+_PACKAGE_CACHE_TMP = ".xodus-streaming-tmp*.msixvc"
+
 
 def _bytes(value, unit):
     try:
@@ -473,6 +480,19 @@ def game_root(dest):
     return None
 
 
+def has_package_cache(directory):
+    """Whether the package a build is decrypted from sits in ``directory``.
+
+    ``xodus-cli run`` reads the cache and the ciphertext segments out of the
+    single directory it is handed, so "beside the game" is literal: the
+    launcher cannot point it at a copy kept anywhere else.
+    """
+    try:
+        return (Path(directory) / PACKAGE_CACHE).is_file()
+    except OSError:
+        return False
+
+
 def _drop_cache(dest):
     """Delete the package cache xodus-cli left behind in ``dest``.
 
@@ -489,9 +509,9 @@ def _drop_cache(dest):
     ``dest`` holds no playable build for it to belong to.
     """
     dest = Path(dest)
-    stale = list(dest.glob(".xodus-streaming-tmp*.msixvc"))
+    stale = list(dest.glob(_PACKAGE_CACHE_TMP))
     if game_root(dest) is None:
-        stale += list(dest.glob(".xodus-streaming.msixvc"))
+        stale += list(dest.glob(PACKAGE_CACHE))
     for path in stale:
         try:
             path.unlink()
@@ -553,14 +573,26 @@ def install(product, dest: Path, progress=None):
     for index, source in enumerate(sources):
         cmd = [str(binary), "streaming", source, str(dest)]
         code, tail = _run_streaming(cmd, progress)
-        if code == 0 and game_root(dest) is not None:
+        root = game_root(dest)
+        if code == 0 and root is not None and has_package_cache(dest):
             return dest
         # Xodus also exits 0 having installed nothing at all, when the cache it
         # resumed from makes the delta look empty. Treat that as the failure it
         # is, or the caller starts a game directory that was never written.
-        if code == 0:
+        if code == 0 and root is None:
             failure = ("The Minecraft download reported success but installed "
                        "no game.")
+        elif code == 0:
+            # Every path that ends the download early -- no licence, no disk
+            # space -- returns before xodus-cli renames its package into
+            # place, and still exits 0. With an older build already unpacked
+            # here that used to read as a finished install, and the game only
+            # failed hours later, at launch, on the package that was never
+            # written. It is not installed until it can be decrypted.
+            line = _failure_line(tail)
+            failure = ("The Minecraft download did not complete"
+                       + (f": {line}" if line else
+                          ", so the game cannot be decrypted."))
         else:
             _raise_unretryable("\n".join(tail))
             line = _failure_line(tail)
@@ -873,6 +905,21 @@ def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
         raise NotSignedIn(
             "Minecraft is decrypted with the Microsoft account that owns it, "
             "so it cannot start until that account is linked again.")
+    if not has_package_cache(game_dir):
+        # The other half of the same story: the account is linked, but the
+        # package the executable is decrypted *from* is not there. xodus-cli
+        # opens it unconditionally and unwraps the error, so what reached the
+        # player was a Rust panic naming a line of Rust
+        # ("run.rs:133 ... Os { code: 2, kind: NotFound }") and a launcher
+        # that died with it. Say which file is missing, and that only a fresh
+        # download brings it back: the segments it holds exist nowhere else
+        # on disk.
+        raise XodusError(
+            f"Minecraft's encrypted package ({PACKAGE_CACHE}) is missing "
+            f"from {game_dir}. The game executable there is ciphertext and "
+            "that package is what decrypts it, so this build cannot start "
+            "until it is downloaded again — reinstall this Minecraft "
+            "version from Install / Update.")
     binary = ensure_cli()
     _sweep_staged_images()
     restore = webview.apply(binary, env) if env is not None else None

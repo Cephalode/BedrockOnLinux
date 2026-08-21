@@ -18,6 +18,25 @@
 
 ### Fixed
 
+- **A game directory that lost its Store package now says so instead of taking
+  the launcher down with it.** Minecraft from the Microsoft Store keeps its
+  executable encrypted on disk exactly as it does on Windows, and the only
+  plaintext copy is the one made in memory at every launch out of the package
+  file that sits beside the game. Lose that file — a folder copied to a new
+  machine without its hidden files, a disk cleanup, a download that reported
+  success after quietly stopping short — and the game looks perfectly
+  installed while being impossible to start. What the player got was the
+  decrypter falling over on it: a Rust panic quoting a line number in
+  `run.rs`, and a launcher that died alongside it with nothing said about
+  what was wrong or what to do. The launcher now looks for the package before
+  it hands the launch over, and names it: which file is missing, which folder
+  it belongs in, and that reinstalling this Minecraft version is what brings
+  it back. `doctor` reports it too. The download stops creating that state in
+  the first place — a build only counts as installed once the package it is
+  decrypted from is actually on disk, so a download that ends early is
+  retried and reported rather than being taken for a finished install on the
+  strength of the older build still lying in the folder.
+
 - **Minecraft now appears in Steam Deck Game Mode instead of only being
   heard** ([#199](https://github.com/Wyze3306/BedrockOnLinux/issues/199)).
   Pressing ▶ PLAY from the Flatpak started the game, the launcher stepped out

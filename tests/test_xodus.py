@@ -480,6 +480,23 @@ class InstallCacheTests(unittest.TestCase):
             self.assertIn("installed no game", str(exc))
             self.assertEqual(list(dest.glob(".xodus-streaming*")), [])
 
+    def test_exiting_zero_without_the_package_is_a_failure(self):
+        # Every path that ends xodus-cli early -- no licence, no disk space --
+        # returns before it renames the package into place, and still exits 0.
+        # Over an older build already unpacked here that read as a finished
+        # install, and the game died at launch instead, on a package that was
+        # never written.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+            _install_build(dest)
+            (dest / xodus.PACKAGE_CACHE).unlink()
+            _, exc = self._install(
+                dest,
+                [lambda d: (0, ["not enough free disk space on /home: need "
+                                "8 bytes, have 4 bytes (files: 8)"])])
+            self.assertIsNotNone(exc)
+            self.assertIn("free disk space", str(exc))
+
     def test_a_truncated_mirror_falls_through_to_the_next_one(self):
         mirrors = ["http://assets1.xboxlive.com/a.msixvc",
                    "http://assets2.xboxlive.com/a.msixvc"]
@@ -663,6 +680,11 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
     NT = "\\??\\Z:\\games\\release\\1.26.44.3\\Minecraft.Windows.exe"
 
     def _wrap(self, tmp, argv, stage_dir=None, env=None):
+        # xodus-cli decrypts the executable out of the package it keeps beside
+        # it, so an encrypted build that can start always has one.
+        game = Path(tmp) / "game"
+        game.mkdir(parents=True, exist_ok=True)
+        (game / xodus.PACKAGE_CACHE).write_bytes(b"package")
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(
                 xodus, "ensure_cli", return_value=Path("/opt/xodus-cli")))
@@ -690,6 +712,23 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
                 xodus.wrap_encrypted_launch(
                     [sys.executable, self.EXE], Path(tmp) / "game",
                     Path(tmp) / "run")
+
+    def test_a_build_without_its_package_is_named_not_panicked_on(self):
+        # xodus-cli opens the package unconditionally and unwraps the error,
+        # so a game directory that lost it took the launcher down with a Rust
+        # panic ("run.rs:133 ... Os { code: 2, kind: NotFound }").
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(xodus, "ensure_cli",
+                                  return_value=Path("/opt/xodus-cli")), \
+                mock.patch.object(xodus, "signed_in", return_value=True):
+            game = Path(tmp) / "game"
+            game.mkdir()
+            with self.assertRaises(xodus.XodusError) as raised:
+                xodus.wrap_encrypted_launch(
+                    [sys.executable, self.EXE], game, Path(tmp) / "run")
+        message = str(raised.exception)
+        self.assertIn(xodus.PACKAGE_CACHE, message)
+        self.assertIn(str(game), message)
 
     def test_xodus_reads_the_licence_from_the_launchers_home(self):
         with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:

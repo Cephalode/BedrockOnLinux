@@ -24,6 +24,13 @@ from bol import launch, webview, xodus
 _EXEC_DIR = webview.XODUS_WEBVIEW_EXEC_DIR
 
 
+def _encrypted_build(game_dir):
+    """A game directory xodus-cli run has something to decrypt from."""
+    game_dir.mkdir(parents=True, exist_ok=True)
+    (game_dir / xodus.PACKAGE_CACHE).write_bytes(b"package")
+    return game_dir
+
+
 def _restore_map(wrapper):
     """The environment the generated wrapper puts back before the game runs."""
     line = next(text for text in wrapper.splitlines()
@@ -421,6 +428,7 @@ class LauncherIntegrationTests(unittest.TestCase):
             binary.parent.mkdir()
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
+            _encrypted_build(base / "game")
             env = {"LD_LIBRARY_PATH": "/game/lib", "PATH": "/usr/bin"}
 
             with mock.patch.object(xodus, "ensure_cli", lambda: binary), \
@@ -452,6 +460,7 @@ class LauncherIntegrationTests(unittest.TestCase):
             binary.parent.mkdir()
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
+            _encrypted_build(base / "game")
             env = {"PATH": "/usr/bin"}
 
             with mock.patch.object(xodus, "ensure_cli", lambda: binary), \

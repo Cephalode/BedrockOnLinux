@@ -3,6 +3,7 @@
 
 import shutil
 import sys
+from pathlib import Path
 
 from . import deps, gamepad, webview
 from .config import DATA, PRETTY, VERSION
@@ -119,6 +120,17 @@ def doctor(acknowledge_gpu_crash=False):
     print(f"  {'store acct':12} : "
           + ("linked" if xodus.signed_in() else "not linked")
           + f" ({xodus.XODUS_KEYRING})")
+    # And whether the installed build can still be decrypted. A Store package
+    # keeps the game executable as ciphertext and the only copy of the plain
+    # one is made, at every launch, out of the package file beside it -- so a
+    # game directory that lost it is unplayable while looking complete.
+    game_dir = (load_settings().get("game_dir") or "").strip()
+    if game_dir and xodus.exe_is_encrypted(
+            Path(game_dir) / "Minecraft.Windows.exe"):
+        print(f"  {'mc package':12} : "
+              + ("OK" if xodus.has_package_cache(game_dir) else
+                 f"MISSING ({xodus.PACKAGE_CACHE} in {game_dir}) — "
+                 "reinstall this Minecraft version"))
     # Which controllers the launcher window itself can be driven with. The
     # game reads its own pad through GameInput inside the prefix, so a blank
     # here says nothing about playing -- only about navigating the launcher
