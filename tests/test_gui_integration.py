@@ -10,9 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QTabWidget,
-)
+from PySide6.QtWidgets import QMainWindow, QPushButton, QTabWidget
 from PySide6.QtTest import QSignalSpy
 
 # Ensure we can import bol modules
