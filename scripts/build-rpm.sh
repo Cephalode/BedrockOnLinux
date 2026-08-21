@@ -46,11 +46,11 @@ mkdir -p "$OUT" \
 
 install -m755 "$SRC/bedrock-on-linux" "$PKG/usr/lib/bedrock-on-linux/bedrock-on-linux"
 cp -r "$SRC/bol"                       "$PKG/usr/lib/bedrock-on-linux/bol"
-# Bundle the GUI toolkit (customtkinter + darkdetect + packaging — pure Python,
-# not packaged by Fedora either) next to bol/ so it's on sys.path; a real dir
-# means customtkinter's theme/font assets load fine. cryptography/tkinter stay
-# distribution dependencies. python-xlib (+ six) provides structured RandR
-# monitor geometry; bol.x11 falls back to the xrandr CLI without it.
+# Bundle the GUI toolkit (PySide6-Essentials + shiboken6, packaging, and
+# python-xlib — none of these are distribution dependencies) next to bol/ so
+# it's on sys.path. cryptography stays a distribution dependency.
+# python-xlib (+ six) provides structured RandR monitor geometry; bol.x11
+# falls back to the xrandr CLI without it.
 # Hash-pinned, wheels only, no sdist builds. The closure is the same one the
 # .deb installs, so both distribution packages share its SHA-256 list in
 # third_party/requirements-deb.txt (--require-hashes rejects any mismatch).
@@ -61,8 +61,8 @@ python3 -m pip install --quiet --no-cache-dir --no-compile --no-deps \
 rm -rf "$PKG/usr/lib/bedrock-on-linux"/bin 2>/dev/null || true
 find "$PKG/usr/lib/bedrock-on-linux" -name __pycache__ -type d -exec rm -rf {} +
 for metadata in \
-  "$PKG/usr/lib/bedrock-on-linux/customtkinter-5.2.2.dist-info" \
-  "$PKG/usr/lib/bedrock-on-linux/darkdetect-0.8.0.dist-info" \
+  "$PKG/usr/lib/bedrock-on-linux/shiboken6-6.9.3.dist-info" \
+  "$PKG/usr/lib/bedrock-on-linux/pyside6_essentials-6.9.3.dist-info" \
   "$PKG/usr/lib/bedrock-on-linux/packaging-26.2.dist-info" \
   "$PKG/usr/lib/bedrock-on-linux/python_xlib-0.33.dist-info" \
   "$PKG/usr/lib/bedrock-on-linux/six-1.17.0.dist-info"; do
@@ -124,7 +124,6 @@ URL:            https://github.com/Wyze3306/BedrockOnLinux
 # distribution packages that do not exist.
 AutoReqProv:    no
 Requires:       python3 >= 3.9
-Requires:       python3-tkinter
 Requires:       python3-cryptography
 Requires:       tar
 Requires:       zstd
@@ -132,6 +131,14 @@ Requires:       xdg-utils
 Requires:       /usr/bin/xrandr
 Requires:       ca-certificates
 Requires:       (curl or wget)
+Requires:       libxcb
+Requires:       libxkbcommon
+Requires:       libxkbcommon-x11
+Requires:       fontconfig
+Requires:       freetype
+Requires:       glib2
+Requires:       dbus-libs
+Requires:       mesa-libGL
 # xodus-cli opens the Microsoft Store sign-in in an embedded webview.
 Requires:       webkit2gtk4.1
 Recommends:     mesa-vulkan-drivers
