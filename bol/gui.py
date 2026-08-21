@@ -646,6 +646,12 @@ class VersionPicker(Popup):
                 self.list.setCurrentItem(it)
         self.search.clear()
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        # A Qt::Popup takes focus itself, so without this the filter field
+        # ignores everything typed until it is clicked.
+        self.search.setFocus(Qt.PopupFocusReason)
+
     def _filter(self, text):
         text = text.strip().lower()
         for i in range(self.list.count()):
@@ -1056,19 +1062,21 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ log drawer
     def _build_log_drawer(self) -> QFrame:
-        wrap = QFrame(); wrap.setObjectName("CardFlat")
+        wrap = QFrame(); wrap.setObjectName("ActivityLog")
         wrap.setFixedHeight(220)
         v = QVBoxLayout(wrap)
         head = QHBoxLayout()
         lab = QLabel("ACTIVITY LOG"); lab.setObjectName("Muted")
         head.addWidget(lab)
         head.addStretch(1)
-        head.addWidget(btn("Clear", lambda: self.log_view.clear(), kind="flat", w=52, h=24))
-        self.copy_log_btn = btn("Copy", self._copy_log, kind="flat", w=56, h=24)
+        head.addWidget(btn("Clear", lambda: self.log_view.clear(), kind="flat",
+                            w=64, h=24, tip="Empty the activity log"))
+        # Wide enough for "Copied ✓", which replaces the label on click.
+        self.copy_log_btn = btn("Copy", self._copy_log, kind="flat", w=84, h=24,
+                                 tip="Copy the whole log, for a bug report")
         head.addWidget(self.copy_log_btn)
         v.addLayout(head)
         self.log_view = QTextEdit(); self.log_view.setReadOnly(True)
-        wrap.setObjectName("ActivityLog")
         v.addWidget(self.log_view)
         return wrap
 
@@ -1977,7 +1985,9 @@ class MainWindow(QMainWindow):
                                    "Native / AppImage only."))
         content.addWidget(tool_row("Open Minecraft folder",
                                lambda: subprocess.Popen(["xdg-open", str(game_content_dir())],
-                                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)))
+                                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                               tip="Open the folder holding your worlds, templates "
+                                   "and screenshots in your file manager."))
 
         shortcuts = card_section(v, "Shortcuts")
         shortcuts.addWidget(tool_row("Create direct launch shortcut (skips this window)…",
@@ -2003,11 +2013,16 @@ class MainWindow(QMainWindow):
             maintenance.addWidget(self.gpu_ack_btn)
         maintenance.addWidget(tool_row("Open logs folder",
                                    lambda: subprocess.Popen(["xdg-open", str(LOGS)],
-                                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)))
+                                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                                   tip="Open the folder with launch and activity logs, "
+                                       "useful for bug reports."))
         maintenance.addWidget(tool_row("Repair (reset Wine prefix)",
                                    lambda: threading.Thread(target=reset_prefix, daemon=True).start(),
-                                   tip="Reset the Wine prefix Minecraft runs in."))
-        maintenance.addWidget(tool_row("Force stop Minecraft", kill_wine, danger=True))
+                                   tip="Reset the Wine prefix Minecraft runs in. Fixes most "
+                                       "'won't start' problems; worlds and settings are kept."))
+        maintenance.addWidget(tool_row("Force stop Minecraft", kill_wine, danger=True,
+                                   tip="Immediately terminate Minecraft and any Wine "
+                                       "processes for this profile."))
 
         self.tools_status_label = QLabel("")
         self.tools_status_label.setStyleSheet(f"color:{self.theme.gold};")
