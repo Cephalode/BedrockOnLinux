@@ -1,7 +1,6 @@
 """bol.test_gui_integration — GUI integration tests for PySide6 rewrite."""
 # SPDX-License-Identifier: MIT
 
-import os
 import sys
 import json
 import tempfile
@@ -9,17 +8,16 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from PySide6.QtWidgets import QApplication, QMainWindow, QDialog, QMessageBox
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtTest import QSignalSpy
 
 # Ensure we can import bol modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bol.gui import (
-    MainWindow, Theme, VersionPicker, ProfileMenu, Worker, LogBridge,
-    _resolve_gui_display, _owned_x11_socket_displays, _x11_socket_is_live,
-    ProfileManagerDialog, SwitchRow, ToggleSwitch,
+    MainWindow, Theme, VersionPicker, ProfileMenu, Worker,
+    _resolve_gui_display, _owned_x11_socket_displays,
+    SwitchRow,
 )
 
 
@@ -268,7 +266,7 @@ class TestSettingsPersistence:
         main_window.settings["light_theme"] = True
         from bol.gui import save_settings, load_settings
         save_settings(main_window.settings)
-        
+
         loaded = load_settings()
         assert loaded.get("light_theme") is True
 
@@ -277,9 +275,6 @@ class TestSettingsPersistence:
         from bol.gui import save_settings
         settings = {"test_key": "test_value"}
         save_settings(settings)
-        
-        settings_file = temp_settings_dir / "settings.json"
-        # File may be in a different location, but we can verify the dict was saved
 
 
 # ======================================================================
@@ -293,7 +288,7 @@ class TestWorkerThread:
         """Worker initializes with a callable."""
         def dummy_work():
             return "result"
-        
+
         worker = Worker(dummy_work)
         assert worker is not None
         assert worker._fn is dummy_work
@@ -302,24 +297,24 @@ class TestWorkerThread:
         """Worker emits done signal with result."""
         def dummy_work():
             return "test_result"
-        
+
         worker = Worker(dummy_work)
         spy = QSignalSpy(worker.done)
         worker.run()
-        
+
         # Check that signal was emitted
-        assert len(spy) > 0
+        assert spy.count() > 0
 
     def test_worker_emits_failed_signal(self, qapp):
         """Worker emits failed signal on exception."""
         def failing_work():
             raise ValueError("Test error")
-        
+
         worker = Worker(failing_work)
         spy = QSignalSpy(worker.failed)
         worker.run()
-        
-        assert len(spy) > 0
+
+        assert spy.count() > 0
 
 
 # ======================================================================
@@ -388,9 +383,9 @@ class TestUIState:
     def test_set_busy_play_button(self, main_window):
         """Busy state changes play button to kill."""
         main_window._set_busy(True)
-        assert "Kill" in main_window.play_btn.text()
+        assert "KILL" in main_window.play_btn.text()
         main_window._set_busy(False)
-        assert "Play" in main_window.play_btn.text()
+        assert "PLAY" in main_window.play_btn.text()
 
     def test_step_aside_for_game(self, main_window):
         """Step aside hides the window."""
@@ -548,8 +543,8 @@ class TestFullWorkflow:
         """Multiple rapid toggles work correctly."""
         for _ in range(5):
             main_window.toggle_settings()
-        # Should end on hero page after odd number of toggles
-        assert main_window.stack.currentWidget() is main_window.hero_page
+        # Odd number of toggles should land on the settings page
+        assert main_window.stack.currentWidget() is main_window.settings_page
 
 
 if __name__ == "__main__":
