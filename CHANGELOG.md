@@ -16,6 +16,33 @@
   place in the list included. Each account signed in on the machine gets it,
   since the game keeps one server list per profile.
 
+### Fixed
+
+- **The Microsoft Store sign-in now survives closing the launcher — and stops
+  spending the account's device slots**
+  ([#198](https://github.com/Wyze3306/BedrockOnLinux/issues/198)). Xodus keeps
+  its tokens in `$HOME/.xodus-keyring.ron`, and inside the Flatpak `$HOME` is a
+  temporary filesystem the sandbox deletes on exit, so the Store account stayed
+  linked for exactly as long as that window stayed open. Every restart asked
+  for the sign-in again — and signing in again was never free. With no device
+  credentials on file Xodus provisions a *new* Microsoft Store device each
+  time, an account may hold ten of them, and once they are gone Microsoft
+  stops licensing the game outright: "Device group is full, please remove a
+  device and try again", after which Minecraft can be neither downloaded nor
+  started until devices are removed by hand on account.microsoft.com. A
+  restart loop that looked like a nuisance was quietly using up something
+  finite. The tokens now live in a directory of the launcher's own, beside the
+  game and the settings, which persists wherever the launcher does; nobody has
+  to sign in again for it, since an existing sign-in is taken along on the
+  first start, and moving the data location takes it along too. What was left
+  in the home directory is deleted when the account is unlinked, so signing
+  out still means signing out. Around that: pressing ▶ PLAY with no linked
+  account now offers the sign-in instead of dying on a Rust panic about a
+  missing keyring entry, an account that has run out of devices is told where
+  they are given back rather than being shown Microsoft's sentence, and
+  `doctor` prints whether the Store account is linked and which file says so —
+  the reporter of this one had to open a shell inside the sandbox to find out.
+
 ## 2.2.1 — 2026-08-21
 
 ### Added

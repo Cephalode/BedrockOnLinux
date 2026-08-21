@@ -15,6 +15,12 @@ from .log import BolError
 
 
 _PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
+# Big, account-independent payloads: the game builds, the engine, the runtimes
+# and the downloader binary. Deliberately not here: "xodus-home", which holds
+# the Microsoft Store session. A keyring can hold one user, so sharing it would
+# have every profile sign the previous one out -- and profiles exist to keep
+# accounts apart, which is why "msa" is per-profile too. Each profile
+# therefore takes one Store device of its own (issue #198).
 _SHARED_DIRS = ("games", "proton", "umu", "cache", "xodus", "xodus-xcurl",
                 "xodus-webview")
 

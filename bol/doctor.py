@@ -108,6 +108,17 @@ def doctor(acknowledge_gpu_crash=False):
     print(f"  {'webkit2gtk':12} : {webkit_summary}")
     if webkit_package:
         miss.append(webkit_package)
+    # Whether that sign-in is on file, and where. Never a missing dependency:
+    # it is linked from the launcher, not installed. It is printed with its
+    # path because losing it is expensive -- each fresh sign-in claims one of
+    # the account's ten Microsoft Store devices (issue #198) -- so a report
+    # that "it asks me to sign in every time" can be answered from here
+    # instead of from inside the sandbox.
+    from . import xodus
+
+    print(f"  {'store acct':12} : "
+          + ("linked" if xodus.signed_in() else "not linked")
+          + f" ({xodus.XODUS_KEYRING})")
     # Which controllers the launcher window itself can be driven with. The
     # game reads its own pad through GameInput inside the prefix, so a blank
     # here says nothing about playing -- only about navigating the launcher

@@ -302,7 +302,9 @@ class EnvironmentTests(unittest.TestCase):
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
 
-            with mock.patch.dict(os.environ, {}, clear=False):
+            with mock.patch.dict(os.environ, {}, clear=False), \
+                    mock.patch.object(xodus, "home",
+                                      return_value=Path(tmp) / "xodus-home"):
                 os.environ.pop(webview._RENDERER, None)
                 self.assertEqual(xodus._env(binary)[webview._RENDERER], "1")
             # The launcher's own environment is never touched by that.
@@ -422,6 +424,9 @@ class LauncherIntegrationTests(unittest.TestCase):
             env = {"LD_LIBRARY_PATH": "/game/lib", "PATH": "/usr/bin"}
 
             with mock.patch.object(xodus, "ensure_cli", lambda: binary), \
+                    mock.patch.object(xodus, "signed_in", return_value=True), \
+                    mock.patch.object(xodus, "home",
+                                      return_value=base / "xodus-home"), \
                     mock.patch.object(
                         xodus.webview, "apply",
                         lambda _binary, environment: (
@@ -434,8 +439,10 @@ class LauncherIntegrationTests(unittest.TestCase):
             self.assertEqual(command[:2], [str(binary), "run"])
             self.assertEqual(env["LD_LIBRARY_PATH"], "/bundle/lib")
             wrapper = (base / "run" / "xodus-launch-wrapper.py").read_text()
+            # HOME rides along the same way: xodus-cli reads the licence out
+            # of the launcher's Xodus home, the game must not (issue #198).
             self.assertEqual(_restore_map(wrapper),
-                             {"LD_LIBRARY_PATH": "/game/lib"})
+                             {"LD_LIBRARY_PATH": "/game/lib", "HOME": None})
 
     def test_a_host_with_webkitgtk_restores_only_the_renderer(self):
         """No bundle to take back out, but the game still loses #186's fix."""
@@ -447,14 +454,18 @@ class LauncherIntegrationTests(unittest.TestCase):
             binary.chmod(0o755)
             env = {"PATH": "/usr/bin"}
 
-            with mock.patch.object(xodus, "ensure_cli", lambda: binary):
+            with mock.patch.object(xodus, "ensure_cli", lambda: binary), \
+                    mock.patch.object(xodus, "signed_in", return_value=True), \
+                    mock.patch.object(xodus, "home",
+                                      return_value=base / "xodus-home"):
                 xodus.wrap_encrypted_launch(
                     ["/bin/wine", "Minecraft.Windows.exe"], base / "game",
                     base / "run", env=env)
 
             self.assertEqual(env[webview._RENDERER], "1")
             wrapper = (base / "run" / "xodus-launch-wrapper.py").read_text()
-            self.assertEqual(_restore_map(wrapper), {webview._RENDERER: None})
+            self.assertEqual(_restore_map(wrapper),
+                             {webview._RENDERER: None, "HOME": None})
 
     def test_the_game_launch_hands_over_its_environment(self):
         """env= is what carries both the bundle and #186 into xodus-cli run.
