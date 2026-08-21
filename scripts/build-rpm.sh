@@ -131,14 +131,44 @@ Requires:       xdg-utils
 Requires:       /usr/bin/xrandr
 Requires:       ca-certificates
 Requires:       (curl or wget)
-Requires:       libxcb
-Requires:       libxkbcommon
-Requires:       libxkbcommon-x11
-Requires:       fontconfig
-Requires:       freetype
-Requires:       glib2
-Requires:       dbus-libs
-Requires:       mesa-libGL
+# The GUI toolkit is a vendored PySide6 wheel, so the Qt libraries themselves
+# ship inside the package -- but Qt's xcb platform plugin dlopen()s against the
+# host's X stack, and every entry below is a hard DT_NEEDED of the bundled
+# libqxcb.so (libEGL comes from libQt6Gui). Missing one does not raise in
+# Python: Qt aborts natively with "could not load the Qt platform plugin xcb"
+# before control returns, so the launcher's own error reporting never runs.
+# Regenerate against the pinned wheel with:
+#   readelf -d --wide .../PySide6/Qt/plugins/platforms/libqxcb.so | grep NEEDED
+# Declared by soname rather than by package name on purpose: with AutoReqProv
+# off these are exactly what rpm's own generator would have produced, and the
+# packages carrying them are named differently on Fedora (xcb-util-wm,
+# xcb-util-cursor, ...) than on openSUSE or Mageia. The soname is the one name
+# every RPM distribution agrees on.
+Requires:       libglib-2.0.so.0()(64bit)
+Requires:       libgthread-2.0.so.0()(64bit)
+Requires:       libdbus-1.so.3()(64bit)
+Requires:       libfontconfig.so.1()(64bit)
+Requires:       libfreetype.so.6()(64bit)
+Requires:       libGL.so.1()(64bit)
+Requires:       libEGL.so.1()(64bit)
+Requires:       libX11.so.6()(64bit)
+Requires:       libX11-xcb.so.1()(64bit)
+Requires:       libxkbcommon.so.0()(64bit)
+Requires:       libxkbcommon-x11.so.0()(64bit)
+Requires:       libxcb.so.1()(64bit)
+Requires:       libxcb-cursor.so.0()(64bit)
+Requires:       libxcb-icccm.so.4()(64bit)
+Requires:       libxcb-image.so.0()(64bit)
+Requires:       libxcb-keysyms.so.1()(64bit)
+Requires:       libxcb-randr.so.0()(64bit)
+Requires:       libxcb-render.so.0()(64bit)
+Requires:       libxcb-render-util.so.0()(64bit)
+Requires:       libxcb-shape.so.0()(64bit)
+Requires:       libxcb-shm.so.0()(64bit)
+Requires:       libxcb-sync.so.1()(64bit)
+Requires:       libxcb-util.so.1()(64bit)
+Requires:       libxcb-xfixes.so.0()(64bit)
+Requires:       libxcb-xkb.so.1()(64bit)
 # xodus-cli opens the Microsoft Store sign-in in an embedded webview.
 Requires:       webkit2gtk4.1
 Recommends:     mesa-vulkan-drivers

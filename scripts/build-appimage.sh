@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # Portable AppImage with bundled CPython, PySide6-Essentials (Qt), login
-# dependencies and CA store. Xft/fontconfig/X11/Qt platform-plugin runtime
-# libraries remain host GUI dependencies, as with standard AppImages.
+# dependencies and CA store.
+#
+# An AppImage cannot declare dependencies, and the Qt platform-plugin runtime
+# libraries stay host GUI dependencies as with standard AppImages -- but unlike
+# the Tk GUI this replaced, a missing one is fatal and silent: Qt aborts the
+# process natively with "could not load the Qt platform plugin xcb" before
+# control returns to Python, so bol.gui's own error reporting never runs.
+# The full list is pinned in tests/test_application_packaging.py
+# (QT_HOST_LIBRARIES) and declared by the .deb and .rpm; the short version is
+# libX11/libX11-xcb, libxkbcommon(-x11), libGL/libEGL, fontconfig, freetype
+# and the xcb-util family (cursor, icccm, image, keysyms, render-util, util).
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,9 +83,9 @@ PYLIB="$PYHOME/lib"; DYN="$PYLIB/python3.12/lib-dynload"
 [[ -x "$PYBIN" ]] || { echo "!! bundled python missing" >&2; exit 1; }
 
 # python-build-standalone bundles its own Tcl/Tk 9 + _tkinter for `tkinter`,
-# which nothing here imports anymore (PySide6/Qt replaced it) — drop it so it
-# can never be picked up, and drop the bundled Xlib six copy is not shipped
-# with the interpreter itself, only tkinter.
+# which nothing here imports anymore (PySide6/Qt replaced it). Drop the
+# extension module and the Tcl/Tk libraries behind it so they can never be
+# picked up, and so the audit below has that much less to walk.
 rm -f "$DYN"/_tkinter.*.so
 rm -f "$PYLIB"/libtcl9*.so "$PYLIB"/libtcl9tk9*.so
 rm -rf "$PYLIB"/tcl9* "$PYLIB"/tk9* 2>/dev/null || true

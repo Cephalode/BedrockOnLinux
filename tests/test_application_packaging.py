@@ -277,5 +277,81 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             "sed '0,/^Exec=/s|^Exec=.*|Exec=bedrock-on-linux gui|'", appimage)
 
 
+# Every hard DT_NEEDED of the bundled Qt xcb platform plugin that the host has
+# to provide, mapped to the name each packaging format declares it under.
+# Regenerate against the pinned PySide6 wheel with:
+#   readelf -d --wide .../PySide6/Qt/plugins/platforms/libqxcb.so | grep NEEDED
+# libEGL is not in that list: it comes from libQt6Gui. zlib1g/libzstd1 are
+# left out on purpose -- zlib is priority:required and libzstd1 arrives with
+# the zstd dependency the launcher already declares for game downloads.
+QT_HOST_LIBRARIES = {
+    # soname:                  (Debian package,        RPM soname requires)
+    "libX11.so.6":             ("libx11-6",            "libX11.so.6"),
+    "libX11-xcb.so.1":         ("libx11-xcb1",         "libX11-xcb.so.1"),
+    "libxkbcommon.so.0":       ("libxkbcommon0",       "libxkbcommon.so.0"),
+    "libxkbcommon-x11.so.0":   ("libxkbcommon-x11-0",  "libxkbcommon-x11.so.0"),
+    "libxcb.so.1":             ("libxcb1",             "libxcb.so.1"),
+    "libxcb-cursor.so.0":      ("libxcb-cursor0",      "libxcb-cursor.so.0"),
+    "libxcb-icccm.so.4":       ("libxcb-icccm4",       "libxcb-icccm.so.4"),
+    "libxcb-image.so.0":       ("libxcb-image0",       "libxcb-image.so.0"),
+    "libxcb-keysyms.so.1":     ("libxcb-keysyms1",     "libxcb-keysyms.so.1"),
+    "libxcb-randr.so.0":       ("libxcb-randr0",       "libxcb-randr.so.0"),
+    "libxcb-render.so.0":      ("libxcb-render0",      "libxcb-render.so.0"),
+    "libxcb-render-util.so.0": ("libxcb-render-util0", "libxcb-render-util.so.0"),
+    "libxcb-shape.so.0":       ("libxcb-shape0",       "libxcb-shape.so.0"),
+    "libxcb-shm.so.0":         ("libxcb-shm0",         "libxcb-shm.so.0"),
+    "libxcb-sync.so.1":        ("libxcb-sync1",        "libxcb-sync.so.1"),
+    "libxcb-util.so.1":        ("libxcb-util1",        "libxcb-util.so.1"),
+    "libxcb-xfixes.so.0":      ("libxcb-xfixes0",      "libxcb-xfixes.so.0"),
+    "libxcb-xkb.so.1":         ("libxcb-xkb1",         "libxcb-xkb.so.1"),
+    "libGL.so.1":              ("libgl1",              "libGL.so.1"),
+    "libEGL.so.1":             ("libegl1",             "libEGL.so.1"),
+}
+
+
+class QtRuntimeDependencyTests(unittest.TestCase):
+    """Qt aborts the process natively when its platform plugin cannot load --
+    "could not load the Qt platform plugin xcb", raised by the C++ side before
+    control ever returns to Python. bol.gui's own _desktop_error() therefore
+    never runs, and the user is left with a launcher that exits silently. The
+    only defence is declaring the libraries up front, so these are pinned."""
+
+    def _declared_deb(self):
+        script = (ROOT / "scripts/build-deb.sh").read_text(encoding="utf-8")
+        start = script.index("Depends:")
+        end = script.index("Recommends:", start)
+        return script[start:end]
+
+    def _declared_rpm(self):
+        return (ROOT / "scripts/build-rpm.sh").read_text(encoding="utf-8")
+
+    def test_the_deb_declares_every_library_the_xcb_plugin_loads(self):
+        declared = self._declared_deb()
+        missing = sorted(
+            package for _soname, (package, _rpm) in QT_HOST_LIBRARIES.items()
+            if package not in declared)
+        self.assertEqual(
+            missing, [],
+            "build-deb.sh does not declare these, so the launcher aborts "
+            f"before it can report anything: {missing}")
+
+    def test_the_rpm_declares_every_library_the_xcb_plugin_loads(self):
+        script = self._declared_rpm()
+        missing = sorted(
+            soname for _s, (_deb, soname) in QT_HOST_LIBRARIES.items()
+            if f"Requires:       {soname}()(64bit)" not in script)
+        self.assertEqual(
+            missing, [],
+            f"build-rpm.sh does not declare these sonames: {missing}")
+
+    def test_the_appimage_documents_that_these_stay_host_dependencies(self):
+        # An AppImage cannot declare dependencies, so the one thing it can do
+        # is say so where a packager will read it.
+        script = (ROOT / "scripts/build-appimage.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("could not load the Qt platform plugin xcb", script)
+        self.assertIn("QT_HOST_LIBRARIES", script)
+
+
 if __name__ == "__main__":
     unittest.main()

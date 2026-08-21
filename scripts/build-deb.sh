@@ -66,13 +66,29 @@ install -m644 "$SRC/data/bedrock-on-linux.desktop" \
 install -m644 "$SRC/README.md" "$PKG/usr/share/doc/bedrock-on-linux/README.md"
 install -m644 "$SRC/LICENSE" "$PKG/usr/share/doc/bedrock-on-linux/copyright"
 
+# The GUI toolkit is a vendored PySide6 wheel, so the Qt libraries themselves
+# ship inside the package -- but Qt's xcb platform plugin dlopen()s against the
+# host's X stack, and every one of those is a hard DT_NEEDED. Missing one does
+# not raise in Python: Qt aborts the process natively with "could not load the
+# Qt platform plugin xcb" before control returns, so the launcher's own error
+# reporting never runs and the user sees nothing at all. Regenerate the list
+# with, against the pinned wheel:
+#   readelf -d --wide .../PySide6/Qt/plugins/platforms/libqxcb.so | grep NEEDED
+# libEGL comes from libQt6Gui; zlib1g (priority: required) and libzstd1 (pulled
+# in by the zstd dependency above) are left implicit.
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: bedrock-on-linux
 Version: ${VER}
 Section: games
 Priority: optional
 Architecture: amd64
-Depends: python3 (>= 3.9), python3-cryptography, tar, zstd, xdg-utils, x11-xserver-utils, ca-certificates, curl | wget, libwebkit2gtk-4.1-0, libxcb1, libxcb-cursor0, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1, libfreetype6, libglib2.0-0, libdbus-1-3, libgl1
+Depends: python3 (>= 3.9), python3-cryptography, tar, zstd, xdg-utils,
+ x11-xserver-utils, ca-certificates, curl | wget, libwebkit2gtk-4.1-0,
+ libglib2.0-0, libdbus-1-3, libfontconfig1, libfreetype6, libgl1, libegl1,
+ libx11-6, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0,
+ libxcb1, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1,
+ libxcb-randr0, libxcb-render0, libxcb-render-util0, libxcb-shape0,
+ libxcb-shm0, libxcb-sync1, libxcb-util1, libxcb-xfixes0, libxcb-xkb1
 Recommends: mesa-vulkan-drivers | nvidia-driver
 Maintainer: BedrockOnLinux contributors <noreply@bedrockonlinux.invalid>
 Homepage: https://github.com/Wyze3306/BedrockOnLinux
