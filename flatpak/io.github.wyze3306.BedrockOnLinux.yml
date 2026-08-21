@@ -1,8 +1,12 @@
 # Flathub manifest for BedrockOnLinux.
 #
 # Two things make this more than a plain Python app:
-#   1. The GUI is Tkinter, which org.freedesktop.Platform does not ship —
-#      a self-contained Tcl + Tk + CPython is bundled.
+#   1. The GUI is PySide6 (Qt for Python), which org.freedesktop.Platform does
+#      not ship — a self-contained CPython + vendored PySide6-Essentials
+#      wheel is bundled. Unlike the old Tkinter GUI this replaced, Qt's xcb
+#      and wayland platform plugins are both bundled inside the wheel, so the
+#      launcher can run under a native Wayland session directly rather than
+#      needing an X11 fallback.
 #   2. The game runs through umu-launcher → pressure-vessel, which builds its
 #      container as a Flatpak sub-sandbox — hence --talk-name=org.freedesktop.Flatpak,
 #      --allow=devel and --allow=multiarch (the Lutris/Bottles/Heroic recipe).
@@ -18,16 +22,18 @@ app-id: io.github.wyze3306.BedrockOnLinux
 #
 # It is a smaller change than it looks. GNOME's runtime is built on the same
 # freedesktop base and declares the same org.freedesktop.Platform.GL extension
-# point, so the GPU path is unchanged; and this manifest builds its own Tcl, Tk
-# and Python, so the launcher's interface never depended on the runtime.
+# point, so the GPU path is unchanged; and this manifest builds its own
+# Python and vendors PySide6, so the launcher's interface never depended on
+# the runtime.
 runtime: org.gnome.Platform
 runtime-version: '49'
 sdk: org.gnome.Sdk
 command: bedrock-on-linux
 
-# Tcl/Tk installs several shared libraries read-only. Disabling the optional
-# post-build strip/debug split keeps the manifest buildable by an unprivileged
-# flatpak-builder on native, encrypted, and FUSE-backed home filesystems.
+# PySide6 installs several large shared libraries (the bundled Qt runtime)
+# read-only. Disabling the optional post-build strip/debug split keeps the
+# manifest buildable by an unprivileged flatpak-builder on native, encrypted,
+# and FUSE-backed home filesystems.
 build-options:
   strip: false
   no-debuginfo: true
@@ -35,10 +41,11 @@ build-options:
 finish-args:
   # GPU (Vulkan) + game controllers
   - --device=all
-  # The launcher GUI is Tkinter, an X11-only toolkit, so the X11 socket must be
-  # granted unconditionally: under a pure Wayland session (e.g. KDE) the weaker
-  # fallback-x11 leaves $DISPLAY unset and tk.Tk() crashes (issue #7). The game
-  # itself runs through XWayland; winewayland stays opt-in (BOL_INPUT=wayland).
+  # PySide6/Qt supports both platform plugins natively (xcb and wayland), so
+  # unlike the previous Tkinter GUI this no longer strictly needs X11 for the
+  # launcher window itself under a native Wayland session — but the game
+  # (and winewayland is opt-in via BOL_INPUT=wayland) still commonly runs
+  # through XWayland, so both sockets stay granted.
   - --socket=x11
   - --socket=wayland
   - --socket=pulseaudio
@@ -75,36 +82,9 @@ cleanup:
   - '*.la'
 
 modules:
-  - name: tcl
-    buildsystem: autotools
-    subdir: unix
-    config-opts:
-      - --enable-shared
-      - --enable-threads
-    post-install:
-      - chmod -R u+w /app/lib
-    sources:
-      - type: archive
-        url: https://prdownloads.sourceforge.net/tcl/tcl8.6.14-src.tar.gz
-        sha256: 5880225babf7954c58d4fb0f5cf6279104ce1cd6aa9b71e9a6322540e1c4de66
-
-  - name: tk
-    buildsystem: autotools
-    subdir: unix
-    config-opts:
-      - --enable-shared
-      - --enable-threads
-      - --with-tcl=/app/lib
-      - --with-x
-    sources:
-      - type: archive
-        url: https://prdownloads.sourceforge.net/tcl/tk8.6.14-src.tar.gz
-        sha256: 8ffdb720f47a6ca6107eac2dd877e30b0ef7fac14f3a84ebbd0b3612cee41a94
-
-  # Self-contained CPython with tkinter, so the launcher's
-  # `#!/usr/bin/env python3` resolves to an interpreter that has Tk
-  # (/app/bin is first on PATH). Python 3.12 dropped --with-tcltk-*;
-  # Tcl/Tk is located through TCLTK_CFLAGS / TCLTK_LIBS.
+  # Self-contained CPython so the launcher's `#!/usr/bin/env python3` resolves
+  # to a known interpreter (/app/bin is first on PATH). No Tcl/Tk linking is
+  # needed any more — the GUI toolkit is PySide6, vendored below as wheels.
   - name: python3
     buildsystem: autotools
     config-opts:
@@ -113,16 +93,14 @@ modules:
       - --with-ensurepip=no
     build-options:
       env:
-        TCLTK_CFLAGS: -I/app/include
-        TCLTK_LIBS: -L/app/lib -ltcl8.6 -ltk8.6
         LDFLAGS: -Wl,-rpath,/app/lib
     post-install:
-      # fail the build now (not at first run) if tkinter didn't link
-      - /app/bin/python3 -c "import tkinter"
+      - /app/bin/python3 -c "import sys; print(sys.version)"
     cleanup:
       - /lib/python3.12/test
       - /lib/python3.12/idlelib
       - /lib/python3.12/turtledemo
+      - /lib/python3.12/tkinter
     sources:
       - type: archive
         url: https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tar.xz
@@ -151,21 +129,37 @@ modules:
         url: https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
         sha256: b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
 
-  # customtkinter (the modern GUI toolkit, on top of Tk) + its pure-Python deps
-  # darkdetect & packaging. Vendored like cryptography (the runtime has no pip);
-  # the wheels are py3-none-any, so they drop straight into site-packages.
-  - name: python3-customtkinter
+  # PySide6 (Qt for Python — the GUI toolkit) + its shiboken6 binding
+  # generator dep. Vendored like cryptography (the runtime has no pip).
+  # PySide6-Essentials only, not the PySide6 meta-package: the meta-package
+  # also pulls PySide6-Addons (~167 MB of Qt modules — Multimedia, WebEngine,
+  # Charts, … — this app never uses). Essentials alone already provides the
+  # QtCore/QtGui/QtWidgets namespace under `PySide6.*`. Both wheels are
+  # manylinux_2_28 (glibc 2.28+); bump all three (url + sha256, in step with
+  # third_party/requirements-appimage.txt) when the version moves.
+  - name: python3-pyside6
     buildsystem: simple
     build-commands:
       - for w in *.whl; do python3 -m zipfile -e "$w" /app/lib/python3.12/site-packages/; done
-      - /app/bin/python3 -c "import customtkinter; print('customtkinter', customtkinter.__version__)"
+      - /app/bin/python3 -c "from PySide6.QtCore import __version__; print('PySide6', __version__)"
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/3b/b1/b43b33001a77256b335511e75f257d001082350b8506c8807f30c98db052/customtkinter-5.2.2-py3-none-any.whl
-        sha256: 14ad3e7cd3cb3b9eb642b9d4e8711ae80d3f79fb82545ad11258eeffb2e6b37c
+        url: https://files.pythonhosted.org/packages/be/82/c1c6932f9849bc5e75c93c38a29419505a6e3e0037261e28f3e7ecbf2751/shiboken6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl
+        sha256: f3f5337a3a8fc660ba1462265bd9a2bdda9588f8d90fbc3d5ac4ce3134c11e59
       - type: file
-        url: https://files.pythonhosted.org/packages/f2/f2/728f041460f1b9739b85ee23b45fa5a505962ea11fd85bdbe2a02b021373/darkdetect-0.8.0-py3-none-any.whl
-        sha256: a7509ccf517eaad92b31c214f593dbcf138ea8a43b2935406bbd565e15527a85
+        url: https://files.pythonhosted.org/packages/85/e8/9396cf11a60f80175bb3c5c1d498d84e87b7af653ab4ea001acf821a3981/pyside6_essentials-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl
+        sha256: c70d5544e892b201a677b615156fab6a0fef865e7fc287f55a0eae00a682e83f
+
+  # packaging: pure-Python version-comparison helper the launcher's own
+  # update/version-parsing code depends on. Vendored like cryptography (the
+  # runtime has no pip); the wheel is py3-none-any, so it drops straight into
+  # site-packages.
+  - name: python3-packaging
+    buildsystem: simple
+    build-commands:
+      - for w in *.whl; do python3 -m zipfile -e "$w" /app/lib/python3.12/site-packages/; done
+      - /app/bin/python3 -c "import packaging; print('packaging', packaging.__version__)"
+    sources:
       - type: file
         url: https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl
         sha256: 5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
