@@ -24,8 +24,8 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSpacerItem, QStackedWidget, QTabWidget, QTextBrowser, QToolButton,
-    QVBoxLayout, QWidget,
+    QSpacerItem, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from .auth import NativeAuth, msa_logout, msa_signed_in, msa_gamertag
@@ -288,7 +288,7 @@ class Theme:
             border: none;
         }}
         QMessageBox {{ background: {self.card}; }}
-        #ActivityLog QPlainTextEdit {{
+        #ActivityLog QTextEdit {{
             background: {self.console_bg};
             color: {self.console_fg};
             font-family: monospace;
@@ -610,6 +610,49 @@ class GearButton(QAbstractButton):
 # Main window
 # ======================================================================
 
+def window_action_for_launch(settings, single_window):
+    if (settings or {}).get("close_on_launch", False):
+        return "close"
+    return "step-aside" if single_window else "stay"
+
+
+class LaunchWorker(QThread):
+    """Runs setup + launch, and tells the UI what to do to its own window
+    (close it, step aside for a single-window session, come back) once the
+    game process actually exists."""
+    done = Signal(object)
+    failed = Signal(str)
+    progress = Signal(int, int)
+    close_window = Signal()
+    step_aside = Signal()
+    come_back = Signal()
+
+    def __init__(self, ver):
+        super().__init__()
+        self._ver = ver
+
+    def run(self):
+        try:
+            do_setup(mc_edition=self._ver["edition"], mc_version=self._ver["tag"],
+                      progress=lambda g, t: self.progress.emit(g, t))
+            action = window_action_for_launch(load_settings(), single_window_session())
+
+            def on_started():
+                if action == "close":
+                    self.close_window.emit()
+                elif action == "step-aside":
+                    self.step_aside.emit()
+
+            try:
+                launch(on_started=on_started)
+            finally:
+                self.come_back.emit()
+            self.done.emit("closed")
+        except Exception as exc:
+            self.come_back.emit()
+            self.failed.emit(str(exc) or type(exc).__name__)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -619,8 +662,9 @@ class MainWindow(QMainWindow):
 
         self.ui_state = {
             "versions": [], "labels": [], "busy": False, "details": False,
-            "launch_active": False,
+            "launch_active": False, "window_gone": False, "stepped_aside": False,
         }
+        self._force_close = False
         self.na = NativeAuth()
         self._switches: list[SwitchRow] = []
         self._log_bridge = LogBridge()
@@ -853,7 +897,7 @@ class MainWindow(QMainWindow):
         self.copy_log_btn = btn("Copy", self._copy_log, kind="flat", w=56, h=24)
         head.addWidget(self.copy_log_btn)
         v.addLayout(head)
-        self.log_view = QPlainTextEdit(); self.log_view.setReadOnly(True)
+        self.log_view = QTextEdit(); self.log_view.setReadOnly(True)
         wrap.setObjectName("ActivityLog")
         v.addWidget(self.log_view)
         return wrap
@@ -897,7 +941,14 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_log_line(self, line: str):
-        self.log_view.appendPlainText(line)
+        lvl = _LEVELS.get(line[:2])
+        if lvl:
+            label, _a1, _a2, level_color, msg_color = lvl
+            self.log_view.append(
+                f'<span style="color:{level_color}; font-weight:700;">{html.escape(label)}</span>'
+                f'  <span style="color:{msg_color};">{html.escape(line[2:].strip())}</span>')
+        else:
+            self.log_view.append(html.escape(line))
         if not self.ui_state.get("busy"):
             return
         if line.startswith("xx"):
@@ -1197,36 +1248,68 @@ class MainWindow(QMainWindow):
     def do_play(self):
         if self.ui_state["busy"]:
             return
+        ver = self.selected_version()
+        if ver is None:
+            self.warn_box("No version selected", "Pick a Minecraft version first.")
+            return
         self._set_busy(True)
         self.status_label.setText("Preparing…")
         self._show_bar_busy()
 
-        def work(progress=None):
-            ver = self.selected_version()
-            if ver is None:
-                raise BolError("No version selected")
-            do_setup(mc_edition=ver["edition"], mc_version=ver["tag"], progress=progress)
-            self.ui_state["launch_active"] = True
-            try:
-                launch(on_started=lambda: None)
-            finally:
-                self.ui_state["launch_active"] = False
-            return "closed"
-
-        w = Worker(work)
+        w = LaunchWorker(ver)
         w.progress.connect(self.set_progress)
         w.done.connect(self._play_finished)
         w.failed.connect(self._play_failed)
+        w.close_window.connect(self._close_for_game)
+        w.step_aside.connect(self._step_aside_for_game)
+        w.come_back.connect(self._come_back_from_game)
         self._play_worker = w
+        self.ui_state["launch_active"] = True
         w.start()
 
+    def _close_for_game(self):
+        """The player asked for this in Settings ▸ General: the window goes
+        for good the moment the game starts, while this process stays alive
+        in the background to see the launch/session out."""
+        if self.ui_state.get("window_gone"):
+            return
+        self.ui_state["window_gone"] = True
+        self.na.stop()
+        self._force_close = True
+        self.close()
+
+    def _step_aside_for_game(self):
+        """Single-window sessions (e.g. Steam Game Mode) show one window at
+        a time, so hide instead of closing; ``_come_back_from_game`` restores it."""
+        if self.ui_state.get("stepped_aside"):
+            return
+        self.ui_state["stepped_aside"] = True
+        self.hide()
+
+    def _come_back_from_game(self):
+        if not self.ui_state.get("stepped_aside"):
+            return
+        self.ui_state["stepped_aside"] = False
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
     def _play_finished(self, _result):
+        self.ui_state["launch_active"] = False
+        if self.ui_state.get("window_gone"):
+            QApplication.instance().quit()
+            return
         self.status_label.setText("Minecraft closed.")
         self.end_progress()
         self._set_busy(False)
 
     def _play_failed(self, message):
+        self.ui_state["launch_active"] = False
         log._LOG_SINK(f"xx {message}")
+        if self.ui_state.get("window_gone"):
+            desktop_notify(message[:400], "Minecraft could not start")
+            QApplication.instance().quit()
+            return
         self.status_label.setText("Minecraft could not start.")
         self.end_progress()
         self._set_busy(False)
@@ -2027,6 +2110,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ close handling
     def closeEvent(self, event):
+        if self._force_close:
+            event.accept()
+            return
         if self.ui_state.get("launch_active"):
             self.warn_box("Minecraft is running",
                 "Close Minecraft first and wait for the launcher to report that "
@@ -2044,7 +2130,7 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not isinstance(
-                QApplication.focusWidget(), (QLineEdit, QPlainTextEdit)):
+                QApplication.focusWidget(), (QLineEdit, QPlainTextEdit, QTextEdit)):
             self.do_play()
         else:
             super().keyPressEvent(event)
@@ -2169,6 +2255,10 @@ def gui():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(PRETTY)
     app.setStyle("Fusion")
+    # "Close the launcher when Minecraft starts" closes the window while the
+    # launch thread is still supervising the game; the process itself exits
+    # once that thread finishes (see MainWindow._close_for_game).
+    app.setQuitOnLastWindowClosed(False)
 
     try:
         window = MainWindow()
