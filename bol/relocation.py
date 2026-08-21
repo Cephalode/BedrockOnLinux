@@ -8,7 +8,11 @@ from pathlib import Path
 from . import log
 from .config import INSTALL_LOCATION_FILE, set_install_location
 
-DIRS_TO_MOVE = ["games", "compatdata/pfx", "content", "msa"]
+# "xodus-home" holds the Microsoft Store sign-in. It is the one directory here
+# that cannot simply be fetched again: a lost keyring costs one of the
+# account's ten Store download devices (issue #198), so moving the data root
+# must take it along rather than leave the user to sign in from nothing.
+DIRS_TO_MOVE = ["games", "compatdata/pfx", "content", "msa", "xodus-home"]
 # GPU safety state must move with the data root to preserve incident history.
 FILES_TO_MOVE = [
     "settings.json",

@@ -32,6 +32,24 @@ def _cli_archive(path, body=b"#!/bin/sh\nexit 0\n"):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@contextlib.contextmanager
+def _own_home(tmp):
+    """Point the module at a throwaway Xodus home.
+
+    Every one of these paths is derived from DATA, and the migration writes
+    real files, so a test that used the module's own constants would sign the
+    developer's machine in or out.
+    """
+    tmp = Path(tmp)
+    home = tmp / "xodus-home"
+    with mock.patch.object(xodus, "XODUS_HOME", home), \
+            mock.patch.object(xodus, "XODUS_KEYRING",
+                              home / ".xodus-keyring.ron"), \
+            mock.patch.object(xodus, "LEGACY_XODUS_KEYRING",
+                              tmp / "home" / ".xodus-keyring.ron"):
+        yield home
+
+
 class EditionTests(unittest.TestCase):
     def test_known_editions_resolve_to_store_product_ids(self):
         self.assertEqual(xodus.edition("release")["product"], "9NBLGGH2JHXJ")
@@ -189,10 +207,12 @@ class EnsureCliTests(unittest.TestCase):
 
 
 class SignedInTests(unittest.TestCase):
+    @contextlib.contextmanager
     def _keyring(self, tmp, body):
-        path = Path(tmp) / "keyring.ron"
-        path.write_bytes(body)
-        return mock.patch.object(xodus, "XODUS_KEYRING", path)
+        with _own_home(tmp) as home:
+            home.mkdir(parents=True)
+            (home / ".xodus-keyring.ron").write_bytes(body)
+            yield
 
     def test_device_credentials_alone_are_not_a_sign_in(self):
         # Every xodus command that needs an identity provisions device
@@ -207,9 +227,116 @@ class SignedInTests(unittest.TestCase):
             self.assertTrue(xodus.signed_in())
 
     def test_a_missing_keyring_is_not_a_sign_in(self):
-        with mock.patch.object(xodus, "XODUS_KEYRING",
-                               Path("/nonexistent/keyring.ron")):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp):
             self.assertFalse(xodus.signed_in())
+
+
+class XodusHomeTests(unittest.TestCase):
+    """Where the Microsoft Store session is kept (issue #198).
+
+    Xodus writes its keyring to $HOME, and inside the Flatpak $HOME is a tmpfs
+    that goes away with the sandbox. That is not an ordinary sign-out: with no
+    device credentials on file the next command provisions a *new* Microsoft
+    device, and an account may hold ten before the Store refuses to license
+    the game at all.
+    """
+
+    def _legacy(self, tmp, body=b'("user-tokens","...")'):
+        path = Path(tmp) / "home" / ".xodus-keyring.ron"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        # What Xodus itself leaves in a home directory: File::create, so
+        # 0666 & ~umask -- the mode the Steam Deck report showed.
+        os.chmod(path, 0o644)
+        return path
+
+    def test_xodus_runs_in_a_home_of_the_launchers_own(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home, \
+                mock.patch.object(xodus.webview, "apply", return_value={}):
+            env = xodus._env(Path("/opt/xodus-cli"))
+
+        self.assertEqual(env["HOME"], str(home))
+
+    def test_the_home_is_private(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:
+            xodus.home()
+
+            # It holds the tokens that are the account.
+            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+
+    def test_a_sign_in_made_before_the_move_is_taken_along(self):
+        # Signing in again is not free: it spends one of the ten devices.
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:
+            legacy = self._legacy(tmp)
+
+            self.assertTrue(xodus.signed_in())
+
+            copied = home / ".xodus-keyring.ron"
+            self.assertEqual(copied.read_bytes(), legacy.read_bytes())
+            # Tighter than the file it came from: these tokens are the
+            # account, and the launcher owns where they land now.
+            self.assertEqual(copied.stat().st_mode & 0o777, 0o600)
+            # Copied, not moved: an older launcher on the same machine keeps
+            # the session it wrote.
+            self.assertTrue(legacy.exists())
+
+    def test_the_session_in_use_is_never_overwritten_by_the_old_one(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:
+            self._legacy(tmp, b'("user-tokens","stale")')
+            home.mkdir(parents=True)
+            (home / ".xodus-keyring.ron").write_bytes(b'("user-tokens","live")')
+
+            xodus.home()
+
+            self.assertEqual((home / ".xodus-keyring.ron").read_bytes(),
+                             b'("user-tokens","live")')
+
+    def test_asking_whether_anyone_is_signed_in_writes_nothing(self):
+        # Every window refresh asks; doctor asks. None of them is a reason to
+        # create anything in the data directory.
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:
+            self.assertFalse(xodus.signed_in())
+
+            self.assertFalse(home.exists())
+
+    def test_unlinking_the_account_drops_the_copy_left_behind(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp), \
+                mock.patch.object(xodus, "ensure_cli",
+                                  return_value=Path("/bin/true")), \
+                mock.patch.object(xodus.webview, "apply", return_value={}):
+            legacy = self._legacy(tmp)
+            xodus.signed_in()
+
+            xodus.logout()
+
+            # "Unlink this account" cannot leave live tokens in $HOME.
+            self.assertFalse(legacy.exists())
+
+    def test_a_keyring_that_cannot_be_copied_is_not_a_sign_in(self):
+        # Whatever goes wrong here, the launcher has to keep working: it can
+        # offer the sign-in, which is worth one device rather than a crash.
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp), \
+                mock.patch.object(xodus, "_WARNED", {}), \
+                mock.patch.object(xodus.tempfile, "mkstemp",
+                                  side_effect=OSError("no space")), \
+                mock.patch.object(xodus, "warn") as warned:
+            self._legacy(tmp)
+
+            self.assertFalse(xodus.signed_in())
+            self.assertFalse(xodus.signed_in())
+
+        self.assertEqual(warned.call_count, 1)
+
+    def test_a_home_that_cannot_be_created_is_reported_once(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp), \
+                mock.patch.object(xodus.Path, "mkdir",
+                                  side_effect=OSError("read-only")), \
+                mock.patch.object(xodus, "_WARNED", {}), \
+                mock.patch.object(xodus, "warn") as warned:
+            xodus.home()
+            xodus.home()
+
+        self.assertEqual(warned.call_count, 1)
 
 
 class FailureLineTests(unittest.TestCase):
@@ -255,6 +382,21 @@ class InstallErrorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, ensure, signed, stream:
             with self.assertRaises(xodus.NotSignedIn):
                 xodus.install("9NBLGGH2JHXJ", Path(tmp))
+
+    def test_an_exhausted_device_pool_says_where_devices_are_removed(self):
+        # The account is out of Store devices -- most likely because every
+        # Flatpak restart claimed another one (issue #198). Microsoft's own
+        # sentence does not say where they are given back.
+        ensure, signed, stream = self._patched(1, [
+            "not entitled to this content: Device group is full, please "
+            "remove a device and try again."])
+        with tempfile.TemporaryDirectory() as tmp, ensure, signed, stream:
+            with self.assertRaises(xodus.XodusError) as raised:
+                xodus.install("9NBLGGH2JHXJ", Path(tmp))
+        message = str(raised.exception)
+        self.assertIn("account.microsoft.com/devices/content", message)
+        # Not an ownership failure, which is what "not entitled" looks like.
+        self.assertNotIsInstance(raised.exception, xodus.NotOwned)
 
     def test_other_failures_keep_the_last_line(self):
         ensure, signed, stream = self._patched(1, ["", "disk on fire"])
@@ -337,6 +479,23 @@ class InstallCacheTests(unittest.TestCase):
             _, exc = self._install(dest, [lambda d: (0, ["Complete"])])
             self.assertIn("installed no game", str(exc))
             self.assertEqual(list(dest.glob(".xodus-streaming*")), [])
+
+    def test_exiting_zero_without_the_package_is_a_failure(self):
+        # Every path that ends xodus-cli early -- no licence, no disk space --
+        # returns before it renames the package into place, and still exits 0.
+        # Over an older build already unpacked here that read as a finished
+        # install, and the game died at launch instead, on a package that was
+        # never written.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+            _install_build(dest)
+            (dest / xodus.PACKAGE_CACHE).unlink()
+            _, exc = self._install(
+                dest,
+                [lambda d: (0, ["not enough free disk space on /home: need "
+                                "8 bytes, have 4 bytes (files: 8)"])])
+            self.assertIsNotNone(exc)
+            self.assertIn("free disk space", str(exc))
 
     def test_a_truncated_mirror_falls_through_to_the_next_one(self):
         mirrors = ["http://assets1.xboxlive.com/a.msixvc",
@@ -520,15 +679,76 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
     EXE = "/games/release/1.26.44.3/Minecraft.Windows.exe"
     NT = "\\??\\Z:\\games\\release\\1.26.44.3\\Minecraft.Windows.exe"
 
-    def _wrap(self, tmp, argv, stage_dir=None):
+    def _wrap(self, tmp, argv, stage_dir=None, env=None):
+        # xodus-cli decrypts the executable out of the package it keeps beside
+        # it, so an encrypted build that can start always has one.
+        game = Path(tmp) / "game"
+        game.mkdir(parents=True, exist_ok=True)
+        (game / xodus.PACKAGE_CACHE).write_bytes(b"package")
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(
                 xodus, "ensure_cli", return_value=Path("/opt/xodus-cli")))
+            # An encrypted build is licensed at every launch, so the wrapper
+            # is only ever built for an account that is linked.
+            stack.enter_context(mock.patch.object(
+                xodus, "signed_in", return_value=True))
+            stack.enter_context(mock.patch.object(
+                xodus.webview, "apply", return_value={}))
             if stage_dir is not None:
                 stack.enter_context(mock.patch.object(
                     xodus, "staging_dir", return_value=Path(stage_dir)))
             return xodus.wrap_encrypted_launch(argv, Path(tmp) / "game",
-                                               Path(tmp) / "run")
+                                               Path(tmp) / "run", env=env)
+
+    def test_running_an_encrypted_build_needs_the_store_account(self):
+        # It used to get as far as xodus-cli, which died on a missing keyring
+        # entry -- a Rust panic, in a launcher that has a button for exactly
+        # this (issue #198).
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(xodus, "ensure_cli",
+                                  return_value=Path("/opt/xodus-cli")), \
+                mock.patch.object(xodus, "signed_in", return_value=False):
+            with self.assertRaises(xodus.NotSignedIn):
+                xodus.wrap_encrypted_launch(
+                    [sys.executable, self.EXE], Path(tmp) / "game",
+                    Path(tmp) / "run")
+
+    def test_a_build_without_its_package_is_named_not_panicked_on(self):
+        # xodus-cli opens the package unconditionally and unwraps the error,
+        # so a game directory that lost it took the launcher down with a Rust
+        # panic ("run.rs:133 ... Os { code: 2, kind: NotFound }").
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(xodus, "ensure_cli",
+                                  return_value=Path("/opt/xodus-cli")), \
+                mock.patch.object(xodus, "signed_in", return_value=True):
+            game = Path(tmp) / "game"
+            game.mkdir()
+            with self.assertRaises(xodus.XodusError) as raised:
+                xodus.wrap_encrypted_launch(
+                    [sys.executable, self.EXE], game, Path(tmp) / "run")
+        message = str(raised.exception)
+        self.assertIn(xodus.PACKAGE_CACHE, message)
+        self.assertIn(str(game), message)
+
+    def test_xodus_reads_the_licence_from_the_launchers_home(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:
+            env = {"HOME": "/home/player"}
+
+            self._wrap(tmp, [sys.executable, self.EXE], env=env)
+
+            self.assertEqual(env["HOME"], str(home))
+
+    def test_the_game_is_handed_back_the_players_own_home(self):
+        # Wine, umu and the Steam runtime all keep state under $HOME; only
+        # xodus-cli, one exec further out, wants the launcher's.
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp):
+            recorder, argv = self._recorder(tmp, "os.environ['HOME']")
+            cmd = self._wrap(tmp, argv, env={"HOME": "/home/player"})
+            fd = self._memfd()
+
+            self._run(cmd[3], self.NT, f"{fd}:{self.NT}", (fd,), check=True)
+
+            self.assertEqual(recorder.read_text(), "/home/player")
 
     def test_images_left_by_a_dead_launch_are_swept(self):
         stale = Path(tempfile.mkstemp(prefix="bol-", dir="/dev/shm")[1])

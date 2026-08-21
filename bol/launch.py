@@ -53,6 +53,7 @@ from .prefix import (
     prefix_processes,
     proton_umu_cmd,
     restore_truncated_game_options,
+    seed_default_servers,
     snapshot_game_options,
 )
 from .proton import custom_proton, patch_proton, proton_path
@@ -66,10 +67,12 @@ from .util import (
     LAUNCHER_OWNED_ENV_ALTERNATIVE,
     launcher_owned_overrides,
     load_settings,
+    steam_app_id,
 )
 from .vkd3d import prepare_universal_vkd3d
 from .waylanddrv import engine_wayland_driver_problem
 from .winegdk import ensure_winegdk
+from .x11 import tag_steam_game_windows
 
 
 # Completes both "Minecraft starts in …" sentences below. Keep the wording in
@@ -272,6 +275,72 @@ def _is_steam_deck(environ=None, product_name_path=None):
         }
     except OSError:
         return False
+
+
+# Long enough for a cold Steam Deck to reach the menu, short enough that a
+# launch which never opens a window still reports why before the player quits.
+_STEAM_WINDOW_TAG_DEADLINE = 180.0
+
+
+def _steam_game_window_tagger(env, exe, environ=None, single_window=None,
+                              deadline=_STEAM_WINDOW_TAG_DEADLINE,
+                              clock=time.time, tag=None):
+    """A callable that gives Minecraft's window this session's Steam identity.
+
+    Steam Game Mode presents whichever window gamescope can attribute to the
+    application Steam launched, and gamescope attributes a window either from
+    its ``STEAM_GAME`` property or by walking the owning process up to Steam's
+    reaper. Out of the Flatpak neither route reaches Minecraft: the game is
+    started through the Flatpak portal, so its process tree no longer leads
+    back to that reaper, and this engine is built from Wine rather than
+    Proton's fork, which is what sets ``STEAM_GAME``. The window is mapped and
+    rendering while gamescope considers only Steam focusable, and that reaches
+    the player as a game that is audible but never appears (#199).
+
+    Returns None when there is nothing to do, and otherwise a callable that
+    makes one attempt per call and reports True once there is no point in
+    calling it again. It keeps watching after the first success, because Wine
+    builds a new X window whenever the game changes what kind of window it
+    wants, and a replacement starts out with no identity of its own again.
+    """
+    app_id = steam_app_id(environ)
+    display = str(env.get("DISPLAY") or "").strip()
+    if not app_id or not display or env.get("PROTON_ENABLE_WAYLAND") == "1":
+        return None
+    if single_window is None:
+        single_window = single_window_session()
+    if not single_window:
+        return None
+    # Wine names a window's class after the executable it runs, lowercased.
+    wm_class = Path(exe).name.lower()
+    stamp = tag_steam_game_windows if tag is None else tag
+    started = clock()
+    tagged = set()
+    reported = set()
+
+    def attempt():
+        try:
+            fresh = stamp(app_id, wm_class, display=display, skip=tagged)
+        except Exception as error:
+            warn("Could not give the game window this session's Steam "
+                 "application ID (%s). If Minecraft stays invisible in Game "
+                 "Mode, this is why." % type(error).__name__)
+            return True
+        if fresh:
+            tagged.update(fresh)
+            if "tagged" not in reported:
+                reported.add("tagged")
+                info("Minecraft's window now carries Steam application ID %s, "
+                     "so Game Mode can bring it to the front." % app_id)
+        elif (not tagged and "missing" not in reported
+                and clock() - started >= deadline):
+            reported.add("missing")
+            warn("No Minecraft window appeared on this session's display, so "
+                 "none could be given Steam application ID %s. In Game Mode "
+                 "the game keeps running without ever being shown." % app_id)
+        return False
+
+    return attempt
 
 
 def _warn_custom_env_overrides(custom_env):
@@ -706,6 +775,9 @@ def _launch_once(lock_fds=(), on_started=None):
     # that writes options.txt can be running, whatever wineboot left behind.
     restore_truncated_game_options(prefix_idle=True)
     snapshot_game_options()
+    # The Servers tab is read from disk at startup, so the servers this
+    # launcher ships with have to be in the list before the game opens it.
+    seed_default_servers(prefix_idle=True)
     info("Starting Minecraft … sign in with Microsoft in-game, then "
          "join your server from the Servers tab.")
     glog = open(LOGS / "minecraft.log", "w")
@@ -749,12 +821,19 @@ def _launch_once(lock_fds=(), on_started=None):
                      "(%s)." % type(hook_error).__name__)
         started = time.time()
         announced = False
+        # There is no window yet to give Steam's identity to, so this watches
+        # for one on the same tick that waits on the game process rather than
+        # adding a thread of its own.
+        tag_game_window = None if use_gamescope else \
+            _steam_game_window_tagger(env, exe)
         while True:
             try:
                 rc = proc.wait(timeout=1)
                 game_returned = True
                 break
             except subprocess.TimeoutExpired:
+                if tag_game_window is not None and tag_game_window():
+                    tag_game_window = None
                 if not announced and time.time() - started > 8:
                     announced = True
                     ok("Minecraft is running — close the game window to come "

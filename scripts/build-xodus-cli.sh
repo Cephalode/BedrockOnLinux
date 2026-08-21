@@ -44,7 +44,8 @@ echo "== Building xodus-cli"
 # key-chain-file is not optional: without it xodus stores tokens through a
 # D-Bus secret service, which does not exist in a Steam Deck Game Mode session
 # or inside a Flatpak sandbox, and every command needing device credentials
-# fails. With it the tokens live in ~/.xodus-keyring.ron.
+# fails. With it the tokens live in $HOME/.xodus-keyring.ron, where $HOME is
+# the directory bol.xodus.home() hands the binary rather than the user's own.
 #
 # --remap-path-prefix keeps the build directory out of the binary, and
 # CARGO_INCREMENTAL=0 + -C strip=symbols drop the two other common sources of

@@ -1,11 +1,11 @@
-/* BedrockOnLinux — site behaviour.
-   One job: point the download buttons at the current release. Progressive —
-   with JavaScript off, every button already links to the releases page. */
+/* BedrockOnLinux site behaviour.
+   One job: point the download buttons at the current release and keep the
+   install commands naming the real files. Progressive: with JavaScript off,
+   every button already links to the releases page and the commands name the
+   release this page was built for. The system picker is pure CSS. */
 
 (function () {
   "use strict";
-
-  /* ---- download buttons ------------------------------------------------ */
 
   var API = "https://api.github.com/repos/Wyze3306/BedrockOnLinux/releases/latest";
   var CACHE_KEY = "bol-latest-release";
@@ -34,21 +34,31 @@
       });
     });
 
+    /* Download buttons: real URL, real size. */
     document.querySelectorAll("[data-asset]").forEach(function (link) {
       var asset = found[link.getAttribute("data-asset")];
       if (!asset) return;
       link.href = asset.browser_download_url;
-      var label = link.querySelector(".asset-size");
+      var label = link.querySelector(".btn-size");
       if (label) label.textContent = size(asset.size);
     });
 
+    /* Install commands: name the file the visitor is about to download. */
+    document.querySelectorAll("[data-file]").forEach(function (slot) {
+      var asset = found[slot.getAttribute("data-file")];
+      if (asset) slot.textContent = asset.name;
+    });
+
     var version = (release.tag_name || "").replace(/^v/, "");
+    var tag = document.getElementById("ver");
+    if (tag && version) tag.textContent = "v" + version;
+
     var main = document.getElementById("dl-main");
     var sub = document.getElementById("dl-main-sub");
     if (main && found.appimage) main.href = found.appimage.browser_download_url;
     if (sub && found.appimage) {
-      sub.textContent = "AppImage · " + size(found.appimage.size) +
-        (version ? " · " + version : "");
+      sub.textContent = "AppImage, " + size(found.appimage.size) +
+        (version ? ", v" + version : "");
     }
   }
 

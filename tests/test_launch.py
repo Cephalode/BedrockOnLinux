@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -17,7 +18,8 @@ class ReadyLaunchHarness:
     def _exercise_ready_launch(self, root, popen, arm, disarm,
                                prefix_idle=True, mark=None, preauth=True,
                                lock_fds=(), managed_engine=True,
-                               umu_env=None, account=None, on_started=None):
+                               umu_env=None, account=None, on_started=None,
+                               extra_settings=None, environ=None):
         content = root / "content"
         logs = root / "logs"
         data = root / "data"
@@ -26,8 +28,9 @@ class ReadyLaunchHarness:
         data.mkdir(exist_ok=True)
         (content / "Minecraft.Windows.exe").write_bytes(b"MZ")
         settings = {"game_dir": str(content)}
+        settings.update(extra_settings or {})
         patches = (
-            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.dict(os.environ, dict(environ or {}), clear=True),
             mock.patch.object(launch, "CONTENT", content),
             mock.patch.object(launch, "LOGS", logs),
             mock.patch.object(launch, "DATA", data),
@@ -64,6 +67,7 @@ class ReadyLaunchHarness:
             mock.patch.object(launch, "patch_options"),
             mock.patch.object(launch, "snapshot_game_options"),
             mock.patch.object(launch, "restore_truncated_game_options"),
+            mock.patch.object(launch, "seed_default_servers"),
             mock.patch.object(launch, "diagnose", return_value=[]),
             mock.patch.object(launch, "_prefix_stably_idle_after_wrapper",
                               return_value=prefix_idle),
@@ -937,6 +941,209 @@ class SingleWindowSessionTests(unittest.TestCase):
                         "the session shape does not depend on first-run "
                         "state")):
             self.assertTrue(launch.single_window_session({}))
+
+
+class SteamGameWindowTaggerTests(unittest.TestCase):
+    """Issue #199: in Game Mode the game window needs Steam's own identity.
+
+    Gamescope attributes a window either from its STEAM_GAME property or by
+    walking the owning process up to Steam's reaper. Started through the
+    Flatpak portal, Minecraft has neither, so the launcher stamps the property
+    on the window itself once the game has opened it.
+    """
+
+    DECK_ENV = {"SteamAppId": "2716672805",
+                "SteamGameId": "11668020851441139712"}
+    GAME_EXE = "/games/1.26.44.3/Minecraft.Windows.exe"
+
+    def _tagger(self, env=None, environ=None, single_window=True, tag=None,
+                clock=None, deadline=180.0):
+        return launch._steam_game_window_tagger(
+            {"DISPLAY": ":1"} if env is None else env,
+            self.GAME_EXE,
+            environ=self.DECK_ENV if environ is None else environ,
+            single_window=single_window,
+            deadline=deadline,
+            clock=(lambda: 0.0) if clock is None else clock,
+            tag=tag)
+
+    def test_the_window_is_tagged_with_the_inherited_application_id(self):
+        calls = []
+
+        def tag(app_id, wm_class, display=None, skip=()):
+            calls.append((app_id, wm_class, display, set(skip)))
+            return (20971521,)
+
+        attempt = self._tagger(tag=tag)
+        with mock.patch.object(launch, "info") as told:
+            self.assertFalse(attempt())
+        self.assertEqual(
+            calls, [("2716672805", "minecraft.windows.exe", ":1", set())])
+        self.assertIn("2716672805", told.call_args[0][0])
+
+    def test_a_window_it_already_tagged_is_never_tagged_twice(self):
+        skips = []
+
+        def tag(_app_id, _wm_class, display=None, skip=()):
+            skips.append(set(skip))
+            return (20971521,) if not skip else ()
+
+        attempt = self._tagger(tag=tag)
+        with mock.patch.object(launch, "info") as told:
+            attempt()
+            attempt()
+            attempt()
+        self.assertEqual(skips, [set(), {20971521}, {20971521}])
+        told.assert_called_once()
+
+    def test_a_window_the_game_replaces_is_tagged_again(self):
+        found = iter([(1,), (), (2,)])
+
+        attempt = self._tagger(tag=lambda *_a, **_k: next(found))
+        with mock.patch.object(launch, "info") as told:
+            for _ in range(3):
+                self.assertFalse(attempt())
+        # Reported once: the second window is the same fact, not a new one.
+        told.assert_called_once()
+
+    def test_it_keeps_watching_until_the_game_opens_its_window(self):
+        found = iter([(), (), (7,)])
+        attempt = self._tagger(tag=lambda *_a, **_k: next(found))
+        with mock.patch.object(launch, "info") as told, \
+                mock.patch.object(launch, "warn") as complained:
+            for _ in range(3):
+                self.assertFalse(attempt())
+        told.assert_called_once()
+        complained.assert_not_called()
+
+    def test_a_launch_that_never_opens_a_window_says_so_once(self):
+        now = [0.0]
+        attempt = self._tagger(tag=lambda *_a, **_k: (), clock=lambda: now[0],
+                               deadline=180.0)
+        with mock.patch.object(launch, "warn") as told:
+            self.assertFalse(attempt())
+            told.assert_not_called()
+            now[0] = 181.0
+            self.assertFalse(attempt())
+            self.assertFalse(attempt())
+        told.assert_called_once()
+        self.assertIn("2716672805", told.call_args[0][0])
+
+    def test_a_window_found_late_is_never_reported_as_missing(self):
+        now = [0.0]
+        found = iter([(), (7,), ()])
+        attempt = self._tagger(tag=lambda *_a, **_k: next(found),
+                               clock=lambda: now[0], deadline=10.0)
+        with mock.patch.object(launch, "info"), \
+                mock.patch.object(launch, "warn") as told:
+            attempt()
+            now[0] = 5.0
+            attempt()
+            now[0] = 60.0
+            attempt()
+        told.assert_not_called()
+
+    def test_a_broken_x_connection_never_takes_the_launch_down(self):
+        def explode(*_args, **_kwargs):
+            raise OSError("display gone")
+
+        attempt = self._tagger(tag=explode)
+        with mock.patch.object(launch, "warn") as told:
+            self.assertTrue(attempt())
+        told.assert_called_once()
+
+    def test_a_launch_steam_did_not_start_is_left_alone(self):
+        for environ in ({}, {"SteamAppId": "0"}, {"SteamAppId": "default"}):
+            with self.subTest(environ=environ):
+                self.assertIsNone(self._tagger(environ=environ))
+
+    def test_an_ordinary_desktop_session_is_left_alone(self):
+        # Nothing there reads STEAM_GAME, and the window is presented anyway.
+        self.assertIsNone(self._tagger(single_window=False))
+
+    def test_a_launch_without_an_x_display_is_left_alone(self):
+        for env in ({}, {"DISPLAY": "  "},
+                    {"DISPLAY": ":1", "PROTON_ENABLE_WAYLAND": "1"}):
+            with self.subTest(env=env):
+                self.assertIsNone(self._tagger(env=env))
+
+    def test_the_session_shape_is_probed_when_the_caller_does_not_say(self):
+        with mock.patch.object(launch, "single_window_session",
+                               return_value=False) as probe:
+            self.assertIsNone(launch._steam_game_window_tagger(
+                {"DISPLAY": ":1"}, self.GAME_EXE, environ=self.DECK_ENV))
+        probe.assert_called_once_with()
+
+
+class SteamWindowTaggingDuringLaunchTests(ReadyLaunchHarness,
+                                          unittest.TestCase):
+    """The tagger runs on the same tick that waits on the game process."""
+
+    GAME_MODE = {"SteamAppId": "2716672805", "DISPLAY": ":1"}
+
+    def _play(self, environ=None, extra_settings=None,
+              gamescope_installed=False, attempts=(False, True)):
+        """One launch whose game process stays up for `len(attempts)` ticks."""
+        self.tagger_calls = []
+        remaining = list(attempts)
+
+        def attempt():
+            self.tagger_calls.append("tried")
+            return remaining.pop(0) if remaining else True
+
+        ticks = [subprocess.TimeoutExpired("umu", 1)] * len(attempts) + [0]
+
+        def popen(*_a, **_kw):
+            proc = mock.Mock()
+
+            def wait(timeout=None):
+                tick = ticks.pop(0)
+                if isinstance(tick, BaseException):
+                    raise tick
+                return tick
+
+            proc.wait.side_effect = wait
+            return proc
+
+        factory = mock.Mock(return_value=attempt)
+        which = (lambda name: "/usr/bin/gamescope"
+                 if gamescope_installed else None)
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(
+                    launch, "_steam_game_window_tagger", factory), \
+                mock.patch.object(launch.shutil, "which", which), \
+                mock.patch.object(launch, "_screen_wh", return_value=None):
+            self._exercise_ready_launch(
+                Path(td), popen,
+                arm=lambda: "owned-token",
+                disarm=lambda _token: True,
+                environ=self.GAME_MODE if environ is None else environ,
+                extra_settings=extra_settings,
+            )
+        return factory
+
+    def test_the_tagger_is_built_from_the_launch_env_and_the_game(self):
+        factory = self._play()
+        env, exe = factory.call_args[0]
+        self.assertEqual(env["DISPLAY"], ":1")
+        self.assertTrue(exe.endswith("Minecraft.Windows.exe"))
+
+    def test_it_is_retried_every_tick_until_it_reports_it_is_finished(self):
+        self._play(attempts=(False, False, True))
+        self.assertEqual(len(self.tagger_calls), 3)
+
+    def test_it_is_not_called_again_once_it_is_finished(self):
+        self._play(attempts=(True, False, False))
+        self.assertEqual(len(self.tagger_calls), 1)
+
+    def test_a_gamescope_of_our_own_owns_its_windows_and_is_left_alone(self):
+        # BOL_GAMESCOPE nests a compositor of our own: the game window lives
+        # on its display, not on the session's, and it needs no Steam identity
+        # to be presented there.
+        factory = self._play(extra_settings={"gamescope": "1"},
+                             gamescope_installed=True)
+        factory.assert_not_called()
+        self.assertEqual(self.tagger_calls, [])
 
 
 class LaunchStartedHookTests(ReadyLaunchHarness, unittest.TestCase):

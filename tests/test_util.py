@@ -53,6 +53,35 @@ class ScreenWHTests(unittest.TestCase):
         mocked.assert_called_once_with(runner)
 
 
+class SteamAppIdTests(unittest.TestCase):
+    """The identity Steam hands a launch, as gamescope and the overlay
+    key it."""
+
+    def test_a_numeric_application_id_is_returned(self):
+        self.assertEqual(
+            util.steam_app_id({"SteamAppId": "2716672805"}), "2716672805")
+
+    def test_surrounding_whitespace_is_ignored(self):
+        self.assertEqual(util.steam_app_id({"SteamAppId": " 480 "}), "480")
+
+    def test_no_steam_launch_has_no_application_id(self):
+        for environ in ({}, {"SteamAppId": ""}, {"SteamAppId": "   "}):
+            with self.subTest(environ=environ):
+                self.assertIsNone(util.steam_app_id(environ))
+
+    def test_a_zero_or_non_numeric_value_is_not_an_application_id(self):
+        # "default" is what UMU writes when it is given no GAMEID (#199), and
+        # a zero is the placeholder Steam and UMU both use for "none".
+        for value in ("default", "0", "00", "umu-480", "12.5", "-3", "٣"):
+            with self.subTest(value=value):
+                self.assertIsNone(util.steam_app_id({"SteamAppId": value}))
+
+    def test_the_64_bit_game_id_is_never_used_as_the_application_id(self):
+        # A non-Steam shortcut carries a different, 64-bit identifier there.
+        self.assertIsNone(
+            util.steam_app_id({"SteamGameId": "11668020851441139712"}))
+
+
 class LauncherCommandTests(unittest.TestCase):
     """Every packaging must print an invocation the user can actually run."""
 

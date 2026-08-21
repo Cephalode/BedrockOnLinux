@@ -33,9 +33,9 @@ from .config import (
     WINEGDK_OUT,
 )
 from .log import BolError, die, info, ok, warn
-from .perfcheck import find_options_files
+from .perfcheck import find_game_data_dirs, find_options_files
 from .proton import proton_path
-from .util import download, sha256_file
+from .util import download, sha256_file, steam_app_id
 
 # Records the engine revision a managed prefix was last built/refreshed with,
 # so an engine upgrade can refresh the prefix's cached Windows system DLLs
@@ -232,9 +232,16 @@ def proton_umu_cmd(exe, prefix=None):
             env["PROTON_USE_WOW64"] = "1"
     except (OSError, RuntimeError):
         pass
-    # GAMEID selects protonfixes, not the inherited Steam session identity.
+    # GAMEID selects protonfixes, but UMU also rebuilds the Steam session
+    # identity from it: SteamAppId and SteamGameId inside the container become
+    # whatever follows "umu-". Its own `umu-default` fallback therefore turns
+    # a launch Steam started into the literal strings "SteamAppId=default"
+    # and "SteamGameId=default" (#199). Hand it back the inherited application
+    # ID so the container keeps the identity Steam gave this session, and keep
+    # the neutral default for every launch that never had one.
     game_id = env.get("GAMEID", "").strip()
-    env["GAMEID"] = game_id or "umu-default"
+    app_id = steam_app_id(env)
+    env["GAMEID"] = game_id or (f"umu-{app_id}" if app_id else "umu-default")
     return [sys.executable, str(ensure_umu()), exe], env
 
 
@@ -924,7 +931,7 @@ def _options_intact(data) -> bool:
     return any(b":" in line for line in data.splitlines())
 
 
-def _write_options_atomically(path: Path, data: bytes) -> bool:
+def _write_file_atomically(path: Path, data: bytes) -> bool:
     """Replace *path* with *data* in one step, or leave it exactly as it was.
 
     Writing in place is what produces a half-file if anything interrupts the
@@ -989,7 +996,7 @@ def snapshot_game_options(prefix=None) -> int:
         if _read_bytes(backup) == data:
             kept += 1
             continue
-        if _write_options_atomically(backup, data):
+        if _write_file_atomically(backup, data):
             kept += 1
     return kept
 
@@ -1011,7 +1018,7 @@ def restore_truncated_game_options(prefix=None, prefix_idle=None):
         if not _prefix_is_idle(prefix_idle):
             # The game is still shutting down and may yet finish its save.
             return restored
-        if _write_options_atomically(path, kept):
+        if _write_file_atomically(path, kept):
             restored.append(path)
     if restored:
         warn("Minecraft was interrupted while saving its settings and left "
@@ -1055,8 +1062,135 @@ def patch_options(prefix_idle=None):
     updated = _set_option_line(data, _MULTIPLAYER_WARNING_KEY, b"1")
     if updated is None or not _prefix_is_idle(prefix_idle):
         return
-    if _write_options_atomically(opt, updated):
+    if _write_file_atomically(opt, updated):
         ok("Multiplayer warning disabled")
+
+
+# The Servers tab keeps the player's own server list beside options.txt, in
+# the same per-account folder (#188): one
+# "<id>:<name>:<host>:<port>:<added>" line per server, in no particular
+# order. Minecraft has no way to import a server, so a server every player
+# should find there has to be written into that list before the game reads it.
+SERVERS_FILE = "external_servers.txt"
+
+# Records which defaults a list has already been offered, so a player who
+# deletes one has deleted it for good.
+SERVERS_SEEDED_SUFFIX = ".bol-seeded"
+
+# The folder the game reads while nobody is signed in, and the only one that
+# exists before the first launch.
+SHARED_GAME_DATA_REL = OPTIONS_REL.rsplit("/", 1)[0]
+
+# (name, host, port) of the servers this launcher puts in the Servers tab.
+# The name is what the tile reads until the server itself answers.
+DEFAULT_SERVERS = (
+    ("Linesia SkyFaction", "play.linesia.net", 19132),
+)
+
+
+def _server_address(host, port):
+    """One server's address, in the form the lists are compared by."""
+    return "%s:%s" % (str(host).strip().lower(), str(port).strip())
+
+
+def _server_entries(data):
+    """The id and address of every server already in a Servers-tab list.
+
+    A server's name is free to hold a colon of its own, so the address is
+    read from the end of the line rather than by counting fields from the
+    start. An id that cannot be read counts as none: it must not keep the
+    address it belongs to from being seen as already listed.
+    """
+    entries = []
+    for line in (data or b"").decode("utf-8", "replace").splitlines():
+        fields = line.strip().split(":")
+        if len(fields) < 5:
+            continue
+        try:
+            index = int(fields[0])
+        except ValueError:
+            index = 0
+        entries.append((index, _server_address(fields[-3], fields[-2])))
+    return entries
+
+
+def _server_line(index, name, host, port):
+    """One external_servers.txt entry, as the game writes them."""
+    # A colon in the name would read as the start of the address.
+    label = str(name).replace(":", " ").strip()
+    return ("%d:%s:%s:%s:%d\n"
+            % (index, label, host, port, int(time.time()))).encode("utf-8")
+
+
+def _servers_seed_path(path: Path) -> Path:
+    return path.with_name(path.name + SERVERS_SEEDED_SUFFIX)
+
+
+def _seed_servers_file(path: Path, servers):
+    """Offer *servers* in one Servers-tab list; returns the names added."""
+    data = _read_bytes(path) or b""
+    if data and not data.endswith(b"\n"):
+        # Never let a list the game left unterminated swallow the new entry.
+        data += b"\n"
+    entries = _server_entries(data)
+    listed = {address for _index, address in entries}
+    offered = set((_read_bytes(_servers_seed_path(path))
+                   or b"").decode("utf-8", "replace").split())
+    index = max([number for number, _address in entries] or [0])
+    added, newly_offered = [], False
+    for name, host, port in servers:
+        address = _server_address(host, port)
+        if address in offered:
+            continue
+        offered.add(address)
+        newly_offered = True
+        if address in listed:
+            # The player added this server themselves: their own name for it
+            # and their own place in the list stay as they are.
+            continue
+        index += 1
+        data += _server_line(index, name, host, port)
+        added.append(name)
+    if not newly_offered:
+        return []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if added and not _write_file_atomically(path, data):
+        return []
+    _write_file_atomically(_servers_seed_path(path),
+                           ("\n".join(sorted(offered)) + "\n").encode("utf-8"))
+    return added
+
+
+def seed_default_servers(prefix=None, prefix_idle=None,
+                         servers=DEFAULT_SERVERS):
+    """Put the servers this launcher ships with in the game's Servers tab.
+
+    This writes into a file the player edits in-game, so it may only ever add
+    what that list has never been offered: a default that was deleted stays
+    deleted, and a server the player added themselves keeps the name they
+    gave it. Runs before the game starts, while nothing else can be writing
+    the list — the game rewrites the whole file whenever the list changes.
+    """
+    root = active_prefix() if prefix is None else Path(prefix)
+    if not servers or not _prefix_is_idle(prefix_idle):
+        return []
+    try:
+        folders = find_game_data_dirs(root)
+    except OSError:
+        return []
+    if not folders:
+        # Before the first launch the game has created none of them; the
+        # signed-out profile is the one it reads until an account is added.
+        folders = [root / SHARED_GAME_DATA_REL]
+    added = []
+    for folder in sorted(folders):
+        try:
+            added += _seed_servers_file(folder / SERVERS_FILE, servers)
+        except OSError:
+            continue
+    for name in dict.fromkeys(added):
+        ok(f"{name} added to the Servers tab")
+    return added
 
 
 def _mc_running():

@@ -109,6 +109,14 @@ _DIAG_RULES = [
     (r"Authentication failed|invalid_grant|login.*failed",
      "Microsoft sign-in failed in-game — sign in again "
      "(open the link, enter the code)."),
+    # An encrypted build is licensed to a device at every launch, so this is
+    # a launch failure and not only a download one. The account is out of
+    # Store devices, and where they are given back is not in the message.
+    (r"Device group is full",
+     "Microsoft refused the game licence: this account has reached its limit "
+     "of ten Microsoft Store download devices. Remove the ones you no longer "
+     "use at https://account.microsoft.com/devices/content, then click PLAY "
+     "again."),
     (r"\bInitialConnection[-_: ]*13(?!\d)",
      "LAN InitialConnection-13 — check that the host firewall allows "
      "Minecraft's inbound RakNet UDP 19132 and, on Windows, that the host "

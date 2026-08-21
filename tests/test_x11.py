@@ -1,10 +1,11 @@
-"""Tests for bol.x11 monitor geometry lookup."""
+"""Tests for bol.x11 monitor geometry and Steam window identity."""
 # SPDX-License-Identifier: MIT
 
 import subprocess
 import sys
 import types
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
@@ -526,6 +527,233 @@ class XlibRefreshTests(unittest.TestCase):
             self.assertAlmostEqual(
                 x11.primary_output_refresh_hz(runner=must_not_run),
                 143.85, places=2)
+
+
+class FakeWindows:
+    """A window tree, as bol.x11's tagger walks one.
+
+    `tree` maps a window to its children; `classes` maps a window to its
+    WM_CLASS names. Windows missing from `classes` have none, which is what
+    every non-toplevel X window looks like. Windows in `hidden` are mapped
+    nowhere a compositor could present them.
+    """
+
+    def __init__(self, tree, classes, root=1, hidden=()):
+        self.tree = tree
+        self.classes = classes
+        self._root = root
+        self.hidden = set(hidden)
+        self.properties = {}
+        self.flushes = 0
+        self.visited = []
+
+    def root(self):
+        return self._root
+
+    def children(self, window):
+        self.visited.append(window)
+        return tuple(self.tree.get(window, ()))
+
+    def wm_classes(self, window):
+        return tuple(self.classes.get(window, ()))
+
+    def is_presentable(self, window):
+        return window not in self.hidden
+
+    def set_cardinal(self, window, name, value):
+        self.properties[(window, name)] = value
+        return True
+
+    def flush(self):
+        self.flushes += 1
+
+
+GAME_CLASS = "minecraft.windows.exe"
+APP_ID = "2716672805"
+
+
+class SteamGameWindowTagTests(unittest.TestCase):
+    """Issue #199: gamescope focuses a window by its STEAM_GAME property, and
+    neither this engine's Wine nor the game's process tree supplies one inside
+    the Flatpak, so the launcher stamps it on the window itself."""
+
+    def _tag(self, windows, skip=()):
+        return x11.tag_steam_game_windows(
+            APP_ID, GAME_CLASS, windows=windows, skip=skip)
+
+    def test_a_toplevel_of_the_game_is_tagged_with_the_application_id(self):
+        windows = FakeWindows({1: (2, 3)}, {3: (GAME_CLASS, GAME_CLASS)})
+        self.assertEqual(self._tag(windows), (3,))
+        self.assertEqual(windows.properties,
+                         {(3, "STEAM_GAME"): 2716672805})
+        self.assertEqual(windows.flushes, 1)
+
+    def test_a_reparented_toplevel_is_found_inside_its_frame(self):
+        # A desktop window manager puts the client window inside a frame of
+        # its own, which carries no WM_CLASS; a plain compositing manager such
+        # as gamescope's leaves toplevels as children of the root.
+        windows = FakeWindows({1: (2,), 2: (5,)}, {5: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows), (5,))
+
+    def test_the_class_match_is_case_insensitive(self):
+        windows = FakeWindows({1: (2,)}, {2: ("Minecraft.Windows.exe",)})
+        self.assertEqual(
+            x11.tag_steam_game_windows(
+                APP_ID, "MINECRAFT.WINDOWS.EXE", windows=windows), (2,))
+
+    def test_every_matching_toplevel_is_tagged(self):
+        windows = FakeWindows(
+            {1: (2, 3)}, {2: (GAME_CLASS,), 3: (GAME_CLASS,)})
+        self.assertEqual(set(self._tag(windows)), {2, 3})
+        self.assertEqual(len(windows.properties), 2)
+
+    def test_a_window_already_tagged_is_watched_but_not_written_again(self):
+        # Every write costs gamescope a focus recomputation, so a window that
+        # already carries the identity must be left completely alone.
+        windows = FakeWindows({1: (2,)}, {2: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows, skip={2}), ())
+        self.assertEqual(windows.properties, {})
+        self.assertEqual(windows.flushes, 0)
+
+    def test_a_window_the_game_opens_later_is_tagged_in_a_later_pass(self):
+        # Wine builds a new X window when the game changes window kind, and
+        # the replacement starts out with no identity of its own.
+        windows = FakeWindows({1: (2,)}, {2: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows), (2,))
+        windows.tree[1] = (7,)
+        windows.classes = {7: (GAME_CLASS,)}
+        self.assertEqual(self._tag(windows, skip={2}), (7,))
+
+    def test_the_game_own_child_windows_are_left_alone(self):
+        # WM_CLASS belongs to a toplevel, so the client-area children Wine
+        # creates inside the game window must not be walked into and tagged.
+        windows = FakeWindows({1: (2,), 2: (3, 4)}, {2: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows), (2,))
+        self.assertNotIn(2, windows.visited)
+
+    def test_another_application_window_is_not_looked_inside(self):
+        windows = FakeWindows({1: (2,), 2: (3,)},
+                              {2: ("steamwebhelper",), 3: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows), ())
+        self.assertNotIn(2, windows.visited)
+
+    def test_wine_own_helper_windows_never_become_focus_candidates(self):
+        # Wine gives its 1x1 override-redirect default-IME and message windows
+        # the game's own class; giving those an identity would let gamescope
+        # present one of them instead of the game.
+        windows = FakeWindows(
+            {1: (2, 3, 4)},
+            {2: (GAME_CLASS,), 3: (GAME_CLASS,), 4: (GAME_CLASS,)},
+            hidden={3, 4})
+        self.assertEqual(self._tag(windows), (2,))
+        self.assertEqual(list(windows.properties), [(2, "STEAM_GAME")])
+
+    def test_a_window_not_mapped_yet_is_tagged_on_a_later_pass(self):
+        windows = FakeWindows({1: (2,)}, {2: (GAME_CLASS,)}, hidden={2})
+        self.assertEqual(self._tag(windows), ())
+        windows.hidden.clear()
+        self.assertEqual(self._tag(windows), (2,))
+
+    def test_no_game_window_yet_tags_nothing_and_flushes_nothing(self):
+        windows = FakeWindows({1: (2,)}, {2: ("steamwebhelper",)})
+        self.assertEqual(self._tag(windows), ())
+        self.assertEqual(windows.properties, {})
+        self.assertEqual(windows.flushes, 0)
+
+    def test_the_root_window_itself_is_never_tagged(self):
+        windows = FakeWindows({1: ()}, {1: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows), ())
+        self.assertEqual(windows.properties, {})
+
+    def test_a_deep_tree_is_not_walked_forever(self):
+        depth = x11._WINDOW_SEARCH_DEPTH
+        tree = {index: (index + 1,) for index in range(1, depth + 40)}
+        windows = FakeWindows(tree, {depth + 20: (GAME_CLASS,)})
+        self.assertEqual(self._tag(windows), ())
+        self.assertLessEqual(len(windows.visited), depth + 1)
+
+    def test_a_wide_tree_stays_within_its_budget(self):
+        windows = FakeWindows({1: tuple(range(2, 4000))}, {})
+        self.assertEqual(self._tag(windows), ())
+        self.assertLessEqual(len(windows.visited),
+                             x11._WINDOW_SEARCH_BUDGET)
+
+    def test_a_value_that_is_not_a_32_bit_application_id_is_refused(self):
+        for app_id in ("default", "", None, "0", "-1", str(2 ** 32),
+                       "11668020851441139712"):
+            with self.subTest(app_id=app_id):
+                windows = FakeWindows({1: (2,)}, {2: (GAME_CLASS,)})
+                self.assertEqual(
+                    x11.tag_steam_game_windows(
+                        app_id, GAME_CLASS, windows=windows), ())
+                self.assertEqual(windows.properties, {})
+
+    def test_an_empty_window_class_is_refused(self):
+        windows = FakeWindows({1: (2,)}, {2: (GAME_CLASS,)})
+        self.assertEqual(
+            x11.tag_steam_game_windows(APP_ID, "  ", windows=windows), ())
+        self.assertEqual(windows.properties, {})
+
+    def test_no_display_never_opens_one(self):
+        def must_not_open(_display):
+            raise AssertionError("no display must not be opened")
+
+        with mock.patch.object(x11, "_x_windows", must_not_open):
+            self.assertEqual(
+                x11.tag_steam_game_windows(
+                    APP_ID, GAME_CLASS, display=" "), ())
+
+    def test_an_unusable_display_tags_nothing(self):
+        @contextmanager
+        def no_display(_display):
+            yield None
+
+        with mock.patch.object(x11, "_x_windows", no_display):
+            self.assertEqual(
+                x11.tag_steam_game_windows(APP_ID, GAME_CLASS, display=":1"),
+                ())
+
+    def test_the_display_comes_from_the_environment_by_default(self):
+        seen = []
+
+        @contextmanager
+        def record(display):
+            seen.append(display)
+            yield None
+
+        with mock.patch.object(x11, "_x_windows", record), \
+                mock.patch.dict(x11.os.environ, {"DISPLAY": ":1"}, clear=True):
+            x11.tag_steam_game_windows(APP_ID, GAME_CLASS)
+        self.assertEqual(seen, [":1"])
+
+    def test_libx11_is_never_loaded_when_the_caller_supplies_the_windows(self):
+        def must_not_load():
+            raise AssertionError("libX11 must not be loaded")
+
+        windows = FakeWindows({1: (2,)}, {2: (GAME_CLASS,)})
+        with mock.patch.object(x11, "_load_xlib", must_not_load):
+            self.assertEqual(self._tag(windows), (2,))
+
+
+class XlibLoadTests(unittest.TestCase):
+    def test_a_missing_libx11_is_not_an_error(self):
+        with mock.patch.object(x11.ctypes.cdll, "LoadLibrary",
+                               side_effect=OSError("no libX11")):
+            self.assertIsNone(x11._load_xlib())
+
+    def test_a_libx11_without_the_needed_entry_points_is_not_an_error(self):
+        class Stub:
+            def __getattr__(self, name):
+                raise AttributeError(name)
+
+        with mock.patch.object(x11.ctypes.cdll, "LoadLibrary",
+                               return_value=Stub()):
+            self.assertIsNone(x11._load_xlib())
+
+    def test_the_error_handler_swallows_errors_instead_of_exiting(self):
+        # Xlib's default handler calls exit(); windows belonging to another
+        # client can disappear mid-walk, which must never take us down.
+        self.assertEqual(x11._ignore_x_error(None, None), 0)
 
 
 if __name__ == "__main__":

@@ -140,8 +140,17 @@ XODUS_WEBVIEW_SHA256 = "a9b04506446ba57fe40bae9e731857e681da230ce4db20e6613ae558
 XODUS_WEBVIEW_EXEC_DIR = "/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
 # Xodus keeps its tokens in a file keyring (built with --features
 # key-chain-file) instead of a D-Bus secret service, which does not exist in a
-# Game Mode session or inside a Flatpak sandbox.
-XODUS_KEYRING = HOME / ".xodus-keyring.ron"
+# Game Mode session or inside a Flatpak sandbox. It puts that file in $HOME,
+# which is why xodus-cli is given a home of its own here: inside the Flatpak
+# $HOME is a tmpfs thrown away with the sandbox, and a lost keyring is not
+# merely a sign-out -- the next command provisions a *new* Microsoft device,
+# and an account may hold ten before the Store refuses to license Minecraft at
+# all ("Device group is full", issue #198). Under DATA the tokens persist
+# wherever the rest of the launcher's state does, Flatpak included.
+XODUS_HOME = DATA / "xodus-home"
+XODUS_KEYRING = XODUS_HOME / ".xodus-keyring.ron"
+# Where sign-ins made before that directory existed left their tokens.
+LEGACY_XODUS_KEYRING = HOME / ".xodus-keyring.ron"
 
 # GetBasePackage only ever answers with the current build, but Microsoft's CDN
 # keeps the older ones reachable, and MinecraftBedrockArchiver/GdkLinks indexes

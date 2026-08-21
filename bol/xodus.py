@@ -33,11 +33,13 @@ from .config import (
     APP,
     CACHE,
     GDK_LINKS_URL,
+    LEGACY_XODUS_KEYRING,
     MC_PRODUCTS,
     WINEGDK_PREBUILT_REPO,
     XODUS_ARCHIVE_SHA256,
     XODUS_BIN,
     XODUS_DIR,
+    XODUS_HOME,
     XODUS_KEYRING,
     XODUS_REV,
 )
@@ -64,6 +66,12 @@ _NOT_OWNED = re.compile(r"package was not found|is it owned by the user", re.I)
 _NO_CREDENTIALS = re.compile(
     r"unable to initialize credentials|invalid sts token|"
     r"no user token|not logged in|didn't log in", re.I)
+# Microsoft licenses Store content to a device, and an account may hold ten of
+# them at once. Until issue #198 every restart of the Flatpak claimed another,
+# so an account can arrive here with its ten devices taken by a bug rather than
+# by ten machines -- and Microsoft's own sentence says nothing about where they
+# are given back.
+_DEVICE_LIMIT = re.compile(r"device group is full", re.I)
 
 # indicatif renders "  12.34 MiB/ 862.00 MiB"; the total bar is the one whose
 # message is the launcher-visible stage rather than a file name.
@@ -80,6 +88,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 # directory" is all a host without WebKitGTK ever gets to print.
 _LOADER_ERROR = re.compile(
     r"error while loading shared libraries:\s*([^:\s]+)")
+
+# Failures that would otherwise be repeated by every refresh of a window.
+_WARNED = {}
 
 
 def edition(edition_id):
@@ -265,12 +276,89 @@ def ensure_cli():
 # ---------------------------------------------------------------- account
 
 
+def home():
+    """The HOME xodus-cli is run with, created if it is not there yet.
+
+    Xodus writes its keyring to ``$HOME/.xodus-keyring.ron``, and $HOME is the
+    wrong place for it. Inside the Flatpak that directory is a tmpfs the
+    sandbox throws away on exit, so the sign-in lasted exactly as long as the
+    window it was made in (issue #198). Losing it is worse than a sign-out:
+    every Xodus command that needs an identity calls provision_device() when
+    the keyring has no device credentials, so each restart claimed *another*
+    Microsoft Store device, and an account may hold ten before the licensing
+    service stops handing out the game — "Device group is full, please remove
+    a device and try again", with the remedy on a web page rather than here.
+
+    A directory of the launcher's own avoids all of it: it is inside DATA, so
+    it persists exactly as long as the installed game does, in every packaging,
+    and it needs no Flatpak permission because that is already the app's own
+    storage. Nothing but Xodus is put in it — the user's real home is neither
+    read nor written.
+    """
+    try:
+        XODUS_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        # Once per run: signed_in() asks for this directory every time a
+        # window refreshes, and one that cannot be created stays that way.
+        if not _WARNED.get("home"):
+            _WARNED["home"] = True
+            warn(f"Could not create {XODUS_HOME} for the Microsoft Store "
+                 f"sign-in ({exc}).")
+        return XODUS_HOME
+    _adopt_legacy_keyring()
+    return XODUS_HOME
+
+
+def _adopt_legacy_keyring():
+    """Take along a keyring written before the launcher owned Xodus's home.
+
+    Anyone who signed in before this release has their tokens in
+    ``$HOME/.xodus-keyring.ron``, and starting that session over is not free:
+    it spends one of the account's ten Store devices. So the file comes with
+    them. It is copied rather than moved, like every other migration here, so
+    an older launcher on the same machine keeps the session it wrote; logout()
+    removes the copy left behind, so unlinking the account still leaves no
+    live tokens in the user's home directory.
+
+    Costs two stat() calls and touches nothing once there is a keyring in the
+    new place, which is what lets signed_in() ask for it on every refresh.
+    """
+    if XODUS_KEYRING.exists() or not LEGACY_XODUS_KEYRING.is_file():
+        return False
+    try:
+        blob = LEGACY_XODUS_KEYRING.read_bytes()
+        XODUS_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, staged = tempfile.mkstemp(prefix=".keyring-", dir=XODUS_HOME)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(blob)
+            # Xodus creates it 0600 and the tokens are the account; a
+            # world-readable copy would be the launcher's doing, not Xodus's.
+            os.chmod(staged, 0o600)
+            os.replace(staged, XODUS_KEYRING)
+        finally:
+            Path(staged).unlink(missing_ok=True)
+    except OSError as exc:
+        # Once per run, like home(): this is asked again at every refresh.
+        if not _WARNED.get("adopt"):
+            _WARNED["adopt"] = True
+            warn(f"Could not copy the Microsoft Store sign-in into "
+                 f"{XODUS_HOME} ({exc}); you may have to sign in again.")
+        return False
+    info("Kept the existing Microsoft Store sign-in "
+         f"({LEGACY_XODUS_KEYRING} → {XODUS_KEYRING}).")
+    return True
+
+
 def signed_in():
     """True when Xodus holds a usable Microsoft *user* session.
 
     Xodus is built with --features key-chain-file, so its tokens live in a
     single RON file instead of a D-Bus secret service (which does not exist in
-    a Steam Deck Game Mode session or inside a Flatpak sandbox).
+    a Steam Deck Game Mode session or inside a Flatpak sandbox); home() says
+    where that file is now kept. This is also where a keyring left in the
+    user's own home by an earlier release is taken over, because it is the
+    question every window asks before it offers anyone a sign-in.
 
     The file existing proves nothing: every command that needs an identity
     provisions device credentials first, which creates the keyring with only a
@@ -278,6 +366,7 @@ def signed_in():
     `xodus-cli login` stores under 'user-tokens' — without it the download dies
     deep inside Xodus on a missing token instead of asking anyone to sign in.
     """
+    _adopt_legacy_keyring()
     try:
         blob = XODUS_KEYRING.read_bytes()
     except OSError:
@@ -315,6 +404,15 @@ def logout(device=False):
     binary = ensure_cli()
     cmd = [str(binary), "logout"] + (["--device"] if device else [])
     subprocess.run(cmd, env=_env(binary), capture_output=True, text=True)
+    # xodus-cli only knows about the keyring it was pointed at. The one
+    # _adopt_legacy_keyring() copied from is still lying in the user's home
+    # with live tokens in it, and "unlink this account" has to mean that one
+    # too.
+    if XODUS_KEYRING.exists():
+        try:
+            LEGACY_XODUS_KEYRING.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _loader_failure(text):
@@ -341,14 +439,21 @@ def _env(binary=None):
     runtime added here rather than at the sign-in alone.
     """
     env = os.environ.copy()
-    # Xodus writes its file keyring under $HOME; keep it explicit so a launcher
-    # started with a scrubbed environment still finds the same session.
-    env.setdefault("HOME", str(Path.home()))
+    # Xodus writes its file keyring under $HOME, so $HOME is what decides
+    # whether the sign-in outlives the window it was made in: see home().
+    env["HOME"] = str(home())
     webview.apply(binary if binary is not None else XODUS_BIN, env)
     return env
 
 
 # ---------------------------------------------------------------- install
+
+# What xodus-cli names the package it keeps beside the game once a download
+# completed. It is not a leftover: the segments a GDK title flags
+# KEEP_ENCRYPTED_ON_DISK -- the game executable -- are only ever stored in
+# here, so it is read again at every launch as well as by the next delta.
+PACKAGE_CACHE = ".xodus-streaming.msixvc"
+_PACKAGE_CACHE_TMP = ".xodus-streaming-tmp*.msixvc"
 
 
 def _bytes(value, unit):
@@ -375,6 +480,19 @@ def game_root(dest):
     return None
 
 
+def has_package_cache(directory):
+    """Whether the package a build is decrypted from sits in ``directory``.
+
+    ``xodus-cli run`` reads the cache and the ciphertext segments out of the
+    single directory it is handed, so "beside the game" is literal: the
+    launcher cannot point it at a copy kept anywhere else.
+    """
+    try:
+        return (Path(directory) / PACKAGE_CACHE).is_file()
+    except OSError:
+        return False
+
+
 def _drop_cache(dest):
     """Delete the package cache xodus-cli left behind in ``dest``.
 
@@ -391,9 +509,9 @@ def _drop_cache(dest):
     ``dest`` holds no playable build for it to belong to.
     """
     dest = Path(dest)
-    stale = list(dest.glob(".xodus-streaming-tmp*.msixvc"))
+    stale = list(dest.glob(_PACKAGE_CACHE_TMP))
     if game_root(dest) is None:
-        stale += list(dest.glob(".xodus-streaming.msixvc"))
+        stale += list(dest.glob(PACKAGE_CACHE))
     for path in stale:
         try:
             path.unlink()
@@ -401,8 +519,17 @@ def _drop_cache(dest):
             pass
 
 
+_DEVICE_LIMIT_MESSAGE = (
+    "Microsoft will not license Minecraft to this machine: the account has "
+    "reached its limit of ten Microsoft Store download devices. Remove the "
+    "ones you no longer use at https://account.microsoft.com/devices/content, "
+    "then try again.")
+
+
 def _raise_unretryable(text):
     """Raise for the download failures another mirror cannot fix."""
+    if _DEVICE_LIMIT.search(text):
+        raise XodusError(_DEVICE_LIMIT_MESSAGE)
     if _NOT_OWNED.search(text):
         raise NotOwned(
             "The linked Microsoft account does not own this edition of "
@@ -446,14 +573,26 @@ def install(product, dest: Path, progress=None):
     for index, source in enumerate(sources):
         cmd = [str(binary), "streaming", source, str(dest)]
         code, tail = _run_streaming(cmd, progress)
-        if code == 0 and game_root(dest) is not None:
+        root = game_root(dest)
+        if code == 0 and root is not None and has_package_cache(dest):
             return dest
         # Xodus also exits 0 having installed nothing at all, when the cache it
         # resumed from makes the delta look empty. Treat that as the failure it
         # is, or the caller starts a game directory that was never written.
-        if code == 0:
+        if code == 0 and root is None:
             failure = ("The Minecraft download reported success but installed "
                        "no game.")
+        elif code == 0:
+            # Every path that ends the download early -- no licence, no disk
+            # space -- returns before xodus-cli renames its package into
+            # place, and still exits 0. With an older build already unpacked
+            # here that used to read as a finished install, and the game only
+            # failed hours later, at launch, on the package that was never
+            # written. It is not installed until it can be decrypted.
+            line = _failure_line(tail)
+            failure = ("The Minecraft download did not complete"
+                       + (f": {line}" if line else
+                          ", so the game cannot be decrypted."))
         else:
             _raise_unretryable("\n".join(tail))
             line = _failure_line(tail)
@@ -661,11 +800,12 @@ ARGV = json.loads({argv!r})
 LAUNCHER_PATH = {launcher_path!r}
 EXE_NAME = {exe_name!r}
 STAGE_DIR = {stage_dir!r}
-# What the game's environment looked like before the bundled WebKitGTK runtime
-# was added for `xodus-cli run` (empty when the host provided its own). That
-# runtime exists so xodus-cli can load; the game below must not inherit it,
-# since Wine and the Steam Linux Runtime bring their own libraries and a
-# stray LD_LIBRARY_PATH would put ours in front of them.
+# What the game's environment looked like before it was adjusted for
+# `xodus-cli run`: the bundled WebKitGTK runtime, where the host has none, and
+# the Xodus home the licence is read from. Neither belongs to the game. Wine
+# and the Steam Linux Runtime bring their own libraries, so a stray
+# LD_LIBRARY_PATH would put ours in front of them, and both keep state of
+# their own under $HOME.
 WEBVIEW_ENV = json.loads({webview_env!r})
 
 ENTRIES = []
@@ -752,12 +892,45 @@ def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
 
     ``env`` is the environment the game will be started with. Since xodus-cli
     is the outermost process, a host without WebKitGTK needs the bundled
-    runtime in *that* environment -- so it is added here and taken back out by
-    the wrapper, one exec before the game.
+    runtime in *that* environment -- and so does the Xodus home holding the
+    licence. Both are added here and taken back out by the wrapper, one exec
+    before the game.
     """
+    if not signed_in():
+        # The licence for an encrypted build is fetched at every launch, so a
+        # lost or unlinked session does not fail at the next download -- it
+        # fails here, and it used to do it as a Rust panic on a missing
+        # keyring entry (issue #198). Name what is missing instead: the
+        # launcher has a button for exactly this.
+        raise NotSignedIn(
+            "Minecraft is decrypted with the Microsoft account that owns it, "
+            "so it cannot start until that account is linked again.")
+    if not has_package_cache(game_dir):
+        # The other half of the same story: the account is linked, but the
+        # package the executable is decrypted *from* is not there. xodus-cli
+        # opens it unconditionally and unwraps the error, so what reached the
+        # player was a Rust panic naming a line of Rust
+        # ("run.rs:133 ... Os { code: 2, kind: NotFound }") and a launcher
+        # that died with it. Say which file is missing, and that only a fresh
+        # download brings it back: the segments it holds exist nowhere else
+        # on disk.
+        raise XodusError(
+            f"Minecraft's encrypted package ({PACKAGE_CACHE}) is missing "
+            f"from {game_dir}. The game executable there is ciphertext and "
+            "that package is what decrypts it, so this build cannot start "
+            "until it is downloaded again — reinstall this Minecraft "
+            "version from Install / Update.")
     binary = ensure_cli()
     _sweep_staged_images()
     restore = webview.apply(binary, env) if env is not None else None
+    if env is not None:
+        # `xodus-cli run` reads the licence out of the same keyring the
+        # download signed in to, so it needs the launcher's Xodus home too --
+        # and the game below must not inherit it: Wine, umu and the Steam
+        # runtime all keep state of their own under $HOME.
+        restore = dict(restore or {})
+        restore["HOME"] = env.get("HOME")
+        env["HOME"] = str(home())
     work_dir.mkdir(parents=True, exist_ok=True)
     wrapper = work_dir / "xodus-launch-wrapper.py"
     if launcher_path is None:

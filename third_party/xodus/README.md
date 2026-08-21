@@ -47,7 +47,11 @@ than a list of Bedrock versions.
 Xodus stores its tokens through a D-Bus secret service, which does not exist
 in a Steam Deck Game Mode session or inside a Flatpak sandbox, and every
 command that needs device credentials fails outright. With it, tokens go to
-`~/.xodus-keyring.ron`.
+`$HOME/.xodus-keyring.ron` — and `$HOME` is the launcher's own directory
+rather than the user's: see `bol.xodus.home()`. In the Flatpak the real home
+is a tmpfs the sandbox discards, and a discarded keyring is not a sign-out but
+a *new* provisioned Microsoft device, ten of which exhaust the account's Store
+download pool (issue #198).
 
 `xodus-cli` links `wry`/`tao` unconditionally for the login webview, so
 `libwebkit2gtk-4.1` is a build *and* runtime dependency. The `xodus` crate
