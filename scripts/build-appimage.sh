@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Portable AppImage with bundled CPython, Tk, login dependencies and CA store.
-# Xft/fontconfig/X11 remain host GUI dependencies, as with standard AppImages.
+# Portable AppImage with bundled CPython, PySide6-Essentials (Qt), login
+# dependencies and CA store. Xft/fontconfig/X11/Qt platform-plugin runtime
+# libraries remain host GUI dependencies, as with standard AppImages.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,12 +40,11 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
          "$APPDIR/usr/share/licenses/bedrock-on-linux"
 
-PBS_TAG="${PBS_TAG:-20260610}"; PBS_PY="${PBS_PY:-3.12.13}"; PYABI=cpython-312-x86_64-linux-gnu
+PBS_TAG="${PBS_TAG:-20260610}"; PBS_PY="${PBS_PY:-3.12.13}"
 PBS_ASSET="cpython-${PBS_PY}+${PBS_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${PBS_ASSET}"
 PBS_TARBALL="$CACHE/$PBS_ASSET"
 PBS_SHA256="c218f50baeb2c06a30c2f03db5986b2bad6ab7c8a52faad2d5a59bda0677b93a"
-TKVER="${TKVER:-8.6.14}"
 
 download_verified() {
   local url="$1" output="$2" expected="$3" label="$4" actual
@@ -66,13 +66,6 @@ download_verified() {
   mv -f -- "$output.part" "$output"
 }
 
-PATCHELF="${PATCHELF:-$(command -v patchelf || true)}"
-if [[ -z "$PATCHELF" ]]; then
-  python3 -m pip install --quiet --user patchelf 2>/dev/null || true
-  PATCHELF="$(command -v patchelf || echo "$HOME/.local/bin/patchelf")"
-fi
-[[ -x "$PATCHELF" ]] || { echo "!! need patchelf (pip install patchelf)" >&2; exit 1; }
-
 download_verified "$PBS_URL" "$PBS_TARBALL" "$PBS_SHA256" \
   "python-build-standalone archive"
 echo "== unpacking Python into the AppDir"
@@ -81,82 +74,15 @@ PYHOME="$APPDIR/usr/python"; PYBIN="$PYHOME/bin/python3.12"
 PYLIB="$PYHOME/lib"; DYN="$PYLIB/python3.12/lib-dynload"
 [[ -x "$PYBIN" ]] || { echo "!! bundled python missing" >&2; exit 1; }
 
-TKX="$CACHE/tkxft-${PBS_PY}-${TKVER}-relocatable-v3-no-xss"
-if [[ ! -f "$TKX/lib/libtk8.6.so" || ! -f "$TKX/_tkinter.${PYABI}.so" ]]; then
-  echo "== building Tcl/Tk ${TKVER} with Xft (one-time, cached)"
-  rm -rf "$TKX"; mkdir -p "$TKX"
-  bdir="$CACHE/tk-build"; rm -rf "$bdir"; mkdir -p "$bdir"
-  for kit in tcl tk; do
-    if [[ "$kit" == tcl ]]; then
-      kit_sha="5880225babf7954c58d4fb0f5cf6279104ce1cd6aa9b71e9a6322540e1c4de66"
-    else
-      kit_sha="8ffdb720f47a6ca6107eac2dd877e30b0ef7fac14f3a84ebbd0b3612cee41a94"
-    fi
-    download_verified \
-      "https://prdownloads.sourceforge.net/tcl/${kit}${TKVER}-src.tar.gz" \
-      "$CACHE/${kit}${TKVER}-src.tar.gz" "$kit_sha" "$kit source archive"
-    tar -C "$bdir" -xzf "$CACHE/${kit}${TKVER}-src.tar.gz"
-  done
-  tks="$CACHE/tksrc-${PBS_PY}"; mkdir -p "$tks/clinic"
-  base="https://raw.githubusercontent.com/python/cpython/v${PBS_PY}/Modules"
-  for f in _tkinter.c tkappinit.c tkinter.h clinic/_tkinter.c.h; do
-    case "$f" in
-      _tkinter.c) source_sha="c484afe880de65c628f5376adf0be413eae2f0d339d5ef5f33365c14ba59eca3" ;;
-      tkappinit.c) source_sha="312be438c11b08dd334c9a64149e94aef9ac31d24b7ae9b428c37f93f67821d6" ;;
-      tkinter.h) source_sha="229776646f467c4ed9ec1460a14b756bc2de5e5bd70ead431a495d21305f7675" ;;
-      clinic/_tkinter.c.h) source_sha="2a6f1f61b004e88fbb8769650699747119004076c45eb7d430beb0be93325658" ;;
-    esac
-    download_verified "$base/$f" "$tks/$f" "$source_sha" \
-      "CPython $f"
-  done
-  TK_HELPER="$SRC/scripts/build-appimage-tk-cache.sh"
-  if [[ -n "${BOL_TK_BUILD_ROOTFS:-}" ]]; then
-    ROOTFS="$(readlink -f -- "$BOL_TK_BUILD_ROOTFS")"
-    [[ -x "$ROOTFS/bin/bash" && -x "$ROOTFS/usr/bin/gcc" ]] \
-      || { echo "!! BOL_TK_BUILD_ROOTFS is not a prepared build rootfs: $ROOTFS" >&2; exit 1; }
-    echo "   compiling native Tk inside: $ROOTFS"
-    env ROOTFS="$ROOTFS" SRC="$SRC" CACHE="$CACHE" TK_HELPER="$TK_HELPER" \
-      BDIR="$bdir" TKX="$TKX" PYHOME="$PYHOME" TKS="$tks" \
-      TKVER="$TKVER" PYABI="$PYABI" \
-      unshare --user --map-root-user --mount --propagation private --fork \
-      /bin/bash -c '
-        set -euo pipefail
-        mkdir -p "$ROOTFS$SRC" "$ROOTFS$CACHE" "$ROOTFS/dev" "$ROOTFS/proc"
-        mount --bind "$SRC" "$ROOTFS$SRC"
-        mount --bind "$CACHE" "$ROOTFS$CACHE"
-        mount --rbind /dev "$ROOTFS/dev"
-        mount --make-rslave "$ROOTFS/dev"
-        mount --rbind /proc "$ROOTFS/proc"
-        mount --make-rslave "$ROOTFS/proc"
-        exec chroot "$ROOTFS" /usr/bin/env -i \
-          HOME=/tmp PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-          LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC \
-          /bin/bash "$TK_HELPER" "$BDIR" "$TKX" "$PYHOME" "$TKS" "$TKVER" "$PYABI"
-      '
-  else
-    bash "$TK_HELPER" "$bdir" "$TKX" "$PYHOME" "$tks" "$TKVER" "$PYABI"
-  fi
-fi
-
-echo "== grafting Xft Tk into the bundle"
-install -m644 "$TKX/lib/libtcl8.6.so" "$TKX/lib/libtk8.6.so" "$PYLIB/"
-cp -r "$TKX/lib/tcl8.6" "$TKX/lib/tk8.6" "$PYLIB/"
-install -m755 "$TKX/_tkinter.${PYABI}.so" "$DYN/_tkinter.${PYABI}.so"
-# drop python-build-standalone's no-Xft Tcl/Tk 9 so it can never be picked up
+# python-build-standalone bundles its own Tcl/Tk 9 + _tkinter for `tkinter`,
+# which nothing here imports anymore (PySide6/Qt replaced it) — drop it so it
+# can never be picked up, and drop the bundled Xlib six copy is not shipped
+# with the interpreter itself, only tkinter.
+rm -f "$DYN"/_tkinter.*.so
 rm -f "$PYLIB"/libtcl9*.so "$PYLIB"/libtcl9tk9*.so
 rm -rf "$PYLIB"/tcl9* "$PYLIB"/tk9* 2>/dev/null || true
-# rpath so the grafted libs find each other relative to the AppImage mount
-"$PATCHELF" --set-rpath '$ORIGIN'        "$PYLIB/libtcl8.6.so"
-"$PATCHELF" --set-rpath '$ORIGIN'        "$PYLIB/libtk8.6.so"
-"$PATCHELF" --set-rpath '$ORIGIN/../..'  "$DYN/_tkinter.${PYABI}.so"
-for library in "$PYLIB/libtcl8.6.so" "$PYLIB/libtk8.6.so"; do
-  [[ "$("$PATCHELF" --print-rpath "$library")" == '$ORIGIN' ]] || {
-    echo "!! non-relocatable RUNPATH remained in $library" >&2
-    exit 1
-  }
-done
 
-echo "== installing portable cryptography + certifi + customtkinter + python-xlib into the bundle"
+echo "== installing portable cryptography + certifi + PySide6-Essentials + python-xlib into the bundle"
 # Hash-pinned, wheels only, no sdist builds: the closure + SHA-256s live in
 # third_party/requirements-appimage.txt (--require-hashes rejects any mismatch).
 "$PYBIN" -m pip install --no-cache-dir --no-compile \
@@ -243,7 +169,8 @@ if violations:
     )
     raise SystemExit(
         "AppImage contains host-built ELF files newer than GLIBC_%d.%d:\n%s\n"
-        "Rebuild the Tcl/Tk cache on Debian 11 (Bullseye) and retry."
+        "Check the pinned wheel versions in "
+        "third_party/requirements-appimage.txt against this ceiling."
         % (*ceiling, details)
     )
 if rpath_violations:
@@ -288,8 +215,6 @@ cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 PY="$HERE/usr/python/bin/python3.12"
-export TCL_LIBRARY="$HERE/usr/python/lib/tcl8.6"
-export TK_LIBRARY="$HERE/usr/python/lib/tk8.6"
 CERT="$HERE/usr/python/lib/python3.12/site-packages/certifi/cacert.pem"
 if [ -f "$CERT" ]; then
   export SSL_CERT_FILE="$CERT"
@@ -302,9 +227,8 @@ chmod 755 "$APPDIR/AppRun"
 /bin/sh -n "$APPDIR/AppRun" \
   || { echo "!! AppRun is not compatible with /bin/sh" >&2; exit 1; }
 
-echo "== verifying the bundle: Xft Tk + cryptography + HTTPS, all self-contained"
-env -i TCL_LIBRARY="$PYHOME/lib/tcl8.6" TK_LIBRARY="$PYHOME/lib/tk8.6" \
-   SSL_CERT_FILE="$PYLIB/python3.12/site-packages/certifi/cacert.pem" \
+echo "== verifying the bundle: PySide6/Qt + cryptography + HTTPS, all self-contained"
+env -i SSL_CERT_FILE="$PYLIB/python3.12/site-packages/certifi/cacert.pem" \
    SSL_CERT_DIR=/nonexistent \
    ${DISPLAY:+DISPLAY="$DISPLAY"} ${XAUTHORITY:+XAUTHORITY="$XAUTHORITY"} \
    "$PYBIN" - <<'PY'
@@ -314,25 +238,32 @@ import time
 import urllib.error
 import urllib.request
 
-import _tkinter
 import cryptography
-import customtkinter
+import shiboken6
 import Xlib
 from importlib.metadata import version
-assert _tkinter.TK_VERSION == "8.6", _tkinter.TK_VERSION   # Xft build, not PBS Tk9
+from PySide6 import __version__ as pyside6_version
+from PySide6.QtCore import QLibraryInfo
 expected = {
     "cryptography": "43.0.3",
     "certifi": "2026.6.17",
     "cffi": "2.0.0",
     "pycparser": "3.0",
-    "customtkinter": "5.2.2",
-    "darkdetect": "0.8.0",
+    "shiboken6": "6.9.3",
+    "pyside6_essentials": "6.9.3",
     "packaging": "26.2",
     "python-xlib": "0.33",
     "six": "1.17.0",
 }
 actual = {package: version(package) for package in expected}
 assert actual == expected, (actual, expected)
+assert pyside6_version == "6.9.3", pyside6_version
+# The bundled Qt plugins (platforms/libqxcb.so, etc.) ship inside the
+# PySide6 wheel itself; PySide6 points Qt's plugin search path at its own
+# package directory on import, so this is what the app will actually find
+# at runtime rather than anything on the host.
+plugins_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+assert os.path.isdir(plugins_path), f"Qt plugins path missing: {plugins_path}"
 def verify_https():
     # The point of this check is that the bundled OpenSSL + certifi CA can
     # complete a real TLS handshake. A certificate/TLS failure is a genuine
@@ -363,17 +294,17 @@ def verify_https():
     return "HTTPS online check skipped (network unavailable)"
 
 https_status = verify_https()
-msg = (f"  bundle OK: Tk {_tkinter.TK_VERSION} | cryptography {cryptography.__version__}"
-       f" | customtkinter {customtkinter.__version__} | {https_status}")
+msg = (f"  bundle OK: PySide6 {pyside6_version} | cryptography {cryptography.__version__}"
+       f" | {https_status}")
 if os.environ.get("DISPLAY"):
-    import tkinter
-    from tkinter import font
-    r = tkinter.Tk()
-    r.withdraw()
-    n = len(set(font.families()))
-    r.destroy()
-    assert n > 100, f"Xft not active — only {n} fonts"
-    msg += f" | {n} font families (Xft, antialiased)"
+    # A real QApplication construction proves the bundled xcb platform
+    # plugin actually loads against the host's X11/xcb libraries — the one
+    # part of this bundle a headless build box cannot exercise, so it only
+    # runs when DISPLAY is present (same convention the old Tk check used).
+    from PySide6.QtWidgets import QApplication
+    app = QApplication(["bedrock-on-linux-appimage-verify"])
+    app.quit()
+    msg += " | QApplication constructed (xcb platform plugin OK)"
 print(msg)
 PY
 
