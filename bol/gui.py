@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
-    QObject, QPoint, QPointF, Qt, QThread, QTimer, Signal, Slot,
+    QEvent, QObject, QPoint, QPointF, Qt, QThread, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -1317,9 +1317,55 @@ class MainWindow(QMainWindow):
             self.acct_btn.setToolTip("Sign in to Microsoft")
             self._acct_mode = "in"
         self._acct_confirm = False
+        self._watch_for_stray_clicks(False)
+
+    def _watch_for_stray_clicks(self, watching):
+        """Install the application-wide mouse filter only while it is needed.
+
+        A question left armed on screen is one the next stray click answers,
+        so an armed "Sign out?" has to notice a click that lands anywhere
+        else -- which under Qt means an application event filter, the same
+        reach the Tk build got from bind_all("<Button-1>").
+
+        It is installed and removed around the armed state rather than for
+        the window's lifetime: an application filter is consulted for every
+        event delivered anywhere in the process, and that is not a cost worth
+        paying for the seconds a confirmation is actually up.
+        """
+        if watching == getattr(self, "_watching_clicks", False):
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        if watching:
+            app.installEventFilter(self)
+        else:
+            app.removeEventFilter(self)
+        self._watching_clicks = watching
+
+    def _arm_account_confirm(self, label):
+        """Two-step destructive buttons: the first click asks, the second
+        acts."""
+        self._acct_confirm = True
+        self._watch_for_stray_clicks(True)
+        self.acct_btn.setText(label)
+        self.acct_btn.setStyleSheet(f"background:{self.theme.red}; color:white;")
+
+    def _disarm_account_confirm(self):
+        if not getattr(self, "_acct_confirm", False):
+            return
+        self.acct_btn.setStyleSheet("")
+        self._refresh_account_row(
+            {"out": "in", "cancel": "auth"}.get(
+                getattr(self, "_acct_mode", "in"), "out"))
 
     def acct_click(self):
         mode = getattr(self, "_acct_mode", "in")
+        if mode == "loading":
+            # The device-code request is already in flight. Without this a
+            # second click starts a second one, and the player is handed two
+            # codes for the same sign-in.
+            return
         if mode == "out":
             if getattr(self, "_acct_confirm", False):
                 self.na.stop()
@@ -1329,9 +1375,7 @@ class MainWindow(QMainWindow):
                     warn(str(exc))
                 self._refresh_account_row("in" if msa_signed_in() else "out")
             else:
-                self._acct_confirm = True
-                self.acct_btn.setText("Sign out?")
-                self.acct_btn.setStyleSheet(f"background:{self.theme.red}; color:white;")
+                self._arm_account_confirm("Sign out?")
         elif mode == "cancel":
             if getattr(self, "_acct_confirm", False):
                 self.na.stop()
@@ -1339,10 +1383,9 @@ class MainWindow(QMainWindow):
                 if getattr(self, "_auth_dialog", None):
                     self._auth_dialog.close()
             else:
-                self._acct_confirm = True
-                self.acct_btn.setText("Cancel?")
-                self.acct_btn.setStyleSheet(f"background:{self.theme.red}; color:white;")
+                self._arm_account_confirm("Cancel?")
         else:
+            self._acct_mode = "loading"
             self.acct_btn.setText("Loading…")
             threading.Thread(target=lambda: self.na.start(self._on_auth, self._on_online),
                               daemon=True).start()
@@ -1354,6 +1397,39 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._refresh_account_row("in"))
         if getattr(self, "_auth_dialog", None):
             QTimer.singleShot(0, self._auth_dialog.close)
+        self._warm_xbox_preauth()
+
+    def _warm_xbox_preauth(self):
+        """Mint the Xbox token chain now rather than at PLAY.
+
+        launch.py runs xbl_preauth again on its own, so nothing breaks
+        without this -- it just moves the whole SISU/XSTS round trip off the
+        first launch and into the moment the player is already waiting on a
+        sign-in. It also settles the account row: the row goes green on the
+        MSA token alone, and only this says whether Xbox agreed.
+        """
+        def work():
+            from .auth import (
+                msa_load, msa_refresh, xbl_preauth, _account_cache_epoch)
+            from .config import DATA
+            try:
+                token = msa_load()
+                if not token:
+                    return
+                fresh = msa_refresh(token.get("refresh_token"))
+                if not (fresh and fresh.get("access_token")):
+                    return
+                epoch = _account_cache_epoch(DATA / "winegdk-preauth")
+                if xbl_preauth(fresh.get("access_token"), epoch):
+                    QTimer.singleShot(
+                        0, lambda: self._refresh_account_row("in"))
+            except Exception:
+                # Best-effort warm-up: PLAY re-runs the whole chain and is
+                # where a real failure has to be reported, with its
+                # diagnostic attached.
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _code_dialog(self, url, code):
         full_url = f"https://login.live.com/oauth20_remoteconnect.srf?otc={code}"
@@ -1418,6 +1494,7 @@ class MainWindow(QMainWindow):
             return
         self.ui_state["window_gone"] = True
         self.na.stop()
+        self._watch_for_stray_clicks(False)
         self._force_close = True
         self.close()
 
@@ -2261,6 +2338,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.na.stop()
+        self._watch_for_stray_clicks(False)
         event.accept()
         # The app runs with setQuitOnLastWindowClosed(False) so that
         # "close the launcher when Minecraft starts" can drop the window while
@@ -2269,6 +2347,15 @@ class MainWindow(QMainWindow):
         # process stays resident forever. `_force_close` returns above, so the
         # close-on-launch path still leaves the loop running for LaunchWorker.
         QApplication.instance().quit()
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.MouseButtonPress
+                and getattr(self, "_acct_confirm", False)
+                and watched is not self.acct_btn
+                and not (isinstance(watched, QWidget)
+                         and self.acct_btn.isAncestorOf(watched))):
+            self._disarm_account_confirm()
+        return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not isinstance(
