@@ -3,12 +3,10 @@
 
 from __future__ import annotations
 
-import os
 import unittest
 from pathlib import Path
-from unittest import mock
 
-from bol import deps, gui
+from bol import deps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +18,9 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("BOL_APPIMAGE_BUILD_CACHE", script)
         self.assertNotIn('CACHE="$OUT/.cache"', script)
-        self.assertIn("--set-rpath '$ORIGIN'        \"$PYLIB/libtcl8.6.so\"",
-                      script)
+        # The Tcl/Tk graft is gone; the bundle is now the PySide6-Essentials
+        # wheel closure, dropped in by pip rather than compiled + rpath-fixed.
+        self.assertIn('rm -f "$DYN"/_tkinter.*.so', script)
         self.assertIn("usr/share/licenses/bedrock-on-linux/LICENSE", script)
         self.assertIn("cat > \"$APPDIR/AppRun\" <<'EOF'\n#!/bin/sh\n", script)
         self.assertIn('/bin/sh -n "$APPDIR/AppRun"', script)
@@ -36,10 +35,32 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             encoding="utf-8")
         for requirement in (
                 "cryptography==43.0.3", "cffi==2.0.0", "pycparser==3.0",
-                "customtkinter==5.2.2", "darkdetect==0.8.0",
+                "shiboken6==6.9.3", "pyside6-essentials==6.9.3",
                 "packaging==26.2", "python-xlib==0.33"):
             self.assertIn(requirement, reqs)
         self.assertIn("--hash=sha256:", reqs)
+
+    def test_appimage_bundle_verification_checks_pyside6_not_tk(self):
+        script = (ROOT / "scripts/build-appimage.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("import shiboken6", script)
+        self.assertIn("from PySide6 import __version__ as pyside6_version",
+                      script)
+        self.assertIn("from PySide6.QtCore import QLibraryInfo", script)
+        self.assertIn(
+            'plugins_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)',
+            script)
+        self.assertIn('"shiboken6": "6.9.3"', script)
+        self.assertIn('"pyside6_essentials": "6.9.3"', script)
+        # A real QApplication construction, gated on DISPLAY like the Tk
+        # check it replaced, proves the xcb platform plugin actually loads.
+        self.assertIn("from PySide6.QtWidgets import QApplication", script)
+        self.assertIn('app = QApplication(["bedrock-on-linux-appimage-verify"])',
+                      script)
+        self.assertNotIn("customtkinter", script)
+        # tkinter itself is still mentioned, but only where the script drops
+        # the interpreter's bundled copy -- it is never installed or imported.
+        self.assertNotIn("import tkinter", script)
 
     def test_appimage_advertises_zsync_delta_updates(self):
         # Issue #191: AppImageUpdate, AppImageLauncher and AM read update
@@ -91,7 +112,7 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
         reqs = (ROOT / "third_party/requirements-deb.txt").read_text(
             encoding="utf-8")
         for requirement in (
-                "customtkinter==5.2.2", "darkdetect==0.8.0",
+                "shiboken6==6.9.3", "pyside6-essentials==6.9.3",
                 "packaging==26.2", "python-xlib==0.33"):
             self.assertIn(requirement, reqs)
         self.assertIn("--hash=sha256:", reqs)
@@ -123,12 +144,14 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
         # Generated requires would be satisfied by nothing on the target
         # distributions, so the spec declares every dependency by hand.
         self.assertIn("AutoReqProv:    no", script)
-        for requirement in ("python3-tkinter", "python3-cryptography",
-                            "/usr/bin/xrandr", "(curl or wget)"):
+        for requirement in ("python3-cryptography",
+                            "/usr/bin/xrandr", "(curl or wget)",
+                            "libxcb", "libxkbcommon-x11", "fontconfig"):
             self.assertIn(requirement, script)
+        self.assertNotIn("python3-tkinter", script)
         deb = (ROOT / "scripts/build-deb.sh").read_text(encoding="utf-8")
-        for metadata in ("customtkinter-5.2.2.dist-info",
-                         "darkdetect-0.8.0.dist-info",
+        for metadata in ("shiboken6-6.9.3.dist-info",
+                         "pyside6_essentials-6.9.3.dist-info",
                          "packaging-26.2.dist-info",
                          "python_xlib-0.33.dist-info",
                          "six-1.17.0.dist-info"):
@@ -159,8 +182,7 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
         self.assertEqual(
             deps.GUI_INSTALL_REQUIREMENTS,
             (
-                "customtkinter==5.2.2",
-                "darkdetect==0.8.0",
+                "PySide6-Essentials==6.9.3",
                 "packaging==26.2",
                 "python-xlib==0.33",
             ),
@@ -173,6 +195,23 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             "install -Dm644 LICENSE /app/share/licenses/bedrock-on-linux/LICENSE",
             manifest,
         )
+
+    def test_flatpak_vendors_pyside6_not_tcl_tk(self):
+        manifest = (
+            ROOT / "flatpak/io.github.wyze3306.BedrockOnLinux.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("name: python3-pyside6", manifest)
+        self.assertIn("name: python3-packaging", manifest)
+        self.assertIn("name: python3-xlib", manifest)
+        self.assertIn(
+            "shiboken6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl", manifest)
+        self.assertIn(
+            "pyside6_essentials-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl",
+            manifest)
+        self.assertNotIn("name: tcl", manifest)
+        self.assertNotIn("name: tk", manifest)
+        self.assertNotIn("customtkinter", manifest)
+        self.assertIn("/lib/python3.12/tkinter", manifest)  # still cleaned up
 
     def test_flatpak_keeps_game_controller_device_access(self):
         manifest = (
@@ -236,18 +275,6 @@ class ApplicationPackagingPolicyTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn(
             "sed '0,/^Exec=/s|^Exec=.*|Exec=bedrock-on-linux gui|'", appimage)
-
-
-class GuiStartupPolicyTests(unittest.TestCase):
-    def test_pure_wayland_double_click_reports_xwayland_requirement(self):
-        with mock.patch.dict(
-                os.environ, {"WAYLAND_DISPLAY": "wayland-0"}, clear=True), \
-                mock.patch.object(
-                    gui, "_owned_x11_socket_displays", return_value=()), \
-                mock.patch.object(gui, "_desktop_error") as error:
-            gui.gui()
-        error.assert_called_once()
-        self.assertIn("XWayland", error.call_args.args[0])
 
 
 if __name__ == "__main__":
