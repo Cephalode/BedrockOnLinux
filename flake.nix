@@ -12,10 +12,8 @@
         config.allowUnfree = true;
       };
       bolPython = pkgs.python313.withPackages (ps: with ps; [
-        tkinter
+        pyside6
         cryptography
-        customtkinter
-        darkdetect
         packaging
         python-xlib
         certifi
