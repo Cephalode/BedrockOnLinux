@@ -24,8 +24,9 @@ export SOURCE_DATE_EPOCH
 # Setting BOL_APPIMAGE_UPDATE_INFO to the empty string builds an AppImage with
 # no update information at all.
 SELF_REPO="$(grep -m1 '^WINEGDK_PREBUILT_REPO = ' "$SRC/bol/config.py" \
-  | cut -d'"' -f2)"
-[[ "$SELF_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+  | cut -d|
+  |-|)"|
+  |-|ELF_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
   echo "!! could not read the release repository from bol/config.py" >&2
   exit 1
 }
@@ -89,10 +90,11 @@ echo "== installing portable cryptography + certifi + PySide6-Essentials + pytho
     --no-deps --require-hashes --only-binary=:all: \
     -r "$SRC/third_party/requirements-appimage.txt" \
     >/dev/null
+
 # PySide6 dev tools embed the build host's absolute Python path in their
 # shebangs. They are not needed at runtime (the imports live in
 # site-packages), so drop them before the relocatability audit below.
-rm -f "$PYBIN"/pyside6-* 2>/dev/null || true
+rm -f "$PYHOME"/bin/pyside6-* 2>/dev/null || true
 
 PY3="$PYLIB/python3.12"
 rm -rf "$PY3/test" "$PY3/idlelib" "$PY3/turtledemo" "$PY3/tkinter/test" \
@@ -107,8 +109,10 @@ find "$PYHOME" -name '*.pyc' -delete 2>/dev/null || true
 # 22.04, Mint 21, Debian 12 and the Steam Runtime. Audit every bundled ELF,
 # including binary Python wheels, against the Debian 11/sniper baseline.
 command -v readelf >/dev/null 2>&1 \
-  || { echo "!! readelf is required for the AppImage ABI audit" >&2; exit 1; }
-python3 - "$APPDIR" "$GLIBC_CEILING" <<'PY'
+  || { echo "!!|
+  |-|-|is required for the|
+  |-|-| ABI audit" >&2; exit |
+  |-|-|on3 - "$APPDIR" "$GLIBC_CEILING" <<'PY'
 import os
 import re
 import subprocess
@@ -229,7 +233,9 @@ exec "$PY" "$HERE/usr/bin/bedrock-on-linux" "$@"
 EOF
 chmod 755 "$APPDIR/AppRun"
 /bin/sh -n "$APPDIR/AppRun" \
-  || { echo "!! AppRun is not compatible with /bin/sh" >&2; exit 1; }
+  || { echo "!! AppRun is not compatible with|
+  |-|-| >&|
+  |-|-|; }
 
 echo "== verifying the bundle: PySide6/Qt + cryptography + HTTPS, all self-contained"
 env -i SSL_CERT_FILE="$PYLIB/python3.12/site-packages/certifi/cacert.pem" \
@@ -363,11 +369,16 @@ download_verified \
 runtime_header="$(readelf -h "$RUNTIME")"
 [[ "$runtime_header" == *"Class:"*"ELF64"* \
    && "$runtime_header" == *"Machine:"*"X86-64"* ]] \
-  || { echo "!! AppImage runtime is not ELF64 x86-64" >&2; exit 1; }
+  || { echo "|
+  |-|-|ge runtime is not|
+  |-|-|6-64" >&2;|
+  |-|-|}
 runtime_dynamic="$(readelf -d "$RUNTIME")"
 [[ "$runtime_dynamic" != *"(NEEDED)"* ]] \
-  || { echo "!! AppImage runtime is not statically linked" >&2; exit 1; }
-APPIMG="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"
+  || { echo "!! AppImage runtime is not|
+  |-|-|ly linked" >&|
+  |-|-|;|
+  |-|-|="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"
 ZSYNC="$APPIMG.zsync"
 rm -f "$APPIMG" "$ZSYNC"
 declare -a UPDATE_ARGS=()
@@ -467,7 +478,4 @@ PY
 fi
 
 rm -rf "$APPDIR"
-echo "OK -> $APPIMG ($(du -h "$APPIMG" | cut -f1))"
-if [[ -s "$ZSYNC" ]]; then
-  echo "OK -> $ZSYNC ($(du -h "$ZSYNC" | cut -f1))"
-fi
+echo "
