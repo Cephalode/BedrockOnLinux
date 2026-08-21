@@ -17,7 +17,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer
 from PySide6.QtWidgets import QApplication
 
 from bol import gui, log
@@ -54,6 +54,13 @@ def headless_window(**settings):
             window._force_close = True
             window.close()
             window.deleteLater()
+            # Flush the deferred-delete queue instead of leaving it to an
+            # event loop no test runs. Without this every window built by the
+            # suite stays alive, and apply_theme() -> setStyleSheet() re-
+            # polishes every widget in the application -- so each new window
+            # costs more than the last, and a full run degrades from seconds
+            # into minutes.
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             log._LOG_SINK = saved_sink
 
 

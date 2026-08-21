@@ -678,10 +678,17 @@ class ProfileMenu(Popup):
         self._v.setSpacing(2)
 
     def rebuild(self, profiles, active_path):
+        # setParent(None) as well as deleteLater(): deleteLater only schedules
+        # the destruction, so until the event loop next turns, the old rows are
+        # still children of this popup -- connected to the same signals, and
+        # findable. rebuild() runs immediately before show(), so detaching now
+        # is what makes the menu on screen the menu that was just built.
         while self._v.count():
             item = self._v.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
         def add_row(name, path, active):
             row = QWidget()
