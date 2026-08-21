@@ -89,6 +89,10 @@ echo "== installing portable cryptography + certifi + PySide6-Essentials + pytho
     --no-deps --require-hashes --only-binary=:all: \
     -r "$SRC/third_party/requirements-appimage.txt" \
     >/dev/null
+# PySide6 dev tools embed the build host's absolute Python path in their
+# shebangs. They are not needed at runtime (the imports live in
+# site-packages), so drop them before the relocatability audit below.
+rm -f "$PYBIN"/pyside6-* 2>/dev/null || true
 
 PY3="$PYLIB/python3.12"
 rm -rf "$PY3/test" "$PY3/idlelib" "$PY3/turtledemo" "$PY3/tkinter/test" \
