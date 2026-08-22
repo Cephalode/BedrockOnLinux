@@ -100,7 +100,7 @@ WINEGDK_BUILD_REV = "wow64-archs-native16"
 # unset pin here makes _verify_engine_archive() refuse every candidate rather
 # than fall back. Produced by the reviewed build-engine.yml run of this branch,
 # which refuses any archive that does not reproduce these bytes.
-WINEGDK_ARCHIVE_SHA256 = "55f29ad109dbb28e5b4f1fd3b527ff886b75bbd4169f89ac6c7bcdbe503c4ec5"
+WINEGDK_ARCHIVE_SHA256 = "955ecfe33a655927f9f748aa62fe154ad7f6e899cb61c4f50748af8f2e155c34"
 # Build workflows verify this deterministic intermediate before reusing it.
 WINEGDK_PREFIX_SHA256 = "bfbb08107e7aa16842cf12814013a1cb94acd5a1c2fe8eaec24a401c4b57fc09"
 
