@@ -46,7 +46,7 @@
 
   <section class="hero" id="top">
     <div class="wrap">
-      <p class="badge"><span class="dot"></span><span>Free, open source, MIT, <span id="ver">v2.2.1</span></span></p>
+      <p class="badge"><span class="dot"></span><span>Free, open source, MIT<span id="ver"></span></span></p>
 
       <h1>Minecraft Bedrock Edition,<br>running on Linux.</h1>
 
@@ -141,7 +141,7 @@
               </a>
             </div>
             <p class="cmd-label">Then, in a terminal</p>
-            <pre><code>sudo apt install ./<span data-file="deb">bedrock-on-linux_2.2.1_amd64.deb</span>
+            <pre><code>sudo apt install ./<span data-file="deb">bedrock-on-linux_*_amd64.deb</span>
 bedrock-on-linux</code></pre>
             <p>Debian, Ubuntu, Linux Mint and LMDE. Dependencies, including the WebKitGTK sign-in window, are declared for you.</p>
           </div>
@@ -158,7 +158,7 @@ bedrock-on-linux</code></pre>
               </a>
             </div>
             <p class="cmd-label">Then, in a terminal</p>
-            <pre><code>sudo dnf install ./<span data-file="rpm">bedrock-on-linux-2.2.1-1.x86_64.rpm</span>
+            <pre><code>sudo dnf install ./<span data-file="rpm">bedrock-on-linux-*.x86_64.rpm</span>
 bedrock-on-linux</code></pre>
             <p>Fedora and Nobara. On an atomic Fedora such as Silverblue, take the Flatpak instead.</p>
           </div>
@@ -175,8 +175,8 @@ bedrock-on-linux</code></pre>
               </a>
             </div>
             <p class="cmd-label">Then, in a terminal</p>
-            <pre><code>chmod +x <span data-file="appimage">BedrockOnLinux-2.2.1-x86_64.AppImage</span>
-./<span data-file="appimage">BedrockOnLinux-2.2.1-x86_64.AppImage</span></code></pre>
+            <pre><code>chmod +x <span data-file="appimage">BedrockOnLinux-*-x86_64.AppImage</span>
+./<span data-file="appimage">BedrockOnLinux-*-x86_64.AppImage</span></code></pre>
             <p>No FUSE on your system? Run it with <code>APPIMAGE_EXTRACT_AND_RUN=1</code>.</p>
           </div>
 
@@ -212,7 +212,7 @@ bedrock-on-linux</code></pre>
               </a>
             </div>
             <p class="cmd-label">Then, in a terminal</p>
-            <pre><code>flatpak install --user ./<span data-file="flatpak">BedrockOnLinux-2.2.1-x86_64.flatpak</span></code></pre>
+            <pre><code>flatpak install --user ./<span data-file="flatpak">BedrockOnLinux-*-x86_64.flatpak</span></code></pre>
             <p>Sandboxed, so it cannot write desktop shortcuts. The Store sign-in also needs WebKitGTK, which this runtime does not ship yet, so on Bazzite the AppImage is the smoother ride today.</p>
           </div>
 

@@ -9,7 +9,13 @@
 
   var API = "https://api.github.com/repos/Wyze3306/BedrockOnLinux/releases/latest";
   var CACHE_KEY = "bol-latest-release";
-  var CACHE_MS = 6 * 60 * 60 * 1000;
+
+  /* The cache exists to paint instantly and to survive a rate-limited or
+     offline API, never to hide a release that just shipped. So it is not a
+     gate: a stored answer is shown right away and then revalidated. This
+     floor only stops a burst of reloads from spending the visitor's
+     unauthenticated API budget. */
+  var REVALIDATE_MS = 5 * 60 * 1000;
 
   var PATTERNS = {
     appimage: /\.AppImage$/i,
@@ -51,7 +57,7 @@
 
     var version = (release.tag_name || "").replace(/^v/, "");
     var tag = document.getElementById("ver");
-    if (tag && version) tag.textContent = "v" + version;
+    if (tag && version) tag.textContent = ", v" + version;
 
     var main = document.getElementById("dl-main");
     var sub = document.getElementById("dl-main-sub");
@@ -63,13 +69,16 @@
   }
 
   function load() {
+    var cached = null;
     try {
-      var cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (cached && Date.now() - cached.at < CACHE_MS) {
-        apply(cached.release);
-        return;
-      }
+      cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
     } catch (e) { /* no cache, ask the API */ }
+
+    /* Show what we already know, whatever its age. */
+    if (cached && cached.release) apply(cached.release);
+
+    /* Then go and look for a newer one, unless we just did. */
+    if (cached && Date.now() - cached.at < REVALIDATE_MS) return;
 
     fetch(API, { headers: { Accept: "application/vnd.github+json" } })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
