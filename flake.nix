@@ -11,11 +11,9 @@
         system = "x86_64-linux";
         config.allowUnfree = true;
       };
-      bolPython = pkgs.python313.withPackages (ps: with ps; [
-        tkinter
+      bolPython = pkgs.python312.withPackages (ps: with ps; [
+        pyside6
         cryptography
-        customtkinter
-        darkdetect
         packaging
         python-xlib
         certifi
@@ -24,7 +22,7 @@
     {
       packages.x86_64-linux.default = pkgs.stdenv.mkDerivation {
         pname = "bedrock-on-linux";
-        version = "2.1.3";
+        version = "2.2.1";
 
         src = ./.;
 

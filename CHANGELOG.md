@@ -2,85 +2,47 @@
 
 ## Unreleased
 
-### Added
+### Changed
 
-- **The Servers tab now starts with a server to play on.** Bedrock opens that
-  tab on the featured servers Mojang sells, and under them a fresh install has
-  nothing at all: a player who wants to join something has to find an address
-  somewhere else and type it in by hand. *Linesia SkyFaction*
-  (`play.linesia.net`, port 19132) is now written into the game's own server
-  list before it starts, so it is simply there in the tab, ready to join. The
-  list belongs to the player, so it is only ever added to: the server is
-  offered once and never again — delete the tile and it stays deleted — and
-  anyone who had already added that address keeps their own entry, name and
-  place in the list included. Each account signed in on the machine gets it,
-  since the game keeps one server list per profile.
+- **The launcher window is now built on Qt instead of Tk**. Everything is
+  where it was — the hero screen, the dock with the version picker, the
+  Stable/Preview toggle and ▶ PLAY, the sliding Settings and What's New
+  panes, the collapsible activity log — but none of it is drawn by
+  CustomTkinter any more. What that buys is mostly invisible and mostly
+  overdue: dialogs that centre themselves on the right monitor without the
+  launcher doing the arithmetic, DPI scaling handled by the toolkit rather
+  than by a manual 100/150/200% picker (which is why that setting is gone),
+  real toggle switches instead of checkboxes with rounded borders, and a
+  window that draws natively under Wayland instead of always going through
+  XWayland. Background work — setup, launching, sign-in, imports, DLL
+  injection, relocation, self-update — moved onto Qt threads reporting back
+  through signals, replacing the hand-rolled polling the Tk build needed to
+  avoid drawing from the wrong thread.
 
-### Fixed
+- **The launcher now needs Qt's runtime libraries.** The `.deb`, `.rpm`,
+  AppImage and Flatpak all bundle the toolkit itself, so there is nothing new
+  to install by hand; the distribution packages simply depend on the X and
+  OpenGL libraries Qt loads at startup, in place of `python3-tk`. A portable
+  `.pyz` or a git checkout downloads it on first launch as it did for
+  CustomTkinter. `doctor` reports the toolkit under its new name.
 
-- **A game directory that lost its Store package now says so instead of taking
-  the launcher down with it.** Minecraft from the Microsoft Store keeps its
-  executable encrypted on disk exactly as it does on Windows, and the only
-  plaintext copy is the one made in memory at every launch out of the package
-  file that sits beside the game. Lose that file — a folder copied to a new
-  machine without its hidden files, a disk cleanup, a download that reported
-  success after quietly stopping short — and the game looks perfectly
-  installed while being impossible to start. What the player got was the
-  decrypter falling over on it: a Rust panic quoting a line number in
-  `run.rs`, and a launcher that died alongside it with nothing said about
-  what was wrong or what to do. The launcher now looks for the package before
-  it hands the launch over, and names it: which file is missing, which folder
-  it belongs in, and that reinstalling this Minecraft version is what brings
-  it back. `doctor` reports it too. The download stops creating that state in
-  the first place — a build only counts as installed once the package it is
-  decrypted from is actually on disk, so a download that ends early is
-  retried and reported rather than being taken for a finished install on the
-  strength of the older build still lying in the folder.
+### Removed
 
-- **Minecraft now appears in Steam Deck Game Mode instead of only being
-  heard** ([#199](https://github.com/Wyze3306/BedrockOnLinux/issues/199)).
-  Pressing ▶ PLAY from the Flatpak started the game, the launcher stepped out
-  of the way as it should, the menu music played — and Steam stayed on screen
-  with the game nowhere to be found. Nothing had crashed: Minecraft was
-  running, rendering, and simply had no identity Game Mode could recognise it
-  by. Gamescope decides what to show by asking each window which Steam
-  application it belongs to, and it gets that answer either from the window
-  itself or by following the game's process back to the one Steam started. The
-  Flatpak had neither. It starts the game through the portal, which puts it
-  outside the process tree Steam launched, and the property that would have
-  said so is one Proton's own Wine sets and this engine does not. So the
-  launcher now says it: the game window is given the application ID of the
-  shortcut this session was started from, as soon as it opens, and again if
-  the game later replaces it. Game Mode brings Minecraft to the front by
-  itself. Along with it, UMU is no longer left to invent an identity — it was
-  turning a launch Steam had started into the literal `SteamAppId=default` —
-  and if no window ever turns up the log now says so instead of leaving a
-  silent, audible game to be guessed at. Desktop sessions are untouched.
+- **Controller navigation of the launcher window is gone for now**, the one
+  thing from 2.2.1 that did not survive the move to Qt. It was written
+  directly against Tk's widget tree — walking children, drawing the highlight
+  on a Canvas, binding through `tkinter.Misc.bind` — and none of that has an
+  equivalent to port to. Reading the pad itself is untouched and `doctor`
+  still reports which controllers it can see, so nothing about playing with a
+  controller changes; it is only the launcher window that needs a mouse again,
+  until a Qt-native replacement lands. Steam Game Mode is unaffected in the
+  usual case, since the window steps aside on its own there.
 
-- **The Microsoft Store sign-in now survives closing the launcher — and stops
-  spending the account's device slots**
-  ([#198](https://github.com/Wyze3306/BedrockOnLinux/issues/198)). Xodus keeps
-  its tokens in `$HOME/.xodus-keyring.ron`, and inside the Flatpak `$HOME` is a
-  temporary filesystem the sandbox deletes on exit, so the Store account stayed
-  linked for exactly as long as that window stayed open. Every restart asked
-  for the sign-in again — and signing in again was never free. With no device
-  credentials on file Xodus provisions a *new* Microsoft Store device each
-  time, an account may hold ten of them, and once they are gone Microsoft
-  stops licensing the game outright: "Device group is full, please remove a
-  device and try again", after which Minecraft can be neither downloaded nor
-  started until devices are removed by hand on account.microsoft.com. A
-  restart loop that looked like a nuisance was quietly using up something
-  finite. The tokens now live in a directory of the launcher's own, beside the
-  game and the settings, which persists wherever the launcher does; nobody has
-  to sign in again for it, since an existing sign-in is taken along on the
-  first start, and moving the data location takes it along too. What was left
-  in the home directory is deleted when the account is unlinked, so signing
-  out still means signing out. Around that: pressing ▶ PLAY with no linked
-  account now offers the sign-in instead of dying on a Rust panic about a
-  missing keyring entry, an account that has run out of devices is told where
-  they are given back rather than being shown Microsoft's sentence, and
-  `doctor` prints whether the Store account is linked and which file says so —
-  the reporter of this one had to open a shell inside the sandbox to find out.
+- The **UI scale** setting (100/150/200%). Qt scales for the display's DPI on
+  its own, and a second scale factor on top of that fought it.
+
+- The **QR code** on the Xbox sign-in dialog. The code and the button that
+  opens the sign-in page are unchanged.
 
 ## 2.2.1 — 2026-08-21
 

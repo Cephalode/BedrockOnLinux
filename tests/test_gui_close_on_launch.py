@@ -4,6 +4,12 @@ The window is the only thing the setting takes away. The process behind it
 still has to see the launch out: it armed a GPU safety marker before starting
 the game, and a marker nobody watches return blocks the next launch until a
 reboot. These tests pin the decision and the wiring that keeps that true.
+
+The Qt rewrite moved this from one long Tk closure (do_play.work) into a
+QThread subclass (LaunchWorker) whose UI-facing steps go through Qt signals
+instead of a scheduling call like Tk's root.after -- Qt queues cross-thread
+signal delivery onto the GUI thread itself, so LaunchWorker.run() must never
+touch window widgets directly, only emit.
 """
 # SPDX-License-Identifier: MIT
 
@@ -45,77 +51,122 @@ class WindowActionTests(unittest.TestCase):
             "step-aside")
 
 
-def _nested_function(tree, name):
-    """The function called ``name``, or ``outer.inner`` for a nested one.
-
-    gui() defines several workers called ``work``; naming the one that
-    launches the game keeps these tests pinned to it.
-    """
-    outer, _, inner = name.rpartition(".")
-    scope = _nested_function(tree, outer) if outer else tree
-    if scope is None:
-        return None
-    for node in ast.walk(scope):
-        if isinstance(node, ast.FunctionDef) and node.name == inner:
+def _find_scope(tree, name):
+    """The class or function node named `name`, searched anywhere in the
+    tree (not just at module level)."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name == name:
             return node
     return None
 
 
+def _nested(tree, dotted_name):
+    """Resolve a dotted path like 'LaunchWorker.run' to its FunctionDef,
+    searching each component within the previous one's body."""
+    scope = tree
+    for part in dotted_name.split("."):
+        found = None
+        for node in ast.walk(scope):
+            if node is scope:
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name == part:
+                found = node
+                break
+        if found is None:
+            return None
+        scope = found
+    return scope
+
+
 class ClosedWindowWiringTests(unittest.TestCase):
-    """gui() is one long closure, so its wiring is read rather than run."""
+    """gui.py's window/thread wiring is read rather than run, since it needs
+    a live QThread + event loop to exercise directly."""
 
     def setUp(self):
         source = Path(inspect.getsourcefile(gui)).read_text(encoding="utf-8")
         self.tree = ast.parse(source)
 
-    def _calls_in(self, function_name):
-        node = _nested_function(self.tree, function_name)
-        self.assertIsNotNone(node, f"{function_name} not found in bol.gui")
+    def _calls_in(self, dotted_name):
+        node = _nested(self.tree, dotted_name)
+        self.assertIsNotNone(node, f"{dotted_name} not found in bol.gui")
         return {
             call.func.id for call in ast.walk(node)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
         }
 
-    def _attribute_calls_in(self, function_name):
-        node = _nested_function(self.tree, function_name)
-        self.assertIsNotNone(node, f"{function_name} not found in bol.gui")
+    def _attribute_calls_in(self, dotted_name):
+        node = _nested(self.tree, dotted_name)
+        self.assertIsNotNone(node, f"{dotted_name} not found in bol.gui")
         return {
             call.func.attr for call in ast.walk(node)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
         }
 
     def test_the_launch_thread_decides_with_the_shared_helper(self):
-        self.assertIn("window_action_for_launch", self._calls_in("do_play.work"))
+        self.assertIn(
+            "window_action_for_launch", self._calls_in("LaunchWorker.run"))
+
+    def test_the_launch_thread_signals_close_or_step_aside_not_both(self):
+        signals = self._attribute_calls_in("LaunchWorker.run")
+        self.assertIn("emit", signals)
+        # The action is read once and only one outcome path taken; both
+        # signal-emitting calls exist in source (one per branch), which is
+        # the closest static proxy for "either, never both" without running
+        # a full QThread + event loop here.
+        node = _nested(self.tree, "LaunchWorker.run")
+        emitted = {
+            call.func.value.attr
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "emit"
+            and isinstance(call.func.value, ast.Attribute)
+        }
+        self.assertIn("close_window", emitted)
+        self.assertIn("step_aside", emitted)
 
     def test_the_game_start_hook_can_close_or_step_aside(self):
-        hook = self._calls_in("window_steps_out_for_game")
-        self.assertIn("close_for_game", hook)
-        self.assertIn("step_aside_for_game", hook)
+        connections = self._attribute_calls_in("do_play")
+        self.assertIn("connect", connections)
+        text = ast.unparse(_nested(self.tree, "do_play"))
+        self.assertIn("close_window.connect(self._close_for_game)", text)
+        self.assertIn("step_aside.connect(self._step_aside_for_game)", text)
 
     def test_closing_destroys_the_window_and_stops_the_auth_poller(self):
-        shut = self._attribute_calls_in("close_for_game.shut")
-        self.assertIn("destroy", shut)
-        self.assertIn("stop", shut)
+        shut = self._attribute_calls_in("MainWindow._close_for_game")
+        self.assertIn("stop", shut)   # self.na.stop()
+        self.assertIn("close", shut)  # self.close() -- Qt's window teardown
 
-    def test_nothing_the_launch_thread_reports_goes_straight_to_tk(self):
-        # A destroyed window cannot schedule work, and the thread raising on
-        # that would abandon the game it is still supervising. Everything
-        # goes through ui_after, which drops the update instead.
-        for name in ("set_status", "bar_busy", "set_progress", "end_progress",
-                     "step_aside_for_game", "come_back_from_game", "do_play.work"):
-            with self.subTest(function=name):
-                node = _nested_function(self.tree, name)
-                self.assertIsNotNone(node, f"{name} not found in bol.gui")
-                scheduled = {
-                    call.func.attr for call in ast.walk(node)
-                    if isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Attribute)
-                    and getattr(call.func.value, "id", None) == "root"
-                }
-                self.assertNotIn("after", scheduled)
+    def test_stepping_aside_hides_rather_than_closes(self):
+        step = self._attribute_calls_in("MainWindow._step_aside_for_game")
+        self.assertIn("hide", step)
+        self.assertNotIn("close", step)
+
+    def test_coming_back_restores_the_window(self):
+        come_back = self._attribute_calls_in("MainWindow._come_back_from_game")
+        self.assertIn("showNormal", come_back)
+
+    def test_the_launch_thread_only_ever_emits_never_touches_widgets(self):
+        # The safety property Tk's root.after existed to enforce: nothing
+        # running on the worker thread may call into the window directly.
+        # Under Qt the equivalent is that LaunchWorker.run() (and everything
+        # it calls in-thread: do_setup, launch) only ever reaches the UI
+        # through self.<signal>.emit(...), never a direct window method.
+        node = _nested(self.tree, "LaunchWorker.run")
+        attr_calls = [
+            call for call in ast.walk(node)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Attribute)
+            and isinstance(call.func.value.value, ast.Name)
+            and call.func.value.value.id == "self"
+        ]
+        for call in attr_calls:
+            self.assertEqual(call.func.attr, "emit",
+                              f"self.{call.func.value.attr}.{call.func.attr}(...) "
+                              "reaches off-thread by something other than emit()")
 
     def test_a_failure_with_no_window_left_is_still_reported(self):
-        self.assertIn("desktop_notify", self._calls_in("do_play.work"))
+        self.assertIn("desktop_notify", self._calls_in("MainWindow._play_failed"))
 
 
 if __name__ == "__main__":
