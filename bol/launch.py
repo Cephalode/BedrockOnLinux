@@ -21,7 +21,7 @@ from .auth import (
     xbl_preauth_diagnostic,
     xbl_preauth_error_message,
 )
-from . import xodus
+from . import discord, xodus
 from .config import CONTENT, DATA, HOME, LOGS, WINEGDK_BUILD_REV
 from .deps import ensure_login_deps
 from .dgc import dgc_warning_message, intel_dgpus_on_legacy_driver
@@ -785,6 +785,7 @@ def _launch_once(lock_fds=(), on_started=None):
     hits = []
     gpu_marker_token = None
     game_returned = False
+    presence = discord.Session()
     try:
         # A hard reboot leaves this marker so the next launch fails closed.
         gpu_marker_token = arm_gpu_launch()
@@ -820,6 +821,10 @@ def _launch_once(lock_fds=(), on_started=None):
                 warn("The launcher could not step aside for the game window "
                      "(%s)." % type(hook_error).__name__)
         started = time.time()
+        # Say on Discord what is being played, for as long as it is played:
+        # the launcher is found by word of mouth, and this is it saying its
+        # own name. Settings turns it off, and it never affects the game.
+        presence = discord.start_session(s, started_at=started)
         announced = False
         # There is no window yet to give Steam's identity to, so this watches
         # for one on the same tick that waits on the game process rather than
@@ -839,6 +844,9 @@ def _launch_once(lock_fds=(), on_started=None):
                     ok("Minecraft is running — close the game window to come "
                        "back here.")
     finally:
+        # First: the teardown below can take a while, and nobody should be
+        # left showing as in-game through it.
+        presence.stop()
         prefix_idle = None
         if game_returned and gpu_marker_token:
             try:

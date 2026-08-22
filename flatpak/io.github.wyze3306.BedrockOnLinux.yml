@@ -55,6 +55,16 @@ finish-args:
   # Read-only access to the pre-XDG location for one-time migration. Using the
   # xdg-data alias here would shadow the private XDG destination read-only.
   - --filesystem=~/.local/share/bedrock-on-linux:ro
+  # Discord Rich Presence: the client listens on a socket in the *host* runtime
+  # directory, and the sandbox is given a runtime directory of its own, so
+  # without these two paths a play session is simply never announced. One
+  # socket each -- the host build and the Flatpak build of Discord -- and
+  # nothing else; :create is deliberately absent, since it would put a
+  # directory where Discord wants to make its socket. Flatpak binds them at
+  # startup, so inside the sandbox Discord has to be running before the
+  # launcher is (elsewhere the session picks it up whenever it appears).
+  - --filesystem=xdg-run/discord-ipc-0
+  - --filesystem=xdg-run/app/com.discordapp.Discord/discord-ipc-0
   # No launcher code talks to the portal; the caller is the bundled Steam Linux
   # Runtime. pressure-vessel-wrap sees /.flatpak-info, switches from bubblewrap
   # to sub-sandbox mode, and its steam-runtime-launch-client then asks for the

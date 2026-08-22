@@ -2031,6 +2031,27 @@ class MainWindow(QMainWindow):
         close_row.toggled.connect(lambda on: self._save_setting("close_on_launch", on))
         startup.addWidget(close_row)
 
+        # Hidden when this build has no Discord application configured (a
+        # fork, say): a switch that cannot turn anything on is worse than no
+        # switch at all. doctor and the README both point here, so it has to
+        # exist wherever the feature does.
+        from .discord import presence_app_id
+        if presence_app_id():
+            discord = card_section(v, "Discord",
+                "What your Discord friends see while you are playing.")
+            discord_row = self._switch(
+                "Show my game on Discord",
+                self.settings.get("discord_presence", True),
+                f"While Minecraft runs, your friends see \u201cPlaying {PRETTY}\u201d "
+                "with the Minecraft version, how long you have been playing, and "
+                "a link to the project — which is how most people find it. "
+                "Nothing else leaves this computer: not your account, not your "
+                "worlds, not the server you are on. It needs Discord running "
+                "here, and it goes away when the game closes.")
+            discord_row.toggled.connect(
+                lambda on: self._save_setting("discord_presence", on))
+            discord.addWidget(discord_row)
+
         accounts = card_section(v, "Accounts",
             "Minecraft is downloaded from the Microsoft Store with the account "
             "that owns it — a separate, device-bound session from the "

@@ -246,8 +246,14 @@ def main():
             else:
                 p.print_help()
     except BolError as exc:
+        from .xodus import NotSignedIn
         if not getattr(exc, "reported", False):
             err(str(exc))
+        if isinstance(exc, NotSignedIn):
+            # The download's own account link, which the GUI offers with a
+            # button. Name the command that does it rather than leaving the
+            # terminal with a sign-in it cannot start.
+            info(f"Sign in with:  {APP} store-login")
         if a.cmd == "play":
             _report_launch_failure(str(exc))
         sys.exit(1)

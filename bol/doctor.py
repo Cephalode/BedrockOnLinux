@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import deps, gamepad, webview
+from . import deps, discord, gamepad, webview
 from .config import DATA, PRETTY, VERSION
 from .gpu_safety import (
     GpuSafetyAcknowledgementStatus,
@@ -182,6 +182,11 @@ def doctor(acknowledge_gpu_crash=False):
     print(f"  {'performance':12} : {performance_summary(prefix, DATA)}")
     for perf_problem in performance_problems(prefix, DATA):
         warn(perf_problem)
+    # What Discord shows while you play. Nothing here can keep the game from
+    # starting, but "my friends do not see it" has three separate answers --
+    # switched off, Discord not running, or a build with no application id --
+    # and only this line tells them apart.
+    print(f"  {'discord':12} : {discord.presence_summary(load_settings())}")
     if miss:
         warn("To install: " + hint.format(" ".join(sorted(set(miss)))))
         return False

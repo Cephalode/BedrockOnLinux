@@ -29,6 +29,10 @@ class ReadyLaunchHarness:
         (content / "Minecraft.Windows.exe").write_bytes(b"MZ")
         settings = {"game_dir": str(content)}
         settings.update(extra_settings or {})
+        # Discord presence opens a socket of its own: every launch test gets
+        # a stand-in, and the presence tests below assert on what it was told.
+        self.presence = mock.MagicMock()
+        self.presence_calls = []
         patches = (
             mock.patch.dict(os.environ, dict(environ or {}), clear=True),
             mock.patch.object(launch, "CONTENT", content),
@@ -77,6 +81,8 @@ class ReadyLaunchHarness:
                 side_effect=mark or (lambda _token: True)),
             mock.patch.object(launch, "disarm_gpu_launch", side_effect=disarm),
             mock.patch.object(launch.subprocess, "Popen", side_effect=popen),
+            mock.patch.object(launch.discord, "start_session",
+                              side_effect=self._announce_presence),
             mock.patch.object(launch, "info"),
             mock.patch.object(launch, "ok"),
             mock.patch.object(launch, "warn"),
@@ -93,6 +99,10 @@ class ReadyLaunchHarness:
             }
             return launch._launch_once(lock_fds=lock_fds,
                                        on_started=on_started)
+
+    def _announce_presence(self, *args, **kwargs):
+        self.presence_calls.append((args, kwargs))
+        return self.presence
 
     def _warnings(self):
         return [str(call.args[0])
@@ -1224,3 +1234,46 @@ if __name__ == "__main__":
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiscordPresenceLaunchTests(ReadyLaunchHarness, unittest.TestCase):
+    """The play session is announced while the game runs, and only then."""
+
+    class _Process:
+        @staticmethod
+        def wait(timeout):
+            return 0
+
+    def _run(self, **kwargs):
+        with tempfile.TemporaryDirectory() as td:
+            return self._exercise_ready_launch(
+                Path(td), lambda *a, **k: self._Process(),
+                lambda: "token", lambda _token: True, **kwargs)
+
+    def test_the_running_build_is_what_discord_is_told(self):
+        self.assertEqual(
+            self._run(extra_settings={"mc_edition": "preview",
+                                      "mc_version": "1.26.40.1"}), 0)
+        self.assertEqual(len(self.presence_calls), 1)
+        (settings,), kwargs = self.presence_calls[0]
+        self.assertEqual(settings["mc_version"], "1.26.40.1")
+        self.assertEqual(settings["mc_edition"], "preview")
+        self.assertIsInstance(kwargs["started_at"], float)
+
+    def test_the_presence_is_taken_down_when_the_game_returns(self):
+        # Nobody may be left showing as in-game by a launcher that is done
+        # with the game: the teardown after it can take a while.
+        self.assertEqual(self._run(), 0)
+        self.presence.stop.assert_called_once_with()
+
+    def test_a_game_that_never_started_is_never_announced(self):
+        def popen(*_args, **_kwargs):
+            raise OSError("no such file")
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(OSError):
+                self._exercise_ready_launch(
+                    Path(td), popen, lambda: "token", lambda _token: True)
+        self.assertEqual(self.presence_calls, [])
+        self.presence.stop.assert_not_called()
+

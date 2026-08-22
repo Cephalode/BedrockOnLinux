@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Discord now shows what you are playing.** Start Minecraft and your friends
+  see *Playing BedrockOnLinux* on Discord, with the build you are on, how long
+  you have been playing, and buttons that lead to the project and to its
+  Discord server. That is how a launcher like this one is found in the first
+  place — somebody notices a friend playing Bedrock on Linux and asks how — and
+  until now a play session said nothing about where the game had come from.
+  Nothing has to be installed for it: Discord's local socket is spoken to
+  directly, with no library, no account and no network call of the launcher's
+  own, and the only things it is ever told are the edition and the version —
+  never the account, the worlds, or the server being played on. It ends with
+  the game, and **Settings ▸ General ▸ Discord** turns it off. Inside the
+  Flatpak, Discord has to be running before the launcher is, because the
+  sandbox binds its socket at startup.
+
 ## 2.2.2 — 2026-08-22
 
 ### Added

@@ -106,6 +106,28 @@ WINEGDK_PREFIX_SHA256 = "eeb5079fa9736f2d5b71d95d72d64fd56fe51b5be7df220d0a535d2
 
 SELF_REPO = WINEGDK_PREBUILT_REPO
 
+# Where the launcher points people who ask where it came from -- the two
+# links Discord shows under a play session, and the ones printed elsewhere.
+SITE_URL = "https://wyze3306.github.io/BedrockOnLinux/"
+DISCORD_INVITE = "https://discord.gg/5YJq54Yhbu"
+
+# Discord Rich Presence. Discord names the *application* in "Playing ...", so
+# the application registered on discord.com/developers must be called exactly
+# like this launcher; the id below is the one it hands out. Empty means the
+# feature is off everywhere, which is what a fork with no application of its
+# own wants -- it must never advertise ours. BOL_DISCORD_APP_ID overrides it.
+DISCORD_APP_ID = ""
+# Rich Presence artwork. Each of these is either an asset key uploaded to the
+# application (Rich Presence > Art Assets) or a full https:// URL, which
+# Discord fetches and proxies itself -- and the URL form is why the image
+# shows up at all here: an application can be configured and working while its
+# Art Assets are still empty, and a key with no artwork behind it silently
+# shows nothing. The default points at the icon this project already publishes
+# on its own site, so the logo works with no developer-portal step. Empty
+# means no image; the whole assets block is dropped when both are empty.
+DISCORD_LARGE_IMAGE = f"{SITE_URL}discord-large.png"
+DISCORD_SMALL_IMAGE = ""
+
 # Minecraft is acquired through Xodus (GPL-3.0), which signs in to the user's
 # own Microsoft account, obtains the title license and streams the MSIXVC
 # package from the official Xbox CDN. It replaced a third-party repository that
