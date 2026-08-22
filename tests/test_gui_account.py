@@ -268,11 +268,16 @@ class XboxPreauthWarmUpTests(unittest.TestCase):
     def setUpClass(cls):
         qt_app()
 
-    def _run_warm_up(self, window):
-        with mock.patch.object(gui.threading, "Thread") as thread:
-            thread.side_effect = lambda target, daemon=None: mock.Mock(
-                start=target)
-            window._warm_xbox_preauth()
+def _run_warm_up(self, window):
+    with mock.patch.object(gui.threading, "Thread") as thread:
+        # Execute the target immediately when the mock thread starts
+        def run_target(*args, **kwargs):
+            target = args[0] if args else kwargs.get('target')
+            if target:
+                target()
+            return mock.Mock()
+        thread.side_effect = run_target
+        window._warm_xbox_preauth()
 
     def test_coming_online_warms_the_token_chain(self):
         with headless_window() as window:
