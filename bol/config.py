@@ -102,7 +102,7 @@ WINEGDK_BUILD_REV = "wow64-archs-native16"
 # which refuses any archive that does not reproduce these bytes.
 WINEGDK_ARCHIVE_SHA256 = "55f29ad109dbb28e5b4f1fd3b527ff886b75bbd4169f89ac6c7bcdbe503c4ec5"
 # Build workflows verify this deterministic intermediate before reusing it.
-WINEGDK_PREFIX_SHA256 = "eeb5079fa9736f2d5b71d95d72d64fd56fe51b5be7df220d0a535d2897165dde"
+WINEGDK_PREFIX_SHA256 = "bfbb08107e7aa16842cf12814013a1cb94acd5a1c2fe8eaec24a401c4b57fc09"
 
 SELF_REPO = WINEGDK_PREBUILT_REPO
 
