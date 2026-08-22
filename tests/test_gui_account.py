@@ -1,26 +1,25 @@
-"""The account row: one sign-in at a time, and questions that expire.
+"""The accounts menu: two sign-ins, one at a time, and questions that expire.
 
-Two of the three buttons in this row are destructive and ask before acting,
-which only works if the question can also be withdrawn -- otherwise it sits
-armed on screen and the next click anywhere answers it. The third starts a
-device-code flow that must not be started twice.
+The launcher needs two separate Microsoft sessions -- one to play online, one
+to download the game -- and they used to live in two different places with
+nothing saying they were different accounts at all. They share a menu now, so
+these cover both, plus the two properties the menu has to keep: a device-code
+flow that cannot be started twice, and a "Sign out?" that cannot outlive the
+menu that asked it.
 """
 # SPDX-License-Identifier: MIT
 
 import unittest
 from unittest import mock
 
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication
-
-from bol import gui
+from bol import gui, xodus
 from tests.guiharness import headless_window, qt_app
 
 
-def _click_on(widget):
-    return QMouseEvent(QEvent.MouseButtonPress, QPointF(1, 1), QPointF(1, 1),
-                       Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+def _menu(window):
+    """The accounts menu, refreshed as opening it would."""
+    window._refresh_accounts()
+    return window.accounts_menu
 
 
 class SignInIsStartedOnceTests(unittest.TestCase):
@@ -42,12 +41,12 @@ class SignInIsStartedOnceTests(unittest.TestCase):
                 window.acct_click()
             self.assertEqual(thread.call_count, 1)
 
-    def test_the_button_says_it_is_working(self):
+    def test_the_row_says_it_is_working(self):
         with headless_window() as window:
             with mock.patch.object(gui.threading, "Thread"):
                 window.acct_click()
-            self.assertEqual(window.acct_btn.text(), "Loading…")
             self.assertEqual(window._acct_mode, "loading")
+            self.assertEqual(_menu(window).online.button.text(), "Loading…")
 
     def test_the_code_arriving_makes_the_button_a_cancel(self):
         with headless_window() as window:
@@ -55,10 +54,15 @@ class SignInIsStartedOnceTests(unittest.TestCase):
                 window.acct_click()
             window._refresh_account_row("auth")
             self.assertEqual(window._acct_mode, "cancel")
-            self.assertEqual(window.acct_btn.text(), "Cancel")
+            self.assertEqual(_menu(window).online.button.text(), "Cancel")
 
 
 class ConfirmationsCanBeWithdrawnTests(unittest.TestCase):
+    """Signing out asks first, and a question left armed on screen is one the
+    next stray click answers. A Qt::Popup closes on any click outside itself,
+    so hiding the menu is what withdraws it -- which is why this no longer
+    needs an application-wide mouse filter."""
+
     @classmethod
     def setUpClass(cls):
         qt_app()
@@ -67,8 +71,8 @@ class ConfirmationsCanBeWithdrawnTests(unittest.TestCase):
         with headless_window() as window:
             window._refresh_account_row("in")
             window.acct_click()
-            self.assertEqual(window.acct_btn.text(), "Sign out?")
             self.assertTrue(window._acct_confirm)
+            self.assertEqual(_menu(window).online.button.text(), "Sign out?")
 
     def test_confirming_signs_out(self):
         with headless_window() as window:
@@ -78,65 +82,181 @@ class ConfirmationsCanBeWithdrawnTests(unittest.TestCase):
                     mock.patch.object(gui, "msa_signed_in", return_value=False):
                 window.acct_click()
             self.assertTrue(logout.called)
-
-    def test_a_click_elsewhere_withdraws_the_question(self):
-        with headless_window() as window:
-            window.show()
-            window._refresh_account_row("in")
-            window.acct_click()
-            self.assertTrue(window._acct_confirm)
-            QApplication.instance().sendEvent(
-                window.play_btn, _click_on(window.play_btn))
             self.assertFalse(window._acct_confirm)
-            self.assertEqual(window.acct_btn.text(), "Sign out")
 
-    def test_a_click_on_the_button_itself_does_not_withdraw_it(self):
+    def test_closing_the_menu_withdraws_the_question(self):
         with headless_window() as window:
             window.show()
             window._refresh_account_row("in")
+            window.open_accounts_menu()
             window.acct_click()
-            QApplication.instance().sendEvent(
-                window.acct_btn, _click_on(window.acct_btn))
             self.assertTrue(window._acct_confirm)
+            window.accounts_menu.close()
+            self.assertFalse(window._acct_confirm)
+            self.assertEqual(_menu(window).online.button.text(), "Sign out")
+
+    def test_the_download_account_asks_before_signing_out(self):
+        with headless_window() as window:
+            with mock.patch.object(xodus, "signed_in", return_value=True):
+                window.store_click()
+                self.assertTrue(window._store_confirm)
+                self.assertEqual(_menu(window).download.button.text(),
+                                 "Sign out?")
+
+    def test_the_download_account_signs_out_on_the_second_click(self):
+        with headless_window() as window:
+            with mock.patch.object(xodus, "signed_in", return_value=True), \
+                    mock.patch.object(window, "_unlink_store_account") as out:
+                window.store_click()
+                window.store_click()
+            self.assertTrue(out.called)
+            self.assertFalse(window._store_confirm)
+
+    def test_closing_the_menu_withdraws_that_one_too(self):
+        with headless_window() as window:
+            window.show()
+            with mock.patch.object(xodus, "signed_in", return_value=True):
+                window.open_accounts_menu()
+                window.store_click()
+                self.assertTrue(window._store_confirm)
+                window.accounts_menu.close()
+            self.assertFalse(window._store_confirm)
 
 
-class TheFilterIsNotLeftInstalledTests(unittest.TestCase):
-    """An application event filter is consulted for every event delivered
-    anywhere in the process, so one left behind costs the whole app -- and
-    one per window costs it that many times over."""
+class BothAccountsAreVisibleTests(unittest.TestCase):
+    """The whole point of the menu: the download account is no longer only in
+    Settings, and the pill never claims everything is fine while one of the
+    two is missing."""
 
     @classmethod
     def setUpClass(cls):
         qt_app()
 
-    def test_nothing_is_watched_while_no_question_is_up(self):
-        with headless_window() as window:
-            self.assertFalse(getattr(window, "_watching_clicks", False))
+    def _pill(self, window):
+        return window.acct_dot.styleSheet(), window.acct_text.text()
 
-    def test_withdrawing_stops_watching(self):
+    def test_both_accounts_have_a_row(self):
         with headless_window() as window:
-            window._refresh_account_row("in")
-            window.acct_click()
-            self.assertTrue(window._watching_clicks)
-            window._disarm_account_confirm()
-            self.assertFalse(window._watching_clicks)
+            menu = _menu(window)
+            self.assertEqual(menu.online.status.text(), "Not signed in")
+            self.assertEqual(menu.download.status.text(), "Not signed in")
 
-    def test_answering_stops_watching(self):
+    def test_the_signed_in_gamertag_is_named(self):
         with headless_window() as window:
-            window._refresh_account_row("in")
-            window.acct_click()
-            with mock.patch.object(gui, "msa_logout"), \
-                    mock.patch.object(gui, "msa_signed_in", return_value=False):
-                window.acct_click()
-            self.assertFalse(window._watching_clicks)
+            with mock.patch.object(gui, "msa_gamertag", return_value="Wyze3306"):
+                window._refresh_account_row("in")
+                self.assertEqual(_menu(window).online.status.text(),
+                                 "Signed in as Wyze3306")
+                self.assertEqual(window.acct_text.text(), "Wyze3306")
 
-    def test_closing_stops_watching(self):
+    def test_the_pill_is_green_only_when_both_are_in(self):
         with headless_window() as window:
-            window.show()
-            window._refresh_account_row("in")
-            window.acct_click()
-            window.close()
-            self.assertFalse(window._watching_clicks)
+            with mock.patch.object(gui, "msa_gamertag", return_value="W"), \
+                    mock.patch.object(xodus, "signed_in", return_value=True):
+                window._refresh_account_row("in")
+                self.assertIn(window.theme.green, window.acct_dot.styleSheet())
+
+    def test_one_account_missing_is_not_reported_as_signed_in(self):
+        # The half-truth that sent people to PLAY with nothing to click: the
+        # window said "Signed in" while the account it downloads with was
+        # never linked.
+        with headless_window() as window:
+            with mock.patch.object(gui, "msa_gamertag", return_value="W"), \
+                    mock.patch.object(xodus, "signed_in", return_value=False):
+                window._refresh_account_row("in")
+                self.assertIn(window.theme.gold, window.acct_dot.styleSheet())
+                self.assertNotIn(window.theme.green,
+                                 window.acct_dot.styleSheet())
+
+    def test_the_pill_names_both_accounts_in_its_tooltip(self):
+        with headless_window() as window:
+            window._refresh_accounts()
+            tip = window.acct_card.toolTip()
+            self.assertIn("Play online:", tip)
+            self.assertIn("Download Minecraft:", tip)
+
+    def test_the_menu_says_why_there_are_two(self):
+        with headless_window() as window:
+            self.assertIn("asks twice", gui.STORE_LINK_EXPLAINER)
+            self.assertIn(gui.STORE_LINK_EXPLAINER,
+                          [c.text() for c in
+                           _menu(window).findChildren(type(window.acct_text))])
+
+
+class DownloadSignInIsOfferedWhereItIsMissedTests(unittest.TestCase):
+    """PLAY reaching the download with no account for it is an offer, not a
+    launch failure: nothing broke and nothing was downloaded, and the account
+    it means is not the one the player signed into."""
+
+    @classmethod
+    def setUpClass(cls):
+        qt_app()
+
+    def test_not_signed_in_is_reported_apart_from_a_failure(self):
+        worker = gui.LaunchWorker({"edition": {"id": "release"}, "tag": "1.0"})
+        seen = {"failed": [], "offer": []}
+        worker.failed.connect(seen["failed"].append)
+        worker.needs_store_signin.connect(seen["offer"].append)
+        with mock.patch.object(gui, "do_setup",
+                               side_effect=xodus.NotSignedIn("no account")):
+            worker.run()
+        self.assertEqual(seen["failed"], [])
+        self.assertEqual(seen["offer"], ["no account"])
+
+    def test_any_other_failure_still_fails(self):
+        worker = gui.LaunchWorker({"edition": {"id": "release"}, "tag": "1.0"})
+        seen = {"failed": [], "offer": []}
+        worker.failed.connect(seen["failed"].append)
+        worker.needs_store_signin.connect(seen["offer"].append)
+        with mock.patch.object(gui, "do_setup",
+                               side_effect=RuntimeError("disk full")):
+            worker.run()
+        self.assertEqual(seen["failed"], ["disk full"])
+        self.assertEqual(seen["offer"], [])
+
+    def test_accepting_the_offer_signs_in_then_resumes_play(self):
+        with headless_window() as window:
+            with mock.patch.object(window, "_offer_store_account_link",
+                                   return_value=True), \
+                    mock.patch.object(window, "_link_store_account") as link:
+                window._store_signin_needed("no account")
+            self.assertTrue(link.called)
+            # PLAY resumes on its own rather than making them press it again.
+            self.assertEqual(link.call_args.kwargs["then"], window.do_play)
+
+    def test_declining_the_offer_leaves_the_launcher_idle(self):
+        with headless_window() as window:
+            with mock.patch.object(window, "_offer_store_account_link",
+                                   return_value=False), \
+                    mock.patch.object(window, "_link_store_account") as link:
+                window._store_signin_needed("no account")
+            self.assertFalse(link.called)
+            self.assertFalse(window.ui_state["busy"])
+            self.assertFalse(window.ui_state["launch_active"])
+
+    def test_the_status_names_the_account_that_is_missing(self):
+        with headless_window() as window:
+            with mock.patch.object(window, "_offer_store_account_link",
+                                   return_value=False):
+                window._store_signin_needed("no account")
+            self.assertIn("download", window.status_label.text().lower())
+
+    def test_signing_in_online_offers_the_download_account_next(self):
+        with headless_window() as window:
+            with mock.patch.object(xodus, "signed_in", return_value=False), \
+                    mock.patch.object(window, "_offer_store_account_link",
+                                      return_value=True) as offer, \
+                    mock.patch.object(window, "_link_store_account") as link:
+                window._offer_download_sign_in()
+            self.assertTrue(offer.called)
+            self.assertTrue(link.called)
+
+    def test_an_already_linked_download_account_is_not_asked_for_again(self):
+        with headless_window() as window:
+            with mock.patch.object(xodus, "signed_in", return_value=True), \
+                    mock.patch.object(window, "_offer_store_account_link") as offer:
+                window._offer_download_sign_in()
+            self.assertFalse(offer.called)
 
 
 class XboxPreauthWarmUpTests(unittest.TestCase):

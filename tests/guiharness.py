@@ -8,6 +8,10 @@ it arms singleShot timers for refresh_versions and the update check, calls
 xodus.signed_in() while building Settings, and installs itself as the global
 log sink. Any test that runs the event loop would otherwise reach the
 network, and the sink would outlive the window it writes to.
+
+`store_signed_in` is the download account's state. It defaults to signed out
+so a test says what it wants rather than inheriting whatever Microsoft Store
+session the developer happens to have on the machine running the suite.
 """
 # SPDX-License-Identifier: MIT
 
@@ -20,7 +24,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, QTimer
 from PySide6.QtWidgets import QApplication
 
-from bol import gui, log
+from bol import gui, log, xodus
 
 
 def qt_app():
@@ -34,7 +38,7 @@ def qt_app():
 
 
 @contextmanager
-def headless_window(**settings):
+def headless_window(store_signed_in=False, **settings):
     saved_sink = log._LOG_SINK
     with mock.patch.object(gui, "NativeAuth"), \
             mock.patch.object(gui, "msa_signed_in", return_value=False), \
@@ -46,7 +50,7 @@ def headless_window(**settings):
             mock.patch.object(gui, "save_settings", lambda _s: None), \
             mock.patch.object(gui.MainWindow, "refresh_versions", lambda _s: None), \
             mock.patch.object(gui.MainWindow, "check_for_update_async", lambda _s: None), \
-            mock.patch.object(gui.MainWindow, "_refresh_store_row", lambda _s: None):
+            mock.patch.object(xodus, "signed_in", return_value=store_signed_in):
         window = gui.MainWindow()
         try:
             yield window

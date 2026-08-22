@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **Both Microsoft sign-ins now live in one menu, top right.** The launcher
+  needs two, and until now it never said so: the one for playing online sat at
+  the top of the window, the one that downloads and updates Minecraft was
+  buried in *Settings ▸ Accounts*, and nothing anywhere explained that they
+  were different sessions at all. So a player who had signed in once — and
+  been told "Signed in" — could reach ▶ PLAY and be handed "you have to sign
+  in", about an account they had never been offered, with nothing in the
+  window to click. The pill in the corner now opens a small menu holding both,
+  each with what it is for, where it stands, and the one thing you can do
+  about it; the dot on the pill only goes green when both are in, and its
+  tooltip names them separately. The menu also says once why there are two.
+  *Settings ▸ Accounts* still works and stays in step.
+
+- **PLAY offers the download sign-in instead of failing.** Reaching the
+  download with no account for it was reported as "Minecraft could not
+  start" — true, and useless: nothing was broken and nothing had been
+  downloaded, the game simply had no account to be fetched with. It now asks
+  for that account, and resumes the launch on its own once it is there rather
+  than making you press PLAY again. Signing in to play online also offers the
+  download's sign-in straight afterwards, while you are still in the middle of
+  signing in, instead of letting you find out at PLAY.
+
 ### Changed
 
 - **The launcher window is now built on Qt instead of Tk**. Everything is

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
-    QEvent, QObject, QPoint, QPointF, Qt, QThread, QTimer, Signal, Slot,
+    QObject, QPoint, QPointF, Qt, QThread, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -745,6 +745,114 @@ class ProfileMenu(Popup):
         self._v.addStretch(1)
 
 
+
+# ======================================================================
+# Accounts menu
+# ======================================================================
+
+STORE_LINK_EXPLAINER = (
+    "The Microsoft Store hands the game to the account that owns it, over a "
+    "device-bound session the in-game sign-in cannot stand in for. So the "
+    "launcher asks twice, once for each job. Use the same Microsoft account "
+    "for both."
+)
+
+
+class AccountRow(QWidget):
+    """One account inside the menu: what it is for, where it stands, and the
+    one thing you can do about it."""
+    acted = Signal()
+
+    def __init__(self, title, purpose, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 8, 10, 8)
+        v.setSpacing(2)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.dot = QLabel("●")
+        head.addWidget(self.dot)
+        name = QLabel(title)
+        name.setStyleSheet("font-weight:700;")
+        head.addWidget(name)
+        head.addStretch(1)
+        self.button = btn("Sign in", self.acted.emit, kind="ghost", w=92, h=28)
+        head.addWidget(self.button)
+        v.addLayout(head)
+
+        self.status = QLabel("")
+        self.status.setObjectName("Sub")
+        v.addWidget(self.status)
+
+        why = QLabel(purpose)
+        why.setObjectName("Muted")
+        why.setWordWrap(True)
+        why.setStyleSheet("font-size:11px;")
+        v.addWidget(why)
+
+    def show_state(self, dot_color, status, action, danger=False):
+        self.dot.setStyleSheet(f"color:{dot_color};")
+        self.status.setText(status)
+        self.button.setText(action)
+        self.button.setStyleSheet(
+            f"background:{danger}; color:white;" if danger else "")
+
+
+class AccountsMenu(Popup):
+    """Both sign-ins in one place.
+
+    They were in two: the in-game one at the top of the window, the download's
+    buried in Settings, with nothing anywhere saying they were different
+    accounts at all. A player who had signed in once met "you have to sign in"
+    at PLAY with nothing to click.
+
+    Being a Qt::Popup also settles the confirmation problem the top-bar button
+    had. "Sign out?" is a question, and a question left armed on screen is one
+    the next stray click answers; a popup closes on any click outside itself,
+    so hiding is the moment to withdraw it.
+    """
+    xbox = Signal()
+    store = Signal()
+
+    def __init__(self, parent):
+        super().__init__(parent, width=352, height=272)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(2)
+
+        self.online = AccountRow(
+            "Play online",
+            "Friends, servers and Realms, from inside the game.")
+        self.online.acted.connect(self.xbox)
+        v.addWidget(self.online)
+
+        self.divider = QFrame()
+        self.divider.setFixedHeight(1)
+        v.addWidget(self.divider)
+
+        self.download = AccountRow(
+            "Download Minecraft",
+            "Fetches and updates the game from the Microsoft Store.")
+        self.download.acted.connect(self.store)
+        v.addWidget(self.download)
+
+        note = QLabel(STORE_LINK_EXPLAINER)
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        note.setStyleSheet("font-size:10px; padding:6px 10px 0 10px;")
+        v.addWidget(note)
+        v.addStretch(1)
+
+    def set_theme(self, theme: "Theme"):
+        self.divider.setStyleSheet(f"background:{theme.border};")
+
+    def hideEvent(self, event):
+        # Withdraw any armed confirmation with the menu that was asking it.
+        self.parent().disarm_account_confirms()
+        super().hideEvent(event)
+
+
 class GearButton(QAbstractButton):
     """A drawn settings-gear icon (painted, not a font glyph/emoji)."""
 
@@ -799,6 +907,11 @@ class LaunchWorker(QThread):
     game process actually exists."""
     done = Signal(object)
     failed = Signal(str)
+    # Nothing is broken and nothing was downloaded: the game simply has no
+    # account to be fetched with. That is an offer, not a launch failure, so
+    # it is reported apart from failed() rather than being recovered by
+    # matching on the message text.
+    needs_store_signin = Signal(str)
     progress = Signal(int, int)
     close_window = Signal()
     step_aside = Signal()
@@ -827,7 +940,12 @@ class LaunchWorker(QThread):
             self.done.emit("closed")
         except Exception as exc:
             self.come_back.emit()
-            self.failed.emit(str(exc) or type(exc).__name__)
+            message = str(exc) or type(exc).__name__
+            from .xodus import NotSignedIn
+            if isinstance(exc, NotSignedIn):
+                self.needs_store_signin.emit(message)
+            else:
+                self.failed.emit(message)
 
 
 class MainWindow(QMainWindow):
@@ -842,6 +960,11 @@ class MainWindow(QMainWindow):
             "launch_active": False, "window_gone": False, "stepped_aside": False,
         }
         self._force_close = False
+        # Armed two-step confirmations, read by _online_state /
+        # _store_state. Set here because _build_settings() refreshes the
+        # store row before the accounts menu is wired.
+        self._acct_confirm = False
+        self._store_confirm = False
         # slot name -> the QThread currently held for it; see _start_worker.
         self._workers: dict[str, QThread] = {}
         self.na = NativeAuth()
@@ -887,6 +1010,7 @@ class MainWindow(QMainWindow):
         self.apply_theme()
         self._wire_version_picker()
         self._wire_profile_menu()
+        self._wire_accounts_menu()
         self._refresh_account_row("in" if msa_signed_in() else "out")
 
         self._changelog_loaded = False
@@ -944,6 +1068,9 @@ class MainWindow(QMainWindow):
             row.switch.set_theme(self.theme)
         if getattr(self, "settings_btn", None):
             self.settings_btn.set_theme(self.theme)
+        if _alive(getattr(self, "accounts_menu", None)):
+            self.accounts_menu.set_theme(self.theme)
+            self._refresh_accounts()
 
     # ------------------------------------------------------------ top bar
     def _build_topbar(self) -> QHBoxLayout:
@@ -977,16 +1104,17 @@ class MainWindow(QMainWindow):
         self.prof_card.mousePressEvent = lambda e: self.open_profile_menu()
         row.addWidget(self.prof_card)
 
-        # Account pill
-        acct = QFrame(); acct.setObjectName("Pill")
-        al = QHBoxLayout(acct); al.setContentsMargins(14, 6, 8, 6)
+        # Accounts pill -- opens the menu holding both sign-ins
+        self.acct_card = QFrame(); self.acct_card.setObjectName("Pill")
+        self.acct_card.setCursor(Qt.PointingHandCursor)
+        al = QHBoxLayout(self.acct_card); al.setContentsMargins(14, 6, 10, 6)
         self.acct_dot = QLabel("●")
         al.addWidget(self.acct_dot)
-        self.acct_text = QLabel("Not signed in")
+        self.acct_text = QLabel("Sign in")
         al.addWidget(self.acct_text)
-        self.acct_btn = btn("Sign in", self.acct_click, kind="ghost", w=88, h=30)
-        al.addWidget(self.acct_btn)
-        row.addWidget(acct)
+        al.addWidget(QLabel("▾"))
+        self.acct_card.mousePressEvent = lambda e: self.open_accounts_menu()
+        row.addWidget(self.acct_card)
 
         self.update_banner_slot = row
         return row
@@ -1397,71 +1525,108 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.prof_label.setText(f"Profile: {current_profile_name()}")
 
-    # ------------------------------------------------------------ account
+    # ------------------------------------------------------------ accounts
     def _refresh_account_row(self, phase):
+        """Record where the online sign-in stands, then redraw both places
+        that show it. Kept as the single entry point the auth callbacks and
+        the sign-in flow already call."""
+        self._acct_mode = {"in": "out", "auth": "cancel"}.get(phase, "in")
+        if phase != "auth":
+            self._acct_confirm = False
+        self._refresh_accounts()
+
+    def _online_state(self):
+        """(dot colour, status line, button label, danger) for the online
+        account, from _acct_mode and any armed confirmation."""
+        mode = getattr(self, "_acct_mode", "in")
+        red = self.theme.red
+        if mode == "loading":
+            return self.theme.gold, "Starting sign-in…", "Loading…", None
+        if mode == "out":                      # signed in; the action is out
+            gt = msa_gamertag()
+            return (self.theme.green,
+                    f"Signed in as {gt}" if gt else "Signed in",
+                    "Sign out?" if self._acct_confirm else "Sign out",
+                    red if self._acct_confirm else None)
+        if mode == "cancel":                   # a device code is on screen
+            return (self.theme.gold, "Waiting for the sign-in to finish…",
+                    "Cancel?" if self._acct_confirm else "Cancel",
+                    red if self._acct_confirm else None)
+        return self.theme.sub, "Not signed in", "Sign in", None
+
+    def _store_state(self):
+        """The same, for the download account."""
+        if self.ui_state.get("store_login_active"):
+            return self.theme.gold, "Signing in…", "Signing in…", None
+        try:
+            from . import xodus
+            linked = xodus.signed_in()
+        except Exception:
+            linked = False
+        if linked:
+            return (self.theme.green, "Signed in",
+                    "Sign out?" if self._store_confirm else "Sign out",
+                    self.theme.red if self._store_confirm else None)
+        return self.theme.sub, "Not signed in", "Sign in", None
+
+    def _refresh_accounts(self):
+        """Redraw the pill and the menu from the two account states."""
         if not _alive(self) or not _alive(self.acct_dot):
             return
-        gt = msa_gamertag() or "Xbox Live"
-        if phase == "in":
-            self.acct_dot.setStyleSheet(f"color:{self.theme.green};")
-            self.acct_text.setText("Signed in")
-            self.acct_btn.setText("Sign out")
-            self.acct_btn.setToolTip(f"Sign out of {gt}")
-            self._acct_mode = "out"
-        elif phase == "auth":
-            self.acct_dot.setStyleSheet(f"color:{self.theme.gold};")
-            self.acct_text.setText("Sign-in pending…")
-            self.acct_btn.setText("Cancel")
-            self._acct_mode = "cancel"
+        online_dot, online_status, online_action, online_danger = self._online_state()
+        store_dot, store_status, store_action, store_danger = self._store_state()
+
+        # The pill carries the combined state: green only when both are in,
+        # because "Signed in" while the download account is missing is exactly
+        # the half-truth that sent people to PLAY with nothing to click.
+        if online_dot == self.theme.green and store_dot == self.theme.green:
+            pill_dot = self.theme.green
+        elif self.theme.gold in (online_dot, store_dot) or online_dot == self.theme.green:
+            pill_dot = self.theme.gold
         else:
-            self.acct_dot.setStyleSheet(f"color:{self.theme.sub};")
-            self.acct_text.setText("Not signed in")
-            self.acct_btn.setText("Sign in")
-            self.acct_btn.setToolTip("Sign in to Microsoft")
-            self._acct_mode = "in"
-        self._acct_confirm = False
-        self._watch_for_stray_clicks(False)
+            pill_dot = self.theme.sub
+        self.acct_dot.setStyleSheet(f"color:{pill_dot};")
+        gt = msa_gamertag() if getattr(self, "_acct_mode", "in") == "out" else None
+        self.acct_text.setText(gt or ("Signing in…" if pill_dot == self.theme.gold
+                                       and online_dot == self.theme.gold else "Sign in"))
+        self.acct_card.setToolTip(
+            f"Play online: {online_status}\nDownload Minecraft: {store_status}")
 
-    def _watch_for_stray_clicks(self, watching):
-        """Install the application-wide mouse filter only while it is needed.
+        menu = getattr(self, "accounts_menu", None)
+        if _alive(menu):
+            menu.online.show_state(online_dot, online_status, online_action,
+                                    online_danger)
+            menu.download.show_state(store_dot, store_status, store_action,
+                                      store_danger)
 
-        A question left armed on screen is one the next stray click answers,
-        so an armed "Sign out?" has to notice a click that lands anywhere
-        else -- which under Qt means an application event filter, the same
-        reach the Tk build got from bind_all("<Button-1>").
+    def _wire_accounts_menu(self):
+        self.accounts_menu = AccountsMenu(self)
+        self.accounts_menu.xbox.connect(self.acct_click)
+        self.accounts_menu.store.connect(self.store_click)
+        self.accounts_menu.set_theme(self.theme)
 
-        It is installed and removed around the armed state rather than for
-        the window's lifetime: an application filter is consulted for every
-        event delivered anywhere in the process, and that is not a cost worth
-        paying for the seconds a confirmation is actually up.
+    def open_accounts_menu(self):
+        self._refresh_accounts()
+        self.accounts_menu.setFixedWidth(max(352, self.acct_card.width()))
+        self.accounts_menu.show_below(self.acct_card)
+
+    def disarm_account_confirms(self):
+        """Called when the menu hides: a confirmation must never outlive the
+        menu that was asking for it.
+
+        Redraws rather than only clearing the flags, so the rows are already
+        back to "Sign out" the moment the menu closes instead of the next time
+        it happens to be opened.
         """
-        if watching == getattr(self, "_watching_clicks", False):
+        if not _alive(self):
             return
-        app = QApplication.instance()
-        if app is None:
+        if not (self._acct_confirm or self._store_confirm):
             return
-        if watching:
-            app.installEventFilter(self)
-        else:
-            app.removeEventFilter(self)
-        self._watching_clicks = watching
+        self._acct_confirm = False
+        self._store_confirm = False
+        self._refresh_accounts()
 
-    def _arm_account_confirm(self, label):
-        """Two-step destructive buttons: the first click asks, the second
-        acts."""
-        self._acct_confirm = True
-        self._watch_for_stray_clicks(True)
-        self.acct_btn.setText(label)
-        self.acct_btn.setStyleSheet(f"background:{self.theme.red}; color:white;")
-
-    def _disarm_account_confirm(self):
-        if not getattr(self, "_acct_confirm", False):
-            return
-        self.acct_btn.setStyleSheet("")
-        self._refresh_account_row(
-            {"out": "in", "cancel": "auth"}.get(
-                getattr(self, "_acct_mode", "in"), "out"))
-
+    # ---------------------------------------------------------- online account
     def acct_click(self):
         mode = getattr(self, "_acct_mode", "in")
         if mode == "loading":
@@ -1470,28 +1635,133 @@ class MainWindow(QMainWindow):
             # codes for the same sign-in.
             return
         if mode == "out":
-            if getattr(self, "_acct_confirm", False):
+            if self._acct_confirm:
                 self.na.stop()
                 try:
                     msa_logout()
                 except BolError as exc:
                     warn(str(exc))
+                self._acct_confirm = False
                 self._refresh_account_row("in" if msa_signed_in() else "out")
             else:
-                self._arm_account_confirm("Sign out?")
+                self._acct_confirm = True
+                self._refresh_accounts()
         elif mode == "cancel":
-            if getattr(self, "_acct_confirm", False):
+            if self._acct_confirm:
                 self.na.stop()
+                self._acct_confirm = False
                 self._refresh_account_row("in" if msa_signed_in() else "out")
-                if getattr(self, "_auth_dialog", None):
+                if getattr(self, "_auth_dialog", None) and _alive(self._auth_dialog):
                     self._auth_dialog.close()
             else:
-                self._arm_account_confirm("Cancel?")
+                self._acct_confirm = True
+                self._refresh_accounts()
         else:
             self._acct_mode = "loading"
-            self.acct_btn.setText("Loading…")
+            self._refresh_accounts()
             threading.Thread(target=lambda: self.na.start(self._on_auth, self._on_online),
                               daemon=True).start()
+
+    # ---------------------------------------------------------- download account
+    def store_click(self):
+        if self.ui_state.get("store_login_active"):
+            return
+        from . import xodus
+        if not xodus.signed_in():
+            self.accounts_menu.close()
+            self._link_store_account()
+            return
+        if self._store_confirm:
+            self._store_confirm = False
+            self._unlink_store_account()
+        else:
+            self._store_confirm = True
+            self._refresh_accounts()
+
+    def _unlink_store_account(self):
+        from . import xodus
+        w = Worker(xodus.logout)
+        w.done.connect(lambda _r: _alive(self) and self._refresh_store_row())
+        w.failed.connect(lambda e: _alive(self) and self.error_box(
+            "Microsoft Store account", e))
+        self._start_worker("store-account", w)
+
+    def _link_store_account(self, then=None):
+        """Run the download's Microsoft sign-in from wherever it was asked for.
+
+        Xodus opens its own webview window and can take a while, so the
+        launcher says what it is waiting for rather than looking idle. `then`
+        is whatever needed the account in the first place -- PLAY, usually,
+        which resumes on its own once it is there instead of making the player
+        press it again.
+        """
+        if self.ui_state.get("store_login_active"):
+            return
+        from . import xodus
+        self.ui_state["store_login_active"] = True
+        self._refresh_store_row()
+        self.set_status("Finish the Microsoft sign-in in the window that opens…")
+        self._show_bar_busy()
+
+        def finished(_result):
+            self.ui_state["store_login_active"] = False
+            if not _alive(self):
+                return
+            self.end_progress()
+            self._refresh_store_row()
+            self.set_status("Microsoft account linked.", self.theme.green)
+            if then:
+                then()
+
+        def failed(message):
+            self.ui_state["store_login_active"] = False
+            if not _alive(self):
+                return
+            self.end_progress()
+            self._refresh_store_row()
+            self.set_status("Microsoft account not linked.", self.theme.red)
+            self.error_box("Microsoft account", message[:2000])
+
+        w = Worker(xodus.login)
+        w.done.connect(finished)
+        w.failed.connect(failed)
+        if not self._start_worker("store-account", w):
+            self.ui_state["store_login_active"] = False
+            self.end_progress()
+
+    def _offer_store_account_link(self, reason="",
+                                   title="Sign in to download Minecraft",
+                                   action="Sign in", decline="Not now"):
+        """Offer the download's sign-in where it is actually missed.
+
+        A choice that is really an action reads far better under its own name
+        than under "Yes", which makes the player re-read the question to work
+        out what "Yes" is about to do. Returns True only when they asked to
+        sign in now.
+        """
+        box = self._box(QMessageBox.Question, title,
+                        (f"{reason}\n\n" if reason else "") + STORE_LINK_EXPLAINER)
+        no = box.addButton(decline, QMessageBox.RejectRole)
+        yes = box.addButton(action, QMessageBox.AcceptRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        return box.clickedButton() is not no
+
+    def _offer_download_sign_in(self):
+        """Chain the download's sign-in onto the one just completed.
+
+        Two sign-ins is the shape of the system rather than a choice, and
+        asking for the second here keeps them together, while the player is
+        still in the middle of signing in.
+        """
+        from . import xodus
+        if self.ui_state.get("store_login_active") or xodus.signed_in():
+            return
+        if self._offer_store_account_link(
+                "You are signed in for playing online. Minecraft itself is "
+                "downloaded with a second, separate sign-in.",
+                title="One more sign-in"):
+            self._link_store_account()
 
     def _on_auth(self, url, code):
         QTimer.singleShot(0, lambda: _alive(self) and (
@@ -1502,6 +1772,10 @@ class MainWindow(QMainWindow):
         if getattr(self, "_auth_dialog", None) and _alive(self._auth_dialog):
             QTimer.singleShot(0, self._auth_dialog.close)
         self._warm_xbox_preauth()
+        # Ask for the second sign-in while the player is still in the middle
+        # of signing in, rather than letting them find out at PLAY.
+        QTimer.singleShot(
+            0, lambda: _alive(self) and self._offer_download_sign_in())
 
     def _warm_xbox_preauth(self):
         """Mint the Xbox token chain now rather than at PLAY.
@@ -1583,6 +1857,7 @@ class MainWindow(QMainWindow):
         w.progress.connect(self.set_progress)
         w.done.connect(self._play_finished)
         w.failed.connect(self._play_failed)
+        w.needs_store_signin.connect(self._store_signin_needed)
         w.close_window.connect(self._close_for_game)
         w.step_aside.connect(self._step_aside_for_game)
         w.come_back.connect(self._come_back_from_game)
@@ -1597,7 +1872,6 @@ class MainWindow(QMainWindow):
             return
         self.ui_state["window_gone"] = True
         self.na.stop()
-        self._watch_for_stray_clicks(False)
         self._force_close = True
         self.close()
 
@@ -1645,6 +1919,27 @@ class MainWindow(QMainWindow):
                                  title="Minecraft could not start")
         else:
             self.error_box("Minecraft could not start", message[:2000])
+
+    def _store_signin_needed(self, message):
+        """PLAY got as far as the download and found no account for it.
+
+        Reporting this as "Minecraft could not start" was true and useless:
+        the player is told something failed, with nothing in the window to act
+        on, and the account it means is not the one they signed into. Offer
+        that account instead, and resume PLAY on its own once it is there.
+        """
+        self.ui_state["launch_active"] = False
+        log._LOG_SINK(f"xx {message}")
+        if self.ui_state.get("window_gone"):
+            desktop_notify(message[:400], "Minecraft could not start")
+            QApplication.instance().quit()
+            return
+        self.end_progress()
+        self._set_busy(False)
+        self.set_status("Microsoft sign-in needed to download Minecraft.",
+                        self.theme.gold)
+        if self._offer_store_account_link(message):
+            self._link_store_account(then=self.do_play)
 
     def _set_busy(self, on):
         self.ui_state["busy"] = on
@@ -1762,26 +2057,29 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def _refresh_store_row(self):
-        if not _alive(self) or not _alive(self.store_label) or not _alive(self.store_btn):
+        """Settings ▸ Accounts still shows the download account; the menu in
+        the top-right is the other place it lives now, and both are drawn
+        from the same state."""
+        if not _alive(self):
             return
-        from . import xodus
-        linked = xodus.signed_in()
-        self.store_label.setText("Store account: " + ("linked" if linked else "not linked"))
-        self.store_btn.setText("Unlink" if linked else "Link…")
+        if _alive(getattr(self, "store_label", None)) and _alive(self.store_btn):
+            if self.ui_state.get("store_login_active"):
+                self.store_label.setText("Store account: signing in…")
+                self.store_btn.setText("Signing in…")
+            else:
+                from . import xodus
+                linked = xodus.signed_in()
+                self.store_label.setText(
+                    "Store account: " + ("linked" if linked else "not linked"))
+                self.store_btn.setText("Unlink" if linked else "Link…")
+        self._refresh_accounts()
 
     def _toggle_store_account(self):
         from . import xodus
-
-        def work():
-            if xodus.signed_in():
-                xodus.logout()
-            else:
-                xodus.login()
-
-        w = Worker(work)
-        w.done.connect(lambda _r: self._refresh_store_row())
-        w.failed.connect(lambda e: _alive(self) and self.error_box("Microsoft Store account", e))
-        self._start_worker("store-account", w)
+        if xodus.signed_in():
+            self._unlink_store_account()
+        else:
+            self._link_store_account()
 
     def _build_advanced_tab(self) -> QWidget:
         w = QWidget()
@@ -2456,7 +2754,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.na.stop()
-        self._watch_for_stray_clicks(False)
         event.accept()
         # The app runs with setQuitOnLastWindowClosed(False) so that
         # "close the launcher when Minecraft starts" can drop the window while
@@ -2465,15 +2762,6 @@ class MainWindow(QMainWindow):
         # process stays resident forever. `_force_close` returns above, so the
         # close-on-launch path still leaves the loop running for LaunchWorker.
         QApplication.instance().quit()
-
-    def eventFilter(self, watched, event):
-        if (event.type() == QEvent.MouseButtonPress
-                and getattr(self, "_acct_confirm", False)
-                and watched is not self.acct_btn
-                and not (isinstance(watched, QWidget)
-                         and self.acct_btn.isAncestorOf(watched))):
-            self._disarm_account_confirm()
-        return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not isinstance(

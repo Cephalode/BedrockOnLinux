@@ -558,19 +558,26 @@ class TestAccountRow:
     """Test account status display."""
 
     def test_account_row_not_signed_in(self, main_window):
-        """The row starts on the signed-out wording and offers Sign in."""
-        assert main_window.acct_text.text() == "Not signed in"
-        assert main_window.acct_btn.text() == "Sign in"
+        """The pill starts on the signed-out wording, and the menu behind it
+        offers Sign in for both accounts."""
+        assert main_window.acct_text.text() == "Sign in"
+        menu = main_window.accounts_menu
+        assert menu.online.status.text() == "Not signed in"
+        assert menu.online.button.text() == "Sign in"
+        assert menu.download.button.text() == "Sign in"
 
     def test_refresh_account_row_in(self, main_window):
-        """Account refresh for signed in state."""
+        """Signed in online: the menu says so and offers the way back out."""
         main_window._refresh_account_row("in")
-        assert "Signed in" in main_window.acct_text.text()
+        assert "Signed in" in main_window.accounts_menu.online.status.text()
+        assert main_window.accounts_menu.online.button.text() == "Sign out"
 
     def test_refresh_account_row_out(self, main_window):
-        """Account refresh for signed out state."""
+        """And back again."""
+        main_window._refresh_account_row("in")
         main_window._refresh_account_row("out")
-        assert "Not signed in" in main_window.acct_text.text()
+        assert main_window.accounts_menu.online.status.text() == "Not signed in"
+        assert main_window.acct_text.text() == "Sign in"
 
 
 # ======================================================================
