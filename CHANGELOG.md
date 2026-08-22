@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.2 — 2026-08-22
 
 ### Added
 
@@ -25,6 +25,15 @@
   than making you press PLAY again. Signing in to play online also offers the
   download's sign-in straight afterwards, while you are still in the middle of
   signing in, instead of letting you find out at PLAY.
+
+- **A server you can actually join, in the Servers tab.** Bedrock opens that
+  tab on the featured servers it sells, and a fresh install has nothing of its
+  own underneath, so joining anything meant finding an address elsewhere and
+  typing it in by hand — the game offers no way to import one. Linesia
+  SkyFaction (`play.linesia.net`, port 19132) is now written into the list the
+  game reads at startup, for every signed-in account. The list belongs to you:
+  seeding only ever adds, never reorders or removes, and deleting the entry in
+  game keeps it deleted.
 
 ### Changed
 
@@ -67,6 +76,90 @@
 
 - The **QR code** on the Xbox sign-in dialog. The code and the button that
   opens the sign-in page are unchanged.
+
+### Fixed
+
+- **Closing the launcher window left it running.** The process stayed resident
+  with no window, every time, and a second launch added another one. The Qt
+  rewrite needs the event loop to outlive the window so that "close the
+  launcher when Minecraft starts" can hand the game off — but that makes
+  quitting an explicit act, and nothing was doing it.
+
+- **The `.deb` and `.rpm` could install and then not start at all.** Qt's xcb
+  plugin loads thirteen X libraries the packages never declared, plus libEGL,
+  and a missing one is not a Python error you can read: Qt aborts from C++
+  before the launcher's own reporting runs, so it vanished with nothing in the
+  terminal and nothing in the logs. Both packages now declare the whole set.
+
+- **Switching between Stable and Preview only worked if you restarted first**
+  (#201). The catalogue was fetched for whichever edition was selected at
+  startup, so the other one came back empty: the version stayed on the build
+  from the wrong edition, the picker refused to open, and ▶ PLAY quietly
+  launched what was already selected. The full catalogue is fetched every
+  session now.
+
+- **Minecraft was audible but invisible in Steam Deck Game Mode** (#199).
+  Gamescope only presents a window it can attribute to the application Steam
+  launched, and from the Flatpak neither route to that attribution reaches the
+  game — it starts through the portal, outside the process tree Steam
+  launched, and the property gamescope reads is set by Proton's fork of Wine
+  rather than the one this engine is built from. The launcher stamps it
+  itself now.
+
+- **The Microsoft Store sign-in did not survive closing the Flatpak** (#198),
+  and losing it was worse than a sign-out: with no device credentials on file
+  every command provisioned a *new* Store device, an account may hold ten, and
+  once they were gone the licensing service refused the game outright with
+  "Device group is full" — after which Minecraft could be neither downloaded
+  nor started until devices were removed by hand on account.microsoft.com. The
+  keyring now lives in the launcher's own storage, which persists in every
+  packaging; one left behind by an earlier release is taken along.
+
+- **A game directory missing its Store package took the launcher down with a
+  Rust panic** quoting a file and line number, and nothing about which file was
+  missing or that re-downloading is what brings it back. The directory looks
+  complete — every DLL, the manifest, a full-size executable — because on a
+  Store build the executable is ciphertext. It is named and explained now.
+
+- **Injecting a client DLL always reported "process not found".** The game is
+  started through the GDK loader, and Wine leaves the process name empty for
+  it, so the snapshot never matched. A nameless process is now identified
+  through the image path in its own PEB.
+
+- **The Flatpak had no icon** — not in the window, not in the title bar, not on
+  the hero screen. Its icon is installed under `/app` and the candidate list no
+  longer looked there.
+
+- **`doctor` offered to install a package that does not exist.** On Debian and
+  Ubuntu there is no `python3-pyside6` — it is split per Qt module — and it did
+  not need naming at all: the launcher installs the toolkit itself on first
+  run, exactly as it did for the previous one. It also stopped reporting a
+  perfectly working portable install as an unready system.
+
+- **The activity log mangled its own text.** Every download line arrived as
+  `-&gt; downloading …`, and any line holding a path with `&` or an error in
+  angle brackets came out the same way — on exactly the text people are asked
+  to paste into bug reports. The view also stopped following the newest line,
+  and the status line above it, once painted red by a failure, stayed red for
+  the rest of the session.
+
+- **Two sign-ins could be started at once.** Clicking *Sign in* twice handed
+  out two device codes for one sign-in, with the launcher waiting on the one
+  you were not shown. "Sign out?" could also be left armed on screen
+  indefinitely, where the next click answered it. Signing in also warms the
+  Xbox token chain again, so the first launch afterwards no longer pays for the
+  whole round trip.
+
+- **One unreachable edition emptied the whole version picker** — a Preview
+  outage took Stable down with it. And triggering the same background job twice
+  (two clicks on *Import content*, a quick Stable/Preview toggle) destroyed the
+  running thread underneath itself, which Qt turns into an abort.
+
+- Smaller things in the window: the log's **Clear** and **Copy** buttons were
+  clipped, three *Settings ▸ Tools* rows had lost their tooltips, and the
+  version picker's filter field did not take focus, so typing into a freshly
+  opened picker did nothing.
+
 
 ## 2.2.1 — 2026-08-21
 

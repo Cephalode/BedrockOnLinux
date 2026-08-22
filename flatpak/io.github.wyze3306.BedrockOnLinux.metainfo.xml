@@ -70,6 +70,28 @@
   </content_rating>
 
   <releases>
+    <release version="2.2.2" date="2026-08-22">
+      <description>
+        <p>The launcher window is rebuilt on Qt, both Microsoft sign-ins now
+           share one menu, and Minecraft shows up in Steam Deck Game Mode
+           again.</p>
+        <ul>
+          <li>puts the sign-in that plays online and the one that downloads the
+              game in a single menu, top right, and says why there are two</li>
+          <li>offers the download sign-in when PLAY needs it, instead of
+              reporting a launch failure with nothing to act on</li>
+          <li>shows Minecraft in Steam Deck Game Mode, where the window was
+              rendering but never presented</li>
+          <li>keeps the Microsoft Store sign-in across restarts, which also
+              stops it filling the account's ten-device limit</li>
+          <li>switches between Stable and Preview without restarting first</li>
+          <li>ships a server you can join in the Servers tab</li>
+          <li>rebuilds the window on Qt: sharper text, correct DPI scaling and
+              native Wayland output. Controller navigation of the launcher is
+              gone for now and returns in a later release</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.2.1" date="2026-08-21">
       <description>
         <p>The launcher can be driven with a controller, the Microsoft sign-in
