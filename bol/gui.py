@@ -999,8 +999,7 @@ class MainWindow(QMainWindow):
         self._auth_bridge = AuthBridge()
         self._auth_bridge.auth.connect(self._on_auth)
         self._auth_bridge.online.connect(self._on_online)
-        self._auth_bridge.refreshed.connect(
-            lambda: _alive(self) and self._refresh_account_row("in"))
+        self._auth_bridge.refreshed.connect(self._on_refreshed)
 
         self.setWindowTitle(PRETTY)
         self.resize(1000, 660)
@@ -1813,6 +1812,19 @@ class MainWindow(QMainWindow):
         # Ask for the second sign-in while the player is still in the middle
         # of signing in, rather than letting them find out at PLAY.
         self._offer_download_sign_in()
+
+    def _on_refreshed(self):
+        # Reached via AuthBridge.refreshed, emitted from the raw worker
+        # thread inside _warm_xbox_preauth. This has to be a real bound
+        # method (not a lambda) connected here: a plain lambda has no
+        # owning QObject, so Qt/PySide can't resolve a receiver thread for
+        # it and silently falls back to invoking it directly on whichever
+        # thread calls emit() -- i.e. back on the worker thread, touching
+        # widgets off the UI thread. A bound method of this QObject gives
+        # Qt a real receiver thread to marshal the call onto.
+        if not _alive(self):
+            return
+        self._refresh_account_row("in")
 
     def _warm_xbox_preauth(self):
         """Mint the Xbox token chain now rather than at PLAY.
