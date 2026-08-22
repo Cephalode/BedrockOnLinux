@@ -56,18 +56,13 @@ nothing installed.
 ## Play
 
 1. Open **BedrockOnLinux** and sign in with the Microsoft account that owns
-   Minecraft. It is asked for twice — once to download the game from the
-   Microsoft Store, once to play online — because the Store needs a session
+   Minecraft. It is asked for twice, once to download the game from the
+   Microsoft Store, once to play online, because the Store needs a session
    of its own. Use the same account both times; the launcher offers the
    second sign-in right after the first, and again if a download needs it.
 2. Pick **Minecraft** or **Minecraft Preview**, choose a version, and hit
-   **▶ PLAY**.
+   **PLAY**.
 3. Play, including the **Friends**, **Servers** and **Realms** tabs.
-
-While you play, Discord shows *Playing BedrockOnLinux* with the build you are
-on and how long you have been at it, so friends can see where the game came
-from. Only the edition and the version are ever sent, and **Settings ▸
-Discord** turns it off.
 
 The first launch downloads the game and everything it needs, so give it a
 while; after that it starts straight away. You can install an older version
