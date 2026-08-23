@@ -499,6 +499,25 @@ class LogBridge(QObject):
     line = Signal(str)
 
 
+class AuthBridge(QObject):
+    """Marshals ``NativeAuth`` callbacks (raw worker thread) onto the UI
+    thread.
+
+    ``NativeAuth.start()`` is kicked off on a plain ``threading.Thread``, not
+    a ``QThread``, so it has no Qt event loop of its own. Handing its
+    ``on_auth``/``on_online`` callbacks straight to ``QTimer.singleShot``
+    from that thread creates a timer with affinity to a thread that never
+    pumps events -- the callback is queued and then simply never fires, so
+    the "Sign In" dialog never appears and the account never goes green.
+    A ``QObject`` created on the UI thread queues its signals onto that
+    thread automatically, from any emitting thread, which is what actually
+    gets the callback to run.
+    """
+    auth = Signal(str, str)
+    online = Signal()
+    refreshed = Signal()
+
+
 # ======================================================================
 # Small reusable widgets
 # ======================================================================
@@ -972,6 +991,15 @@ class MainWindow(QMainWindow):
         self._log_bridge = LogBridge()
         self._log_bridge.line.connect(self._on_log_line)
         log._LOG_SINK = lambda m: self._log_bridge.line.emit(m)
+        # See AuthBridge: NativeAuth's callbacks fire on a plain worker
+        # thread with no event loop, so they cannot drive QTimer.singleShot
+        # or touch widgets directly. Route them through a QObject built on
+        # the UI thread instead, whose queued-connection signals land here
+        # safely no matter which thread emits them.
+        self._auth_bridge = AuthBridge()
+        self._auth_bridge.auth.connect(self._on_auth)
+        self._auth_bridge.online.connect(self._on_online)
+        self._auth_bridge.refreshed.connect(self._on_refreshed)
 
         self.setWindowTitle(PRETTY)
         self.resize(1000, 660)
@@ -1659,8 +1687,11 @@ class MainWindow(QMainWindow):
         else:
             self._acct_mode = "loading"
             self._refresh_accounts()
-            threading.Thread(target=lambda: self.na.start(self._on_auth, self._on_online),
-                              daemon=True).start()
+            threading.Thread(
+                target=lambda: self.na.start(
+                    self._auth_bridge.auth.emit,
+                    self._auth_bridge.online.emit),
+                daemon=True).start()
 
     # ---------------------------------------------------------- download account
     def store_click(self):
@@ -1764,18 +1795,36 @@ class MainWindow(QMainWindow):
             self._link_store_account()
 
     def _on_auth(self, url, code):
-        QTimer.singleShot(0, lambda: _alive(self) and (
-            self._refresh_account_row("auth"), self._code_dialog(url, code)))
+        # Reached via AuthBridge.auth, already queued onto the UI thread.
+        if not _alive(self):
+            return
+        self._refresh_account_row("auth")
+        self._code_dialog(url, code)
 
     def _on_online(self):
-        QTimer.singleShot(0, lambda: _alive(self) and self._refresh_account_row("in"))
+        # Reached via AuthBridge.online, already queued onto the UI thread.
+        if not _alive(self):
+            return
+        self._refresh_account_row("in")
         if getattr(self, "_auth_dialog", None) and _alive(self._auth_dialog):
-            QTimer.singleShot(0, self._auth_dialog.close)
+            self._auth_dialog.close()
         self._warm_xbox_preauth()
         # Ask for the second sign-in while the player is still in the middle
         # of signing in, rather than letting them find out at PLAY.
-        QTimer.singleShot(
-            0, lambda: _alive(self) and self._offer_download_sign_in())
+        self._offer_download_sign_in()
+
+    def _on_refreshed(self):
+        # Reached via AuthBridge.refreshed, emitted from the raw worker
+        # thread inside _warm_xbox_preauth. This has to be a real bound
+        # method (not a lambda) connected here: a plain lambda has no
+        # owning QObject, so Qt/PySide can't resolve a receiver thread for
+        # it and silently falls back to invoking it directly on whichever
+        # thread calls emit() -- i.e. back on the worker thread, touching
+        # widgets off the UI thread. A bound method of this QObject gives
+        # Qt a real receiver thread to marshal the call onto.
+        if not _alive(self):
+            return
+        self._refresh_account_row("in")
 
     def _warm_xbox_preauth(self):
         """Mint the Xbox token chain now rather than at PLAY.
@@ -1799,8 +1848,10 @@ class MainWindow(QMainWindow):
                     return
                 epoch = _account_cache_epoch(DATA / "winegdk-preauth")
                 if xbl_preauth(fresh.get("access_token"), epoch):
-                    QTimer.singleShot(
-                        0, lambda: _alive(self) and self._refresh_account_row("in"))
+                    # Runs on the raw worker thread started below, which has
+                    # no Qt event loop -- go through AuthBridge rather than
+                    # QTimer.singleShot (see AuthBridge docstring).
+                    self._auth_bridge.refreshed.emit()
             except Exception:
                 # Best-effort warm-up: PLAY re-runs the whole chain and is
                 # where a real failure has to be reported, with its
@@ -2030,27 +2081,6 @@ class MainWindow(QMainWindow):
                                "waiting for it. Off by default.")
         close_row.toggled.connect(lambda on: self._save_setting("close_on_launch", on))
         startup.addWidget(close_row)
-
-        # Hidden when this build has no Discord application configured (a
-        # fork, say): a switch that cannot turn anything on is worse than no
-        # switch at all. doctor and the README both point here, so it has to
-        # exist wherever the feature does.
-        from .discord import presence_app_id
-        if presence_app_id():
-            discord = card_section(v, "Discord",
-                "What your Discord friends see while you are playing.")
-            discord_row = self._switch(
-                "Show my game on Discord",
-                self.settings.get("discord_presence", True),
-                f"While Minecraft runs, your friends see \u201cPlaying {PRETTY}\u201d "
-                "with the Minecraft version, how long you have been playing, and "
-                "a link to the project — which is how most people find it. "
-                "Nothing else leaves this computer: not your account, not your "
-                "worlds, not the server you are on. It needs Discord running "
-                "here, and it goes away when the game closes.")
-            discord_row.toggled.connect(
-                lambda on: self._save_setting("discord_presence", on))
-            discord.addWidget(discord_row)
 
         accounts = card_section(v, "Accounts",
             "Minecraft is downloaded from the Microsoft Store with the account "

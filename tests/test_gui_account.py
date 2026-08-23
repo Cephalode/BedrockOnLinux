@@ -270,13 +270,25 @@ class XboxPreauthWarmUpTests(unittest.TestCase):
 
     def _run_warm_up(self, window):
         with mock.patch.object(gui.threading, "Thread") as thread:
-            thread.side_effect = lambda target, daemon=None: mock.Mock(
-                start=target)
+            # Execute the target immediately when the mock thread starts
+            def run_target(*args, **kwargs):
+                target = args[0] if args else kwargs.get('target')
+                if target:
+                    target()
+                return mock.Mock()
+            thread.side_effect = run_target
             window._warm_xbox_preauth()
 
     def test_coming_online_warms_the_token_chain(self):
         with headless_window() as window:
-            with mock.patch.object(window, "_warm_xbox_preauth") as warm:
+            with mock.patch.object(window, "_warm_xbox_preauth") as warm, \
+                    mock.patch.object(window, "_offer_store_account_link",
+                                      return_value=False):
+                # _offer_store_account_link is mocked because _on_online
+                # falls through to _offer_download_sign_in(), which would
+                # otherwise open a real QMessageBox.exec() -- a blocking
+                # modal with no one to click it under offscreen QPA, which
+                # hangs the test rather than failing it.
                 window._on_online()
             self.assertTrue(warm.called)
 
