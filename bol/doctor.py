@@ -132,9 +132,9 @@ def doctor(acknowledge_gpu_crash=False):
     if game_dir and xodus.exe_is_encrypted(
             Path(game_dir) / "Minecraft.Windows.exe"):
         print(f"  {'mc package':12} : "
-              + ("OK" if xodus.has_package_cache(game_dir) else
+              + ("OK" if not xodus.lost_package_cache(game_dir) else
                  f"MISSING ({xodus.PACKAGE_CACHE} in {game_dir}) — "
-                 "reinstall this Minecraft version"))
+                 "press PLAY to download this build again"))
     # Which controllers the launcher window itself can be driven with. The
     # game reads its own pad through GameInput inside the prefix, so a blank
     # here says nothing about playing -- only about navigating the launcher

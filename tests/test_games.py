@@ -35,6 +35,19 @@ def _write_game(root, marker=b"MZ game"):
     return root
 
 
+def _write_store_game(root, package=True):
+    """A build downloaded from the Store: ciphertext exe, package beside it.
+
+    The executable of a GDK title is kept encrypted at rest and decrypted out
+    of the package at every launch, so a directory without that package holds
+    a game that cannot start — which is what `package=False` writes.
+    """
+    _write_game(root, marker=b"\x9c\x1f encrypted")
+    if package:
+        (root / games.xodus.PACKAGE_CACHE).write_bytes(b"msixvc")
+    return root
+
+
 class EditionListingTests(unittest.TestCase):
     def test_beta_edition_is_hidden_unless_requested(self):
         stable = games.list_editions(include_beta=False)
@@ -61,6 +74,20 @@ class VersionListingTests(unittest.TestCase):
         # picker has to be able to say which those are.
         self.assertTrue(by_version["1.26.42.1"]["installed"])
         self.assertFalse(by_version["1.26.44.3"]["installed"])
+
+    def test_a_build_that_lost_its_package_is_not_marked_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_store_game(base / "release" / "1.26.42.1", package=False)
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "version_catalogue",
+                                      return_value=_CATALOGUE):
+                builds = games.list_versions("release")
+
+        # Nothing in that folder can be launched, so offering it as a build
+        # already on disk is offering a build that does not start.
+        self.assertFalse(
+            {b["version"]: b for b in builds}["1.26.42.1"]["installed"])
 
 
 class InstallTests(unittest.TestCase):
@@ -127,6 +154,52 @@ class InstallTests(unittest.TestCase):
                 games.install_game(self._edition(), "1.26.42.1")
 
             install.assert_not_called()
+
+    def test_a_store_build_with_its_package_is_not_downloaded_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_store_game(base / "release" / "1.26.42.1")
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(games.xodus, "install") as install:
+                games.install_game(self._edition(), "1.26.42.1")
+
+            install.assert_not_called()
+
+    def test_a_store_build_that_lost_its_package_is_downloaded_again(self):
+        # Issue #216. The folder still holds an executable and a manifest, so
+        # it used to count as installed: the download was skipped and every
+        # launch died on the package that decrypts the executable, with the
+        # only way out being to delete the build by hand — the launcher offers
+        # no reinstall of its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_store_game(base / "release" / "1.26.42.1", package=False)
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=lambda url, dest, progress=None:
+                            _write_store_game(Path(dest))) as install:
+                root = games.install_game(self._edition(), "1.26.42.1")
+
+            install.assert_called_once()
+            self.assertEqual(root, base / "release" / "1.26.42.1")
+
+    def test_a_download_that_leaves_no_package_is_rejected(self):
+        # The other half: repairing it must actually produce a build that can
+        # be decrypted, or install_game would hand the launcher the same
+        # unplayable folder and report it as a fresh install.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            with mock.patch.object(games, "GAMES", base), \
+                    mock.patch.object(
+                        games.xodus, "install",
+                        side_effect=lambda url, dest, progress=None:
+                            _write_store_game(Path(dest), package=False)), \
+                    self.assertRaises(BolError):
+                games.install_game(self._edition(), "1.26.42.1")
 
     def test_a_delisted_version_falls_back_to_the_newest(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,7 +11,6 @@ from .content import cmd_import
 from .doctor import doctor
 from .games import list_editions, list_versions
 from .gamesetup import do_setup
-from .gui import gui
 from .launch import (
     direct_launch_readiness,
     launch,
@@ -43,6 +42,40 @@ def _run_network_diagnostics(host_ip=None):
             f"  {check.kind:14} {check.target}: {state} — {check.detail}"
         )
     return healthy
+
+
+def _open_gui():
+    """Open the launcher window, loading Qt only when it is actually asked for.
+
+    Importing bol.gui pulls the whole Qt stack in, which used to happen for
+    every command on the way to `main()`. That made two failures much worse
+    than they are: a toolkit that is not installed yet (portable .pyz, bare
+    checkout) never reached the pip bootstrap below, and a host missing one of
+    Qt's own shared libraries took every other command down with a traceback
+    nobody could act on -- "ImportError: libzstd.so.1: cannot open shared
+    object file" in place of a launcher (issue #205). Imported here, the GUI
+    is the only thing that needs Qt, and what is missing gets a name.
+    """
+    from . import deps
+    # Only the toolkit itself is worth stopping for, and only when it really
+    # is absent: bol.gui bootstraps the rest (packaging, python-xlib) once it
+    # is imported, and works without them.
+    if not deps.have("PySide6") and "PySide6" in deps.ensure_gui_deps():
+        die("The launcher window needs the Qt toolkit (PySide6), which is "
+            "not installed here and could not be installed automatically. "
+            "Install it with pip, or use the AppImage, Flatpak, .deb or .rpm "
+            f"— each of those carries it. `{APP} play` needs none of it.")
+    try:
+        from .gui import gui
+    except ImportError as exc:
+        library = deps.missing_shared_library(exc)
+        if library is None:
+            raise
+        die(f"The launcher window needs the system library {library}, which "
+            f"this system does not have. Install the package your "
+            f"distribution ships it in, then open the launcher again — "
+            f"`{APP} play` and `{APP} doctor` keep working without it.")
+    gui()
 
 
 def _report_launch_failure(message):
@@ -239,10 +272,10 @@ def main():
             except Exception as e:
                 print(f"Error fetching changelog: {e}")
         elif a.cmd == "gui":
-            gui()
+            _open_gui()
         else:
             if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-                gui()
+                _open_gui()
             else:
                 p.print_help()
     except BolError as exc:

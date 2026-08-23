@@ -11,6 +11,11 @@
 # (QT_HOST_LIBRARIES) and declared by the .deb and .rpm; the short version is
 # libX11/libX11-xcb, libxkbcommon(-x11), libGL/libEGL, fontconfig, freetype
 # and the xcb-util family (cursor, icccm, image, keysyms, render-util, util).
+#
+# Everything else Qt links that is *not* a GUI or driver library is bundled
+# here instead -- libzstd first among them (issue #205) -- and the host
+# dependency audit below fails the build if that list ever grows behind our
+# back.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -103,6 +108,71 @@ echo "== installing portable cryptography + certifi + PySide6-Essentials + pytho
 # site-packages), so drop them before the relocatability audit below.
 rm -f "$PYHOME"/bin/pyside6-* 2>/dev/null || true
 
+# libQt6Core.so.6 links libzstd.so.1, and unlike the X11/GL stack above that
+# is no host GUI library: a system with no zstd runtime at all -- NixOS via
+# appimage-run, a minimal container -- fails the launcher's very first
+# `import PySide6.QtCore` with "libzstd.so.1: cannot open shared object file"
+# and never draws a window (issue #205). It is not on the AppImage excludelist
+# either, so bundle it beside the wheel's own libicu, taken from the pinned
+# Debian 11 snapshot the containerised builds already use: identical bytes on
+# every build host, and GLIBC_2.14 at most -- well under the baseline below.
+QT_LIB="$PYLIB/python3.12/site-packages/PySide6/Qt/lib"
+[[ -d "$QT_LIB" ]] || {
+  echo "!! the PySide6 wheel no longer keeps its Qt libraries in Qt/lib" >&2
+  exit 1
+}
+ZSTD_DEB="$CACHE/libzstd1_1.4.8+dfsg-2.1_amd64.deb"
+download_verified \
+  "https://snapshot.debian.org/archive/debian/20260701T000000Z/pool/main/libz/libzstd/libzstd1_1.4.8%2Bdfsg-2.1_amd64.deb" \
+  "$ZSTD_DEB" \
+  "5dcadfbb743bfa1c1c773bff91c018f835e8e8c821d423d3836f3ab84773507b" \
+  "Debian 11 libzstd1"
+echo "== bundling libzstd.so.1, the one non-GUI library Qt asked the host for"
+python3 - "$ZSTD_DEB" "$QT_LIB/libzstd.so.1" \
+    "$APPDIR/usr/share/licenses/bedrock-on-linux/libzstd1.copyright" <<'PY'
+import io
+import lzma
+import sys
+import tarfile
+from pathlib import Path
+
+package, library, licence = (Path(value) for value in sys.argv[1:4])
+raw = package.read_bytes()
+if raw[:8] != b"!<arch>\n":
+    raise SystemExit(f"{package} is not a Debian package")
+# A .deb is an ar archive: 60-byte member headers, member data padded to an
+# even length. Read it here rather than shelling out, so the build needs
+# neither dpkg nor xz-utils on the host that runs it.
+members, offset = {}, 8
+while offset + 60 <= len(raw):
+    header = raw[offset:offset + 60]
+    name = header[:16].decode("ascii", "replace").strip().rstrip("/")
+    start = offset + 60
+    size = int(header[48:58])
+    members[name] = raw[start:start + size]
+    offset = start + size + size % 2
+if "data.tar.xz" not in members:
+    raise SystemExit(f"{package} carries no data.tar.xz")
+wanted = {
+    "./usr/lib/x86_64-linux-gnu/libzstd.so.1.4.8": library,
+    "./usr/share/doc/libzstd1/copyright": licence,
+}
+with tarfile.open(fileobj=io.BytesIO(lzma.decompress(members["data.tar.xz"])),
+                  mode="r:") as payload:
+    for name, destination in wanted.items():
+        try:
+            member = payload.getmember(name)
+        except KeyError:
+            raise SystemExit(f"{package.name} no longer contains {name}")
+        source = payload.extractfile(member)
+        if source is None:
+            raise SystemExit(f"{name} is not a regular file in {package.name}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read())
+        destination.chmod(0o755 if destination == library else 0o644)
+print(f"  bundled {library.name} + its licence from {package.name}")
+PY
+
 PY3="$PYLIB/python3.12"
 rm -rf "$PY3/test" "$PY3/idlelib" "$PY3/turtledemo" "$PY3/tkinter/test" \
        "$PY3/lib2to3" "$PY3/ensurepip" "$PYHOME/share" "$PYHOME/include" 2>/dev/null || true
@@ -132,6 +202,8 @@ worst = ((0, 0), None)
 violations = []
 rpath_violations = []
 forbidden_dependencies = []
+sonames = {}
+dependencies = {}
 count = 0
 for path in root.rglob("*"):
     if not path.is_file():
@@ -170,7 +242,12 @@ for path in root.rglob("*"):
                     if entry and os.path.isabs(entry)]
         if absolute:
             rpath_violations.append((path.relative_to(root), absolute))
-    for dependency in re.findall(r"\(NEEDED\).*?\[([^]]+)\]", dynamic.stdout):
+    dependencies[path] = re.findall(
+        r"\(NEEDED\).*?\[([^]]+)\]", dynamic.stdout)
+    soname = re.search(r"\(SONAME\).*?\[([^]]+)\]", dynamic.stdout)
+    if soname:
+        sonames.setdefault(soname.group(1), path)
+    for dependency in dependencies[path]:
         if dependency in {"libcrypt.so.1", "libXss.so.1"}:
             forbidden_dependencies.append((path.relative_to(root), dependency))
 if not count:
@@ -205,6 +282,75 @@ if forbidden_dependencies:
     )
 print("  AppImage ABI OK: %d ELF files, maximum GLIBC_%d.%d (%s)" %
       (count, worst[0][0], worst[0][1], worst[1]))
+
+# Libraries the host is expected to own. Nearly all are on the AppImage
+# excludelist -- the C/C++ runtime, the X11/GL stack, zlib, fontconfig and
+# freetype -- and glib, gthread and D-Bus stay host libraries too, because a
+# bundled copy would shadow the desktop's own GTK/D-Bus stack for the whole
+# process. Anything Qt needs that is not in here has to be bundled instead.
+# Keep in step with QT_HOST_LIBRARIES in tests/test_application_packaging.py
+# and with the .deb/.rpm dependency lists.
+host_libraries = {
+    "ld-linux-x86-64.so.2", "libc.so.6", "libdl.so.2", "libm.so.6",
+    "libpthread.so.0", "librt.so.1", "libgcc_s.so.1", "libstdc++.so.6",
+    "libz.so.1", "libglib-2.0.so.0", "libgthread-2.0.so.0", "libdbus-1.so.3",
+    "libfontconfig.so.1", "libfreetype.so.6", "libGL.so.1", "libEGL.so.1",
+    "libX11.so.6", "libX11-xcb.so.1", "libxkbcommon.so.0",
+    "libxkbcommon-x11.so.0", "libxcb.so.1", "libxcb-cursor.so.0",
+    "libxcb-icccm.so.4", "libxcb-image.so.0", "libxcb-keysyms.so.1",
+    "libxcb-randr.so.0", "libxcb-render.so.0", "libxcb-render-util.so.0",
+    "libxcb-shape.so.0", "libxcb-shm.so.0", "libxcb-sync.so.1",
+    "libxcb-util.so.1", "libxcb-xfixes.so.0", "libxcb-xkb.so.1",
+}
+# What bol.gui imports, and what Qt loads behind it to put a window on the
+# screen. Plugins Qt only tries opportunistically -- image formats, SQL
+# drivers, the GTK platform theme -- are deliberately not roots: Qt carries on
+# without them, and several link libraries (libpq, libgtk-3) this app never
+# wants to require.
+site_packages = root / "usr/python/lib/python3.12/site-packages"
+import_path = [site_packages / "PySide6/QtCore.abi3.so",
+               site_packages / "PySide6/QtGui.abi3.so",
+               site_packages / "PySide6/QtWidgets.abi3.so",
+               site_packages / "PySide6/Qt/plugins/platforms/libqxcb.so"]
+absent = [str(path.relative_to(root)) for path in import_path
+          if not path.is_file()]
+if absent:
+    raise SystemExit(
+        "the pinned PySide6 wheel no longer provides the files the launcher "
+        "imports:\n  " + "\n  ".join(absent))
+from_host = {}
+reached = set()
+queue = list(import_path)
+while queue:
+    path = queue.pop()
+    if path in reached:
+        continue
+    reached.add(path)
+    for dependency in dependencies.get(path, ()):
+        if dependency in sonames:
+            queue.append(sonames[dependency])
+        elif dependency in host_libraries:
+            from_host.setdefault(dependency, [])
+        else:
+            from_host.setdefault(dependency, []).append(
+                str(path.relative_to(root)))
+undeclared = {name: users for name, users in from_host.items() if users}
+if undeclared:
+    details = "\n".join(
+        f"  {name}  (needed by {', '.join(sorted(set(users)))})"
+        for name, users in sorted(undeclared.items()))
+    raise SystemExit(
+        "the launcher's Qt import path needs libraries that are neither "
+        "bundled here nor declared host dependencies:\n" + details + "\n"
+        "An AppImage cannot ask for these, so a host without one gets an "
+        "ImportError instead of a window (issue #205). Bundle it from a "
+        "pinned Debian 11 package, the way libzstd.so.1 is bundled above -- "
+        "or, if the host really must own it, add it to host_libraries here, "
+        "to QT_HOST_LIBRARIES in tests/test_application_packaging.py and to "
+        "the .deb/.rpm dependency lists.")
+print("  AppImage host dependencies OK: the import path resolves %d bundled "
+      "objects and asks the host for %d libraries"
+      % (len(reached), len(from_host)))
 PY
 
 [[ -f "$SRC/data/icon.png" ]] || { echo "data/icon.png missing" >&2; exit 1; }
@@ -369,11 +515,14 @@ download_verified \
   "$RUNTIME" \
   "1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf" \
   "AppImage type-2 x86_64 runtime"
-runtime_header="$(readelf -h "$RUNTIME")"
+# readelf translates its field labels, so read the header in the C locale:
+# on a French or German build host "Class:" is "Classe:" and this check would
+# reject a perfectly good runtime.
+runtime_header="$(LC_ALL=C readelf -h "$RUNTIME")"
 [[ "$runtime_header" == *"Class:"*"ELF64"* \
    && "$runtime_header" == *"Machine:"*"X86-64"* ]] \
   || { echo "!! AppImage runtime is not ELF64 x86-64" >&2; exit 1; }
-runtime_dynamic="$(readelf -d "$RUNTIME")"
+runtime_dynamic="$(LC_ALL=C readelf -d "$RUNTIME")"
 [[ "$runtime_dynamic" != *"(NEEDED)"* ]] \
   || { echo "!! AppImage runtime is not statically linked" >&2; exit 1; }
 APPIMG="$OUT/BedrockOnLinux-${VER}-x86_64.AppImage"

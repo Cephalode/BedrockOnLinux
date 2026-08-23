@@ -23,6 +23,78 @@
   to. A destination that really has run out of room is told apart by the
   arithmetic and still refused outright.
 
+- **The Minecraft download counted past a hundred percent and kept going**
+  (#216). "Downloading Minecraft…  24346886100%" is one number short of a
+  whole story: the byte counts crossed into Qt through a signal that carries
+  a C++ `int`, and the package is 2.3 GiB. The total wrapped negative, the
+  guard meant to keep it positive turned it into 1, and the status line read
+  the download out as its own byte count times a hundred — above a bar that
+  stayed empty the whole way down, since a progress bar ignores a value
+  outside its range rather than clamping it. Both the signal and the bar now
+  hold the figures they are given, so the percentage is the download's and
+  the bar fills once across it.
+
+- **A build that lost its encrypted package had no way back.** The game
+  executable Microsoft ships is ciphertext, decrypted at every launch out of
+  the package file beside it, and a folder without that file still holds an
+  executable and a manifest — so it counted as installed. The download was
+  skipped as unnecessary, every launch died on the missing package, and the
+  message about it pointed at "Install / Update", which is a command-line
+  verb the launcher window has no tab for. A build that cannot be decrypted
+  is now no longer a build that is installed: PLAY downloads it again, and
+  the message says so.
+
+- **A Minecraft download that had nowhere to go said so in Rust** (#200).
+  Everything the download needs lands in the same folder — the 2.3 GiB package
+  it streams through, and the build decrypted out of it — so a disk with a few
+  hundred MiB left could not finish it, and neither of the two ways it failed
+  named the disk. Refused mid-package, it came back as *The Minecraft download
+  failed: ok: Header(Io(Custom { kind: UnexpectedEof, error: "cache ended
+  before cached_len" }))*; refused a moment later, as *The Minecraft download
+  reported success but installed no game*, which is the downloader printing
+  what it measured and exiting successfully anyway. The room is now checked
+  before the download starts — the package's own size, asked of the same
+  mirror it comes from — and a first install that cannot fit is refused with
+  both figures and the folder it needs them in. An update is left alone,
+  because only part of a build is fetched and that part cannot be predicted.
+
+- **Failures the downloader printed were replaced with a sentence that said
+  nothing.** It exits successfully on most of the paths that end a download
+  early, and only its non-zero exits were being read — so an account that does
+  not own Minecraft, a Store session that had expired, and a disk with no room
+  left all arrived as *reported success but installed no game*, with the
+  reason it had just printed thrown away. All of them are now named, whatever
+  it exited with, and anything else keeps the line it printed.
+
+- **A package cache left by an attempt that never finished quietly installed
+  nothing.** The downloader resumes from it and can conclude there is nothing
+  to fetch, leaving a folder with no game in it — and nothing can be resumed
+  from that file anyway, because it starts a fresh one every run. It is now
+  dropped before the download rather than only after a failure.
+
+- **The AppImage never opened on a system without a zstd runtime** (#205).
+  Qt links libzstd.so.1 from libQt6Core — plain compression, none of the
+  graphics stack an AppImage genuinely has to borrow from the host — and the
+  bundle was still asking for it, so a NixOS session running it through
+  appimage-run got a traceback where the launcher should have been:
+  *ImportError: libzstd.so.1: cannot open shared object file*. It now ships
+  inside the AppImage, beside Qt's own libraries, taken from the same pinned
+  Debian 11 package the rest of the build already trusts. The build also
+  walks everything the launcher's window loads and refuses to package an
+  AppImage that asks the host for anything but the documented X11/OpenGL
+  libraries, so the next Qt update cannot reintroduce this quietly.
+
+- **A missing system library now has a name instead of a traceback.** The
+  launcher imported the whole Qt stack before it had even read its arguments,
+  so one library the host was missing took every command down with it —
+  including `doctor`, which exists to explain exactly this, and which called
+  the toolkit *OK (GUI)* because the files were all there. Qt is now imported
+  when the window is asked for: the failure names the library to install,
+  `bedrock-on-linux play` and `bedrock-on-linux doctor` keep working without
+  it, and `doctor` reports a toolkit that is installed but cannot load. On a
+  portable .pyz or a bare checkout this also restores the first-launch
+  install of the GUI toolkit, which the old import order made unreachable.
+
 ## 2.2.3 — 2026-08-23
 
 ### Added

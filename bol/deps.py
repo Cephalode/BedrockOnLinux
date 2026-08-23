@@ -3,6 +3,7 @@
 import importlib
 import importlib.util
 import os
+import re
 import site
 import subprocess
 import sys
@@ -28,6 +29,34 @@ def have(mod):
         return importlib.util.find_spec(mod) is not None
     except Exception:
         return False
+
+
+# "libzstd.so.1: cannot open shared object file: No such file or directory" --
+# the dynamic loader's own words, which Python hands on as a plain ImportError
+# when an extension module's shared libraries are not all there (issue #205).
+_MISSING_LIBRARY = re.compile(
+    r"(lib[^\s:/]+\.so[^\s:/]*): cannot open shared object file")
+
+
+def missing_shared_library(error):
+    """The system library an ImportError blames, or None if it blames none."""
+    found = _MISSING_LIBRARY.search(str(error))
+    return found.group(1) if found else None
+
+
+def gui_import_error():
+    """Why importing the Qt toolkit fails, or None when it imports.
+
+    `have("PySide6")` only proves the package is on the path: Qt loads its own
+    shared libraries when the module is imported, so a host missing one of
+    them looks perfectly installed and only fails once the launcher is already
+    on its way to a window.
+    """
+    try:
+        importlib.import_module("PySide6.QtCore")
+    except ImportError as exc:
+        return str(exc)
+    return None
 
 
 def missing_login_deps():

@@ -46,9 +46,16 @@ def _game_root(dest):
     """Folder of a complete installed build (exe + appxmanifest), else None
     (a bare exe with no manifest means a truncated install → reinstall).
 
-    Defined in bol.xodus, which is what writes the directory and now has to
-    tell a finished download from one that installed nothing."""
-    return xodus.game_root(dest)
+    The shape is decided in bol.xodus, which is what writes the directory and
+    has to tell a finished download from one that installed nothing. What is
+    added here is the other way a folder can look complete and not be one: a
+    Store build whose encrypted package went missing cannot be decrypted, so
+    it is not something to launch — it is something to download again, and
+    saying so is what gives PLAY a way to repair it (issue #216)."""
+    root = xodus.game_root(dest)
+    if root is None or xodus.lost_package_cache(root):
+        return None
+    return root
 
 
 def _install_record(dest):

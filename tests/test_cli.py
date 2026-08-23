@@ -1,6 +1,7 @@
 """Offline command-line dispatch regressions."""
 # SPDX-License-Identifier: MIT
 
+import builtins
 import contextlib
 import io
 import os
@@ -9,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from bol import cli
+from bol import cli, deps
 from bol.log import BolError
 from bol.network import NetworkCheck
 
@@ -267,10 +268,12 @@ class LauncherStartTests(unittest.TestCase):
     """Starting the launcher opens the launcher — in Game Mode too."""
 
     def _run(self, argv, gamescope):
+        # Qt is imported where it is used, so the window is patched on
+        # bol.gui itself rather than on a name bol.cli holds.
         with mock.patch.object(sys, "argv", argv), \
                 mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
                 mock.patch.object(cli, "launch") as launched, \
-                mock.patch.object(cli, "gui") as window, \
+                mock.patch("bol.gui.gui") as window, \
                 mock.patch.object(cli, "info"), \
                 mock.patch("bol.gpu_safety.in_gamescope_session",
                            return_value=gamescope):
@@ -312,14 +315,100 @@ class LauncherStartTests(unittest.TestCase):
         with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
                 mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
                 mock.patch.object(cli, "IS_TTY", False), \
-                mock.patch.object(cli, "gui",
-                                  side_effect=BolError("Tk is missing")), \
+                mock.patch("bol.gui.gui",
+                           side_effect=BolError("Qt is missing")), \
                 mock.patch.object(cli, "desktop_notify") as notified, \
                 mock.patch.object(cli, "err"), \
                 self.assertRaises(SystemExit):
             cli.main()
 
         notified.assert_not_called()
+
+    def test_a_toolkit_that_is_not_installed_yet_is_installed_first(self):
+        # bol.cli imported bol.gui -- and with it the whole Qt stack -- while
+        # it was still being imported itself, so the pip bootstrap that is
+        # supposed to install the toolkit on a portable .pyz or a bare
+        # checkout could never run: the import had already failed.
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(deps, "have", return_value=False), \
+                mock.patch.object(deps, "ensure_gui_deps",
+                                  return_value=[]) as bootstrap, \
+                mock.patch("bol.gui.gui") as window:
+            cli.main()
+
+        bootstrap.assert_called_once_with()
+        window.assert_called_once_with()
+
+    def test_an_installed_toolkit_is_not_reinstalled_on_every_launch(self):
+        # pip must not be reached for a toolkit that is already there.
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(deps, "have", return_value=True), \
+                mock.patch.object(deps, "ensure_gui_deps") as bootstrap, \
+                mock.patch("bol.gui.gui") as window:
+            cli.main()
+
+        bootstrap.assert_not_called()
+        window.assert_called_once_with()
+
+    def test_a_toolkit_that_cannot_be_installed_is_reported_plainly(self):
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(deps, "have", return_value=False), \
+                mock.patch.object(deps, "ensure_gui_deps",
+                                  return_value=["PySide6"]), \
+                contextlib.redirect_stdout(output), \
+                self.assertRaises(SystemExit) as exited:
+            cli.main()
+
+        self.assertEqual(exited.exception.code, 1)
+        self.assertIn("PySide6", output.getvalue())
+
+    def test_a_qt_library_the_host_lacks_is_named_rather_than_raised(self):
+        # Issue #205: the AppImage on NixOS reported the launcher as a
+        # traceback out of `from PySide6.QtCore import ...`. The loader says
+        # exactly which library it could not open; say it back.
+        refused = ImportError("libzstd.so.1: cannot open shared object file: "
+                              "No such file or directory")
+        real_import = builtins.__import__
+
+        def without_qt(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "gui" or name.endswith("bol.gui"):
+                raise refused
+            return real_import(name, globals, locals, fromlist, level)
+
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(deps, "ensure_gui_deps", return_value=[]), \
+                mock.patch.object(builtins, "__import__", without_qt), \
+                contextlib.redirect_stdout(output), \
+                self.assertRaises(SystemExit) as exited:
+            cli.main()
+
+        self.assertEqual(exited.exception.code, 1)
+        self.assertIn("libzstd.so.1", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
+    def test_a_gui_import_failure_of_our_own_making_still_raises(self):
+        # Only the loader's "cannot open shared object file" is answered with
+        # a system library to install; a broken import inside bol.gui is a bug
+        # here and must keep its traceback.
+        real_import = builtins.__import__
+
+        def broken_gui(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "gui" or name.endswith("bol.gui"):
+                raise ImportError("cannot import name 'QToolButton'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "gui"]), \
+                mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+                mock.patch.object(deps, "ensure_gui_deps", return_value=[]), \
+                mock.patch.object(builtins, "__import__", broken_gui), \
+                self.assertRaises(ImportError):
+            cli.main()
 
 
 if __name__ == "__main__":

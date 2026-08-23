@@ -63,6 +63,11 @@ try:
 except ImportError:  # pragma: no cover - shiboken6 ships alongside PySide6
     shiboken6 = None
 
+# QProgressBar counts in C++ ints, so a download measured in bytes gets a
+# scale of its own and the byte counts stay in Python, where they fit. Fine
+# enough for a bar: one step is a tenth of a percent.
+BAR_STEPS = 1000
+
 
 def _alive(widget) -> bool:
     """True if `widget`'s underlying C++ object hasn't been destroyed.
@@ -455,7 +460,10 @@ class Worker(QThread):
     """Run an arbitrary callable off the UI thread."""
     done = Signal(object)
     failed = Signal(str)
-    progress = Signal(int, int)
+    # Byte counts, so qint64 rather than int: a Qt `int` is the C++ one, and
+    # PySide6 wraps anything past 2 GiB into it with nothing but a
+    # RuntimeWarning. See MainWindow.set_progress for what that cost (#216).
+    progress = Signal("qint64", "qint64")
 
     def __init__(self, fn: Callable, *args, **kwargs):
         super().__init__()
@@ -940,7 +948,9 @@ class LaunchWorker(QThread):
     # it is reported apart from failed() rather than being recovered by
     # matching on the message text.
     needs_store_signin = Signal(str)
-    progress = Signal(int, int)
+    # qint64: this is the signal that carries the Minecraft download, and that
+    # package is well past the 2 GiB a Qt `int` holds (#216).
+    progress = Signal("qint64", "qint64")
     close_window = Signal()
     step_aside = Signal()
     come_back = Signal()
@@ -1383,11 +1393,26 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)  # indeterminate
 
     def set_progress(self, got, total):
+        """Show a byte count against a total, both of them 64-bit.
+
+        A Minecraft package is 2.3 GiB and neither a Qt `int` nor a
+        QProgressBar holds that. The counts used to be handed straight to
+        both: PySide6 wrapped the total into a negative 32-bit int, `max(1,
+        total)` turned that into 1, and the status line read the download out
+        as `100 * got` — "Downloading Minecraft…  24346886100%" (#216). The
+        bar beneath it stayed empty for the whole download, because a value
+        outside a QProgressBar's range is not clamped, it is ignored.
+        """
+        got, total = int(got), int(total)
+        if total <= 0:
+            # Nothing to measure against: sweep rather than invent a figure.
+            self._show_bar_busy()
+            return
+        got = min(max(got, 0), total)
         self.progress.show()
-        self.progress.setRange(0, max(1, total))
-        self.progress.setValue(got)
-        self.set_status(
-            f"Downloading Minecraft…  {int(100 * got / max(1, total))}%")
+        self.progress.setRange(0, BAR_STEPS)
+        self.progress.setValue(BAR_STEPS * got // total)
+        self.set_status(f"Downloading Minecraft…  {100 * got // total}%")
 
     def end_progress(self):
         self.progress.hide()

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -351,6 +352,63 @@ class QtRuntimeDependencyTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("could not load the Qt platform plugin xcb", script)
         self.assertIn("QT_HOST_LIBRARIES", script)
+
+
+class AppImageBundledLibraryTests(unittest.TestCase):
+    """What the AppImage carries itself, and what it still asks the host for.
+
+    Not every library Qt links is a host GUI library. libQt6Core links
+    libzstd.so.1, which is plain compression, absent from the AppImage
+    excludelist, and absent from NixOS' appimage-run environment: the launcher
+    died on `import PySide6.QtCore` with "libzstd.so.1: cannot open shared
+    object file" before it could report anything at all (issue #205)."""
+
+    def _script(self):
+        return (ROOT / "scripts/build-appimage.sh").read_text(encoding="utf-8")
+
+    def _declared_host_libraries(self):
+        block = re.search(r"host_libraries = \{(.*?)\n\}", self._script(),
+                          re.DOTALL)
+        self.assertIsNotNone(
+            block, "the AppImage host dependency audit lost its library list")
+        return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+    def test_the_appimage_bundles_the_zstd_runtime_qt_core_links(self):
+        script = self._script()
+        # Pinned bytes, from the same Debian 11 snapshot the containerised
+        # builds use: identical on every build host, and old enough for the
+        # glibc baseline the audit enforces.
+        self.assertIn("snapshot.debian.org/archive/debian/20260701T000000Z",
+                      script)
+        self.assertIn("libzstd1_1.4.8+dfsg-2.1_amd64.deb", script)
+        self.assertIn(
+            "5dcadfbb743bfa1c1c773bff91c018f835e8e8c821d423d3836f3ab84773507b",
+            script)
+        # Beside the wheel's own Qt libraries, where libQt6Core's $ORIGIN
+        # RUNPATH finds it, with the package's licence kept alongside ours.
+        self.assertIn('"$QT_LIB/libzstd.so.1"', script)
+        self.assertIn("libzstd1.copyright", script)
+        self.assertNotIn("libzstd.so.1", self._declared_host_libraries())
+
+    def test_the_appimage_audit_and_the_packages_name_the_same_host_stack(self):
+        declared = self._declared_host_libraries()
+        missing = sorted(soname for soname in QT_HOST_LIBRARIES
+                         if soname not in declared)
+        self.assertEqual(
+            missing, [],
+            "the AppImage audit would accept these silently even though the "
+            f".deb and .rpm treat them as host libraries: {missing}")
+
+    def test_the_appimage_audits_the_launcher_qt_import_path(self):
+        # The audit walks what bol.gui imports and what Qt loads behind it, so
+        # a PySide6 bump that adds a host library fails the build instead of a
+        # user's first launch.
+        script = self._script()
+        for dependant in ("PySide6/QtCore.abi3.so", "PySide6/QtGui.abi3.so",
+                          "PySide6/QtWidgets.abi3.so",
+                          "PySide6/Qt/plugins/platforms/libqxcb.so"):
+            self.assertIn(dependant, script)
+        self.assertIn("bundled here nor declared host dependencies", script)
 
 
 if __name__ == "__main__":
