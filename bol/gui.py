@@ -281,6 +281,16 @@ class Theme:
             font-size: 13px;
         }}
         QMainWindow, #Root {{ background: {self.bg}; }}
+        QDialog {{
+            background: {self.bg};
+            border: 1px solid {self.border};
+            border-radius: 14px;
+        }}
+        QDialog QFrame#Card {{
+            background: {self.card};
+            border: 1px solid {self.border};
+            border-radius: 16px;
+        }}
         QFrame#Card {{
             background: {self.card};
             border: 1px solid {self.border};
@@ -344,6 +354,10 @@ class Theme:
         QPushButton#Danger:hover {{ background: {self.red_hov}; }}
         QPushButton#Ghost {{ background: transparent; color: {self.sub}; }}
         QPushButton#Ghost:hover {{ background: {self.card2}; color: {self.fg}; }}
+        QPushButton#GhostSmall {{ background: transparent; color: {self.sub}; font-size: 11px; padding: 4px 8px; }}
+        QPushButton#GhostSmall:hover {{ background: {self.card2}; color: {self.fg}; }}
+        QPushButton#DangerSmall {{ background: {self.card2}; color: {self.red}; font-size: 11px; padding: 4px 8px; border-radius: 10px; }}
+        QPushButton#DangerSmall:hover {{ background: {self.red}; color: white; }}
         QPushButton#IconBtn {{
             background: {self.card2};
             border-radius: 8px;
@@ -551,6 +565,7 @@ def btn(text, cmd=None, kind="ghost", w=None, h=32, tip=None, parent=None) -> QP
     b.setObjectName({
         "play": "Play", "primary": "Primary", "danger": "Danger",
         "ghost": "Ghost", "flat": "Ghost", "icon": "IconBtn",
+        "ghost-small": "GhostSmall", "danger-small": "DangerSmall",
         "toolrow": "ToolRow", "toolrow-danger": "ToolRowDanger",
     }.get(kind, "Ghost"))
     if cmd:
@@ -1044,9 +1059,11 @@ class MainWindow(QMainWindow):
         self.hero_page = self._build_hero()
         self.settings_page = self._build_settings()
         self.changelog_page = self._build_changelog()
+        self.profiles_page = self._build_profiles_page()
         self.stack.addWidget(self.hero_page)
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.changelog_page)
+        self.stack.addWidget(self.profiles_page)
         self.stack.setCurrentWidget(self.hero_page)
 
         self.status_row = self._build_status_row()
@@ -1605,10 +1622,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.error_box("Account profile", str(exc))
 
+    def _prompt_create_profile_and_refresh(self):
+        self._prompt_create_profile()
+        if self.stack.currentWidget() is self.profiles_page:
+            self.refresh_profiles()
+
     def _open_profile_manager(self):
         self.profile_popup.close()
-        dlg = ProfileManagerDialog(self)
-        dlg.exec()
+        self.toggle_profiles()
         self.prof_label.setText(f"Profile: {current_profile_name()}")
 
     # ------------------------------------------------------------ accounts
@@ -1921,7 +1942,10 @@ class MainWindow(QMainWindow):
     def _code_dialog(self, url, code):
         full_url = f"https://login.live.com/oauth20_remoteconnect.srf?otc={code}"
         dlg = QDialog(self)
+        dlg.setObjectName("Root")
         dlg.setWindowTitle("Sign in to Microsoft")
+        dlg.setStyleSheet(self.theme.qss())
+        dlg.setMinimumWidth(400)
         self._auth_dialog = dlg
 
         def on_close():
@@ -1930,25 +1954,67 @@ class MainWindow(QMainWindow):
             dlg.close()
         dlg.finished.connect(lambda _r: on_close())
 
-        v = QVBoxLayout(dlg)
-        v.addWidget(btn("Sign In to your Microsoft account",
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(14)
+
+        head = QLabel("Sign in with Microsoft"); head.setObjectName("Title")
+        outer.addWidget(head)
+        sub = QLabel("Use the account that owns Minecraft.")
+        sub.setObjectName("Sub")
+        sub.setWordWrap(True)
+        outer.addWidget(sub)
+
+        card = QFrame(); card.setObjectName("Card")
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(18, 18, 18, 18)
+        cv.setSpacing(12)
+
+        step1 = QLabel("1. Open the sign-in page")
+        step1.setStyleSheet("font-weight:700;")
+        cv.addWidget(step1)
+        cv.addWidget(btn("Open Microsoft sign-in \u2197",
                         lambda: subprocess.Popen(["xdg-open", full_url],
                                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
                         kind="primary", h=42))
-        v.addWidget(QLabel("Open the link and enter this code:"))
+
+        step2 = QLabel("2. Enter this code")
+        step2.setStyleSheet("font-weight:700; margin-top:4px;")
+        cv.addWidget(step2)
+
+        code_pill = QFrame(); code_pill.setObjectName("Pill")
+        code_v = QVBoxLayout(code_pill)
+        code_v.setContentsMargins(14, 10, 14, 10)
         code_lbl = QLabel(code)
         code_lbl.setAlignment(Qt.AlignCenter)
-        code_lbl.setStyleSheet("font-family: monospace; font-size: 28px; font-weight: 700; "
-                                f"color: {self.theme.blue};")
-        v.addWidget(code_lbl)
-        copy_row = QHBoxLayout()
-        copy_row.addStretch(1)
-        cbtn = btn("Copy code", lambda: QApplication.clipboard().setText(code), kind="ghost")
-        copy_row.addWidget(cbtn)
-        copy_row.addStretch(1)
-        v.addLayout(copy_row)
-        dlg.resize(380, 260)
+        code_lbl.setStyleSheet("font-family: monospace; font-size: 30px; font-weight: 700; "
+                                f"color: {self.theme.blue}; letter-spacing: 4px;")
+        code_v.addWidget(code_lbl)
+        cv.addWidget(code_pill)
+
+        self._copy_btn = btn("Copy code", lambda: self._copy_signin_code(code), kind="ghost", h=32)
+        cv.addWidget(self._copy_btn)
+
+        outer.addWidget(card)
+
+        waiting = QLabel("Waiting for you to finish signing in in your browser\u2026")
+        waiting.setObjectName("Muted")
+        waiting.setWordWrap(True)
+        outer.addWidget(waiting)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_row.addWidget(btn("Cancel", dlg.close, kind="ghost", w=90, h=32))
+        outer.addLayout(close_row)
+
+        dlg.resize(420, 420)
         dlg.show()
+
+    def _copy_signin_code(self, code):
+        QApplication.clipboard().setText(code)
+        if getattr(self, "_copy_btn", None):
+            self._copy_btn.setText("Copied \u2713")
+            QTimer.singleShot(1500, lambda: self._copy_btn.setText("Copy code"))
 
     # ------------------------------------------------------------ play / kill
     def do_play(self):
@@ -2643,6 +2709,135 @@ class MainWindow(QMainWindow):
         self.changelog_tabs.addTab(self.launcher_changelog_view, "Launcher")
         return page
 
+    # ------------------------------------------------------------ profiles page
+    def _build_profiles_page(self) -> QWidget:
+        page = QFrame(); page.setObjectName("Card")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(10)
+
+        head = QHBoxLayout()
+        t = QLabel("Manage Profiles"); t.setObjectName("Title")
+        head.addWidget(t)
+        head.addStretch(1)
+        head.addWidget(btn("← Back", self.toggle_profiles, kind="flat", w=76, h=28))
+        outer.addLayout(head)
+
+        desc = QLabel("Each profile maintains an isolated Xbox sign-in, Wine "
+                       "prefix, worlds, and settings.")
+        desc.setObjectName("Sub")
+        desc.setWordWrap(True)
+        outer.addWidget(desc)
+
+        area = QScrollArea(); area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.NoFrame)
+        self.profiles_list_widget = QWidget()
+        self.profiles_list_layout = QVBoxLayout(self.profiles_list_widget)
+        self.profiles_list_layout.setSpacing(8)
+        area.setWidget(self.profiles_list_widget)
+        outer.addWidget(area, 1)
+
+        footer = QHBoxLayout()
+        footer.addWidget(btn("+ New Profile", self._prompt_create_profile_and_refresh, kind="primary", h=32))
+        footer.addStretch(1)
+        outer.addLayout(footer)
+
+        return page
+
+    def toggle_profiles(self):
+        if self.stack.currentWidget() is self.profiles_page:
+            self.stack.setCurrentWidget(self.hero_page)
+            self._nav_follow_page()
+        else:
+            self.refresh_profiles()
+            self.stack.setCurrentWidget(self.profiles_page)
+            self._nav_follow_page(self.profiles_page)
+
+    def refresh_profiles(self):
+        layout = self.profiles_list_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        active_info = current_profile_info()
+        active_path = active_info.get("path")
+
+        def add_row(name, path, subtitle, is_active):
+            row = QFrame(); row.setObjectName("CardFlat")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(14, 10, 14, 10)
+            h.setSpacing(6)
+            left = QVBoxLayout()
+            nlab = QLabel(name); nlab.setStyleSheet("font-weight:700;")
+            left.addWidget(nlab)
+            slab = QLabel(subtitle); slab.setObjectName("Muted")
+            left.addWidget(slab)
+            h.addLayout(left, 1)
+
+            h.addWidget(btn("New Window", lambda: open_profile_window(path),
+                            kind="ghost-small", w=84, h=26,
+                            tip="Open this profile in another window"))
+            if path is not None:
+                h.addWidget(btn("Folder", lambda: subprocess.Popen(["xdg-open", str(path)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                                kind="ghost-small", w=52, h=26))
+                h.addWidget(btn("Rename", lambda: self._rename_profile_row(name, is_active),
+                                kind="ghost-small", w=58, h=26))
+                h.addWidget(btn("Delete", lambda: self._delete_profile_row(name, is_active),
+                                kind="danger-small", w=58, h=26))
+            if is_active:
+                lab = QLabel("Active"); lab.setStyleSheet(f"color:{self.theme.green}; font-weight:700; font-size:11px;")
+                h.addWidget(lab)
+            else:
+                h.addWidget(btn("Switch", lambda: self._switch_profile_row(path),
+                                kind="ghost-small", w=58, h=26))
+            layout.addWidget(row)
+
+        add_row("Default", None, "Main installation root", active_path is None)
+        for p in list_profiles():
+            path = p.get("path")
+            is_active = active_path is not None and Path(active_path).resolve() == Path(path).resolve()
+            add_row(p.get("name", ""), path, f"profiles/{p.get('slug', '')}", is_active)
+        layout.addStretch(1)
+
+    def _switch_profile_row(self, path):
+        if self._switch_profile_target(path):
+            self.toggle_profiles()
+
+    def _rename_profile_row(self, name, is_active):
+        if is_active and (self.ui_state.get("launch_active") or self.ui_state.get("busy")):
+            self.warn_box("Rename Profile",
+                "Cannot rename the active profile while Minecraft or a task "
+                "is running in this window.")
+            return
+        new_name, ok = QInputDialog.getText(self, "Rename Profile", f"New name for '{name}':")
+        if not ok or not new_name.strip() or new_name.strip() == name:
+            return
+        try:
+            new_dir = rename_profile(name, new_name.strip())
+            active_path = current_profile_info().get("path")
+            if is_active and active_path is not None and Path(new_dir).resolve() != Path(active_path).resolve():
+                self._switch_profile_row(new_dir)
+                return
+            self.refresh_profiles()
+        except Exception as exc:
+            self.error_box("Rename Profile", str(exc))
+
+    def _delete_profile_row(self, name, is_active):
+        if is_active:
+            self.warn_box("Delete Profile", "Cannot delete the currently active profile.")
+            return
+        if not self.question_box("Delete Profile",
+                f"Are you sure you want to delete profile '{name}'?\n\n"
+                "This will permanently remove its worlds, settings, and player data."):
+            return
+        try:
+            delete_profile(name)
+            self.refresh_profiles()
+        except Exception as exc:
+            self.error_box("Delete Profile", str(exc))
+
     def load_changelogs(self, force=False):
         if self._changelog_loaded and not force:
             return
@@ -2907,6 +3102,8 @@ class MainWindow(QMainWindow):
             self.toggle_settings()
         elif self.stack.currentWidget() is self.changelog_page:
             self.toggle_changelog()
+        elif self.stack.currentWidget() is self.profiles_page:
+            self.toggle_profiles()
 
     def _on_nav_devices(self, names):
         """A controller was plugged in or unplugged."""
@@ -2996,112 +3193,6 @@ class MainWindow(QMainWindow):
         else:
             super().keyPressEvent(event)
 
-
-# ======================================================================
-# Profile manager dialog
-# ======================================================================
-
-class ProfileManagerDialog(QDialog):
-    def __init__(self, main: MainWindow):
-        super().__init__(main)
-        self.main = main
-        self.setWindowTitle("Manage Profiles")
-        self.resize(620, 440)
-        self.setStyleSheet(main.theme.qss())
-
-        v = QVBoxLayout(self)
-        title = QLabel("Account Profiles"); title.setObjectName("Title")
-        v.addWidget(title)
-        desc = QLabel("Each profile maintains an isolated Xbox sign-in, Wine "
-                       "prefix, worlds, and settings.")
-        desc.setObjectName("Sub")
-        desc.setWordWrap(True)
-        v.addWidget(desc)
-
-        area = QScrollArea(); area.setWidgetResizable(True)
-        self.list_widget = QWidget()
-        self.list_layout = QVBoxLayout(self.list_widget)
-        area.setWidget(self.list_widget)
-        v.addWidget(area, 1)
-
-        self.refresh()
-
-    def refresh(self):
-        while self.list_layout.count():
-            item = self.list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        active_info = current_profile_info()
-        active_path = active_info.get("path")
-
-        def add_row(name, path, subtitle, is_active):
-            row = QFrame(); row.setObjectName("CardFlat")
-            h = QHBoxLayout(row)
-            left = QVBoxLayout()
-            nlab = QLabel(name); nlab.setStyleSheet("font-weight:700;")
-            left.addWidget(nlab)
-            slab = QLabel(subtitle); slab.setObjectName("Muted")
-            left.addWidget(slab)
-            h.addLayout(left, 1)
-
-            h.addWidget(btn("New Window", lambda: open_profile_window(path), kind="ghost", w=90, h=28))
-            if path is not None:
-                h.addWidget(btn("Folder", lambda: subprocess.Popen(["xdg-open", str(path)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
-                                kind="ghost", w=54, h=28))
-                h.addWidget(btn("Rename", lambda: self._rename(name, is_active), kind="ghost", w=60, h=28))
-                h.addWidget(btn("Delete", lambda: self._delete(name, is_active), kind="danger", w=60, h=28))
-            if is_active:
-                lab = QLabel("Active"); lab.setStyleSheet(f"color:{self.main.theme.green}; font-weight:700;")
-                h.addWidget(lab)
-            else:
-                h.addWidget(btn("Switch", lambda: self._switch(path), kind="ghost", w=60, h=28))
-            self.list_layout.addWidget(row)
-
-        add_row("Default", None, "Main installation root", active_path is None)
-        for p in list_profiles():
-            path = p.get("path")
-            is_active = active_path is not None and Path(active_path).resolve() == Path(path).resolve()
-            add_row(p.get("name", ""), path, f"profiles/{p.get('slug', '')}", is_active)
-        self.list_layout.addStretch(1)
-
-    def _switch(self, path):
-        if self.main._switch_profile_target(path):
-            self.accept()
-
-    def _rename(self, name, is_active):
-        if is_active and (self.main.ui_state.get("launch_active") or self.main.ui_state.get("busy")):
-            self.main.warn_box("Rename Profile",
-                "Cannot rename the active profile while Minecraft or a task "
-                "is running in this window.")
-            return
-        new_name, ok = QInputDialog.getText(self, "Rename Profile", f"New name for '{name}':")
-        if not ok or not new_name.strip() or new_name.strip() == name:
-            return
-        try:
-            new_dir = rename_profile(name, new_name.strip())
-            active_path = current_profile_info().get("path")
-            if is_active and active_path is not None and Path(new_dir).resolve() != Path(active_path).resolve():
-                self._switch(new_dir)
-                return
-            self.refresh()
-        except Exception as exc:
-            self.main.error_box("Rename Profile", str(exc))
-
-    def _delete(self, name, is_active):
-        if is_active:
-            self.main.warn_box("Delete Profile", "Cannot delete the currently active profile.")
-            return
-        if not self.main.question_box("Delete Profile",
-                f"Are you sure you want to delete profile '{name}'?\n\n"
-                "This will permanently remove its worlds, settings, and player data."):
-            return
-        try:
-            delete_profile(name)
-            self.refresh()
-        except Exception as exc:
-            self.main.error_box("Delete Profile", str(exc))
 
 
 # ======================================================================
