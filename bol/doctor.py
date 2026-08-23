@@ -73,6 +73,28 @@ def acknowledge_gpu_crash():
     return _acknowledge_gpu_crash()
 
 
+def gui_toolkit_summary():
+    """One line about the Qt toolkit: present, absent, or present and unable
+    to load.
+
+    Installed is not the same as usable. Qt loads its own shared libraries
+    when PySide6 is imported, so a host missing one of them — libzstd.so.1 on
+    NixOS, issue #205 — has the toolkit right there on the path and still
+    cannot open a window. Import it here, and name what the loader could not
+    find rather than reporting it as ready.
+    """
+    if not deps.have("PySide6"):
+        return "auto-installed on launch"
+    error = deps.gui_import_error()
+    if not error:
+        return "OK (GUI)"
+    library = deps.missing_shared_library(error)
+    if library:
+        return (f"installed, but Qt cannot load: this system has no "
+                f"{library}")
+    return f"installed, but Qt cannot load: {error}"
+
+
 def doctor(acknowledge_gpu_crash=False):
     if acknowledge_gpu_crash and not _acknowledge_gpu_crash():
         return False
@@ -96,9 +118,7 @@ def doctor(acknowledge_gpu_crash=False):
     # also have to name a package -- and there is no `python3-pyside6` to
     # install on Debian or Ubuntu, where it is split per Qt module
     # (python3-pyside6.qtcore, .qtgui, .qtwidgets).
-    qt_ok = deps.have("PySide6")
-    print(f"  {'PySide6':12} : "
-          f"{'OK (GUI)' if qt_ok else 'auto-installed on launch'}")
+    print(f"  {'PySide6':12} : {gui_toolkit_summary()}")
     cr_ok = deps.have("cryptography")
     print(f"  {'cryptography':12} : "
           f"{'OK (login)' if cr_ok else 'MANQUANT (login)'}")
