@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QButtonGroup, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -960,6 +960,12 @@ class LaunchWorker(QThread):
                     self.close_window.emit()
                 elif action == "step-aside":
                     self.step_aside.emit()
+
+                s = load_settings()
+                if s.get("injector_auto_enable", False):
+                    from .inject import perform_auto_inject
+                    import threading
+                    threading.Thread(target=perform_auto_inject, args=(s,), daemon=True).start()
 
             try:
                 launch(on_started=on_started)
@@ -2452,6 +2458,54 @@ class MainWindow(QMainWindow):
                                tip="Open the folder holding your worlds, templates "
                                    "and screenshots in your file manager."))
 
+        injector_sec = card_section(v, "Injector Settings")
+
+        self.auto_switch = self._switch(
+            "Auto-inject client DLL on launch",
+            self.settings.get("injector_auto_enable", False),
+            "Automatically inject a DLL when Minecraft starts."
+        )
+        self.auto_switch.toggled.connect(lambda on: self._save_setting("injector_auto_enable", on))
+        injector_sec.addWidget(self.auto_switch)
+
+        self.remote_switch = self._switch(
+            "Remote DLL via URL",
+            self.settings.get("injector_dll_type", "file") == "url",
+            "Toggle between using a local DLL file or downloading one from a URL."
+        )
+        self.remote_switch.toggled.connect(self._on_injector_dll_type_toggled)
+        injector_sec.addWidget(self.remote_switch)
+
+        dll_layout = QHBoxLayout()
+        is_url = self.settings.get("injector_dll_type") == "url"
+        self.dll_input = QLineEdit(
+            self.settings.get("injector_dll_url" if is_url else "injector_dll_path") or ""
+        )
+        self.dll_input.textChanged.connect(self._on_injector_dll_text_changed)
+        dll_layout.addWidget(self.dll_input)
+
+        self.dll_browse_btn = btn("Browse…", self._do_browse_dll, kind="ghost", w=84, h=32,
+                                  tip="Select a DLL file from your computer.")
+        dll_layout.addWidget(self.dll_browse_btn)
+        injector_sec.addLayout(dll_layout)
+
+        delay_layout = QHBoxLayout()
+        delay_label = QLabel("Injection delay (seconds):")
+        delay_label.setToolTip("Wait this many seconds after the process starts before injecting (used as a fallback if the window isn't detected).")
+        delay_layout.addWidget(delay_label)
+
+        self.delay_spin = QSpinBox()
+        self.delay_spin.setRange(0, 60)
+        self.delay_spin.setValue(int(self.settings.get("injector_delay", 5)))
+        self.delay_spin.valueChanged.connect(lambda val: self._save_setting("injector_delay", val))
+        self.delay_spin.setFixedWidth(80)
+        self.delay_spin.setFixedHeight(30)
+        delay_layout.addWidget(self.delay_spin)
+        delay_layout.addStretch(1)
+        injector_sec.addLayout(delay_layout)
+
+        self._update_injector_settings_ui()
+
         shortcuts = card_section(v, "Shortcuts")
         shortcuts.addWidget(tool_row("Create direct launch shortcut (skips this window)…",
                                  self._do_play_shortcut,
@@ -2561,6 +2615,35 @@ class MainWindow(QMainWindow):
         w.done.connect(finished)
         w.failed.connect(failed)
         self._start_worker("inject", w)
+
+    def _on_injector_dll_type_toggled(self, on):
+        dll_type = "url" if on else "file"
+        self._save_setting("injector_dll_type", dll_type)
+        last_val = self.settings.get("injector_dll_url" if on else "injector_dll_path") or ""
+        self.dll_input.setText(last_val)
+        self._update_injector_settings_ui()
+
+    def _on_injector_dll_text_changed(self, text):
+        on = self.remote_switch.isChecked()
+        key = "injector_dll_url" if on else "injector_dll_path"
+        self._save_setting(key, text)
+
+    def _do_browse_dll(self):
+        last = self.settings.get("injector_dll_path") or ""
+        dll, _ = QFileDialog.getOpenFileName(self, "Choose a client .dll to inject",
+                                              str(Path(last).parent) if last else "",
+                                              "Client DLL (*.dll);;All files (*.*)")
+        if dll:
+            self.dll_input.setText(dll)
+            self._save_setting("injector_dll_path", dll)
+
+    def _update_injector_settings_ui(self):
+        is_url = self.remote_switch.isChecked()
+        self.dll_browse_btn.setVisible(not is_url)
+        if is_url:
+            self.dll_input.setPlaceholderText("https://example.com/client.dll")
+        else:
+            self.dll_input.setPlaceholderText("Path to client.dll")
 
     def _do_create_profile_shortcut(self):
         name, ok = QInputDialog.getText(self, "Create account profile",

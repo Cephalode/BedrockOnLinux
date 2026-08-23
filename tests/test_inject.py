@@ -274,3 +274,40 @@ def test_injector_reports_asynchronous_client_crash(tmp_path):
         with pytest.raises(BolError, match="exact Minecraft version"):
             inject.run_injector(dll)
     assert "ERR post-injection" in (logs / "injector.log").read_text()
+
+
+def test_perform_auto_inject_local_success(tmp_path):
+    dll = tmp_path / "client.dll"
+    dll.write_bytes(b"MZ")
+    settings = {
+        "injector_auto_enable": True,
+        "injector_dll_type": "file",
+        "injector_dll_path": str(dll),
+        "injector_delay": 0
+    }
+    with mock.patch.object(inject, "_mc_running", return_value=True), \
+            mock.patch.object(inject, "run_injector", return_value="client.dll") as run_inj, \
+            mock.patch("bol.log.desktop_notify") as notify:
+        inject.perform_auto_inject(settings)
+        run_inj.assert_called_once_with(Path(dll))
+        notify.assert_called_once()
+
+
+def test_perform_auto_inject_remote_success(tmp_path):
+    url = "https://example.com/client.dll"
+    settings = {
+        "injector_auto_enable": True,
+        "injector_dll_type": "url",
+        "injector_dll_url": url,
+        "injector_delay": 0
+    }
+    with mock.patch.object(inject, "_mc_running", return_value=True), \
+            mock.patch.object(inject, "CACHE", tmp_path), \
+            mock.patch("bol.util.download") as download, \
+            mock.patch.object(inject, "run_injector", return_value="downloaded_client.dll") as run_inj, \
+            mock.patch("bol.log.desktop_notify") as notify:
+        inject.perform_auto_inject(settings)
+        download.assert_called_once_with(url, tmp_path / "downloaded_client.dll", label="Auto-inject DLL")
+        run_inj.assert_called_once_with(tmp_path / "downloaded_client.dll")
+        notify.assert_called_once()
+

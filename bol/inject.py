@@ -157,3 +157,96 @@ def run_injector(dll_path):
             f"Details: {LOGS / 'injector.log'}."
         )
     return dll.name
+
+
+def perform_auto_inject(settings):
+    """Wait for Minecraft.Windows.exe to start, detect its window (or use delay),
+    and inject the configured local or remote DLL."""
+    dll_type = settings.get("injector_dll_type", "file")
+    delay = float(settings.get("injector_delay", 5))
+
+    # 1. Resolve DLL path
+    if dll_type == "url":
+        url = settings.get("injector_dll_url", "").strip()
+        if not url:
+            with open(LOGS / "injector.log", "a") as log:
+                log.write("Auto-inject failed: URL is empty.\n")
+            from .log import desktop_notify
+            desktop_notify("Auto-inject failed: DLL URL is empty.", "DLL Injector")
+            return
+        try:
+            dest = CACHE / "downloaded_client.dll"
+            from .util import download
+            download(url, dest, label="Auto-inject DLL")
+            dll_path = dest
+        except Exception as e:
+            with open(LOGS / "injector.log", "a") as log:
+                log.write(f"Auto-inject download failed: {e}\n")
+            from .log import desktop_notify
+            desktop_notify(f"Auto-inject download failed:\n{e}", "DLL Injector")
+            return
+    else:
+        dll_path = settings.get("injector_dll_path", "").strip()
+        if not dll_path:
+            dll_path = settings.get("injector_dll", "").strip()
+        if not dll_path:
+            with open(LOGS / "injector.log", "a") as log:
+                log.write("Auto-inject failed: Local DLL path is empty.\n")
+            from .log import desktop_notify
+            desktop_notify("Auto-inject failed: Local DLL path is empty.", "DLL Injector")
+            return
+        dll_path = Path(dll_path)
+
+    # 2. Wait for Minecraft process to start (up to 30 seconds)
+    started_wait = time.monotonic()
+    process_found = False
+    while time.monotonic() - started_wait < 30:
+        if _mc_running():
+            process_found = True
+            break
+        time.sleep(0.2)
+
+    if not process_found:
+        with open(LOGS / "injector.log", "a") as log:
+            log.write("Auto-inject failed: Minecraft process did not start within 30s.\n")
+        from .log import desktop_notify
+        desktop_notify("Auto-inject failed: Minecraft process did not start.", "DLL Injector")
+        return
+
+    # Process is running! Record start time.
+    process_start_time = time.monotonic()
+    safety_buffer = 1.5
+
+    # 3. Poll for presentable window or wait for delay
+    while True:
+        elapsed = time.monotonic() - process_start_time
+
+        try:
+            from .x11 import find_presentable_window
+            has_window = find_presentable_window("minecraft.windows.exe")
+        except Exception:
+            has_window = False
+
+        if has_window:
+            time.sleep(safety_buffer)
+            break
+
+        if elapsed >= delay:
+            break
+
+        if not _mc_running():
+            return
+
+        time.sleep(0.1)
+
+    # 4. Perform injection
+    try:
+        name = run_injector(dll_path)
+        from .log import desktop_notify
+        desktop_notify(f"Injected {name} into Minecraft. ✓", "DLL Injector")
+    except Exception as e:
+        with open(LOGS / "injector.log", "a") as log:
+            log.write(f"Auto-inject failed: {e}\n")
+        from .log import desktop_notify
+        desktop_notify(f"Could not inject:\n{e}", "DLL Injector")
+
