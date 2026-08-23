@@ -367,19 +367,24 @@ class InstallErrorTests(unittest.TestCase):
             mock.patch.object(xodus, "signed_in", return_value=True),
             mock.patch.object(xodus, "_run_streaming",
                               return_value=(code, tail)),
+            # The pre-flight room check asks the CDN how big the package is;
+            # nothing here is allowed near the network.
+            mock.patch.object(xodus, "_package_size", return_value=0),
         )
 
     def test_unowned_game_is_reported_as_ownership(self):
-        ensure, signed, stream = self._patched(
+        ensure, signed, stream, size = self._patched(
             1, ["Package was not found, is it owned by the user?"])
-        with tempfile.TemporaryDirectory() as tmp, ensure, signed, stream:
+        with tempfile.TemporaryDirectory() as tmp, \
+                ensure, signed, stream, size:
             with self.assertRaises(xodus.NotOwned) as raised:
                 xodus.install("9NBLGGH2JHXJ", Path(tmp))
         self.assertIn("does not own", str(raised.exception))
 
     def test_expired_session_is_reported_as_sign_in(self):
-        ensure, signed, stream = self._patched(1, ["Invalid STS token"])
-        with tempfile.TemporaryDirectory() as tmp, ensure, signed, stream:
+        ensure, signed, stream, size = self._patched(1, ["Invalid STS token"])
+        with tempfile.TemporaryDirectory() as tmp, \
+                ensure, signed, stream, size:
             with self.assertRaises(xodus.NotSignedIn):
                 xodus.install("9NBLGGH2JHXJ", Path(tmp))
 
@@ -387,10 +392,11 @@ class InstallErrorTests(unittest.TestCase):
         # The account is out of Store devices -- most likely because every
         # Flatpak restart claimed another one (issue #198). Microsoft's own
         # sentence does not say where they are given back.
-        ensure, signed, stream = self._patched(1, [
+        ensure, signed, stream, size = self._patched(1, [
             "not entitled to this content: Device group is full, please "
             "remove a device and try again."])
-        with tempfile.TemporaryDirectory() as tmp, ensure, signed, stream:
+        with tempfile.TemporaryDirectory() as tmp, \
+                ensure, signed, stream, size:
             with self.assertRaises(xodus.XodusError) as raised:
                 xodus.install("9NBLGGH2JHXJ", Path(tmp))
         message = str(raised.exception)
@@ -399,8 +405,9 @@ class InstallErrorTests(unittest.TestCase):
         self.assertNotIsInstance(raised.exception, xodus.NotOwned)
 
     def test_other_failures_keep_the_last_line(self):
-        ensure, signed, stream = self._patched(1, ["", "disk on fire"])
-        with tempfile.TemporaryDirectory() as tmp, ensure, signed, stream:
+        ensure, signed, stream, size = self._patched(1, ["", "disk on fire"])
+        with tempfile.TemporaryDirectory() as tmp, \
+                ensure, signed, stream, size:
             with self.assertRaises(xodus.XodusError) as raised:
                 xodus.install("9NBLGGH2JHXJ", Path(tmp))
         self.assertIn("disk on fire", str(raised.exception))
@@ -433,16 +440,22 @@ class InstallCacheTests(unittest.TestCase):
     installs nothing at all.
     """
 
-    def _install(self, dest, runs, product="9NBLGGH2JHXJ"):
+    def _install(self, dest, runs, product="9NBLGGH2JHXJ", size=0,
+                 free=40 << 30):
         calls = []
 
         def fake(cmd, progress=None):
             calls.append(cmd[2])
             return runs[len(calls) - 1](dest)
 
+        # A fixed figure, so the suite does not depend on the disk it runs on.
+        room = mock.patch.object(xodus, "_free_space", return_value=free) \
+            if free is not None else contextlib.nullcontext()
         with mock.patch.object(xodus, "ensure_cli",
                                return_value=Path("/bin/true")), \
                 mock.patch.object(xodus, "signed_in", return_value=True), \
+                mock.patch.object(xodus, "_package_size", return_value=size), \
+                room, \
                 mock.patch.object(xodus, "_run_streaming", side_effect=fake):
             try:
                 xodus.install(product, dest)
@@ -495,7 +508,7 @@ class InstallCacheTests(unittest.TestCase):
                 [lambda d: (0, ["not enough free disk space on /home: need "
                                 "8 bytes, have 4 bytes (files: 8)"])])
             self.assertIsNotNone(exc)
-            self.assertIn("free disk space", str(exc))
+            self.assertIn("not enough room", str(exc))
 
     def test_a_truncated_mirror_falls_through_to_the_next_one(self):
         mirrors = ["http://assets1.xboxlive.com/a.msixvc",
@@ -529,6 +542,205 @@ class InstallCacheTests(unittest.TestCase):
                 mirrors)
         self.assertIsInstance(exc, xodus.NotOwned)
         self.assertEqual(calls, mirrors[:1])
+
+
+class InstallRoomTests(unittest.TestCase):
+    """A download that cannot fit has to say so, in those words.
+
+    Everything xodus-cli needs lands in the destination -- the package it
+    streams through and the build decrypted out of it -- and a disk with a few
+    hundred MiB left produced two failures that named neither: the cache write
+    was refused mid-parse and xodus-cli panicked on the short read it took for
+    a parse error ("cache ended before cached_len"), and once that cache was
+    dropped the next attempt reached xodus-cli's own space check, which prints
+    its verdict and exits 0 all the same.
+    """
+
+    GIB = 1 << 30
+
+    def _install(self, dest, runs, sources="9NBLGGH2JHXJ", size=0, free=0):
+        calls = []
+
+        def fake(cmd, progress=None):
+            calls.append(cmd[2])
+            return runs[len(calls) - 1](dest)
+
+        # A list is what the disk filling up under the download looks like:
+        # room at the pre-flight check, none by the time it failed.
+        room = (mock.patch.object(xodus, "_free_space", side_effect=free)
+                if isinstance(free, list) else
+                mock.patch.object(xodus, "_free_space", return_value=free))
+        with mock.patch.object(xodus, "ensure_cli",
+                               return_value=Path("/bin/true")), \
+                mock.patch.object(xodus, "signed_in", return_value=True), \
+                mock.patch.object(xodus, "_package_size", return_value=size), \
+                room, \
+                mock.patch.object(xodus, "_run_streaming", side_effect=fake):
+            try:
+                xodus.install(sources, dest)
+            except xodus.XodusError as exc:
+                return calls, exc
+        return calls, None
+
+    def test_a_cache_left_by_an_unfinished_attempt_is_dropped_first(self):
+        # xodus-cli truncates its work cache at every start, so a cache with
+        # no build beside it resumes nothing -- it only makes the next delta
+        # look empty, which is a download that "succeeds" and installs
+        # nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+            dest.mkdir(parents=True)
+            (dest / xodus.PACKAGE_CACHE).write_bytes(b"left over")
+            seen = []
+
+            def complete(d):
+                seen.append((d / xodus.PACKAGE_CACHE).exists())
+                _install_build(d)
+                return (0, ["Complete"])
+
+            calls, exc = self._install(dest, [complete],
+                                       size=3 << 30, free=40 << 30)
+        self.assertIsNone(exc)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(seen, [False])
+
+    def test_a_first_install_that_cannot_fit_never_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls, exc = self._install(
+                Path(tmp) / "1.26.44.3", [],
+                size=3 * self.GIB, free=300 << 20)
+        self.assertEqual(calls, [])
+        message = str(exc)
+        self.assertIn("not enough room", message)
+        # The package is 3 GiB; what it takes to install it is that plus the
+        # cache streamed beside it.
+        self.assertIn("3.4 GiB", message)
+        self.assertIn("300 MiB", message)
+
+    def test_a_first_install_that_fits_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+
+            def complete(d):
+                _install_build(d)
+                return (0, ["Complete"])
+
+            calls, exc = self._install(dest, [complete],
+                                       size=3 * self.GIB, free=9 * self.GIB)
+        self.assertIsNone(exc)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_update_is_not_measured_against_the_whole_package(self):
+        # A build already here makes the download a delta of unknown size, so
+        # the package's own figure would refuse updates that fit perfectly.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.44.3"
+            _install_build(dest)
+            with mock.patch.object(xodus, "ensure_cli",
+                                   return_value=Path("/bin/true")), \
+                    mock.patch.object(xodus, "signed_in", return_value=True), \
+                    mock.patch.object(xodus, "_package_size") as size, \
+                    mock.patch.object(xodus, "_free_space",
+                                      return_value=1 << 20), \
+                    mock.patch.object(xodus, "_run_streaming",
+                                      return_value=(0, ["Complete"])):
+                xodus.install("9NBLGGH2JHXJ", dest)
+            size.assert_not_called()
+
+    def test_a_cache_that_read_back_short_on_a_full_disk_names_the_disk(self):
+        panic = [
+            "thread 'main' panicked at crates/msixvc/src/streaming.rs:1:1:",
+            'ok: Header(Io(Custom { kind: UnexpectedEof, error: "cache ended '
+            'before cached_len" }))',
+            "note: run with `RUST_BACKTRACE=1` for a backtrace",
+        ]
+        mirrors = ["http://assets1.xboxlive.com/a.msixvc",
+                   "http://assets2.xboxlive.com/a.msixvc"]
+        with tempfile.TemporaryDirectory() as tmp:
+            calls, exc = self._install(
+                Path(tmp) / "1.26.44.3", [lambda d: (101, panic)],
+                sources=mirrors, size=3 * self.GIB,
+                free=[4 * self.GIB, 12 << 20, 12 << 20])
+        message = str(exc)
+        self.assertIn("not enough room", message)
+        self.assertNotIn("cached_len", message)
+        # The second mirror is the same package on another host; it cannot
+        # make room.
+        self.assertEqual(calls, mirrors[:1])
+
+    PANIC = [
+        "thread 'main' panicked at crates/msixvc/src/streaming.rs:1:1:",
+        'ok: Header(Io(Custom { kind: UnexpectedEof, error: "cache ended '
+        'before cached_len" }))',
+    ]
+
+    def test_a_cache_race_on_a_disk_with_room_is_simply_run_again(self):
+        # The downloader reads its package cache back through a second handle
+        # while tokio still has the write in flight, so it can find the file
+        # short and take that for a corrupt package. Nothing here can order
+        # those two operations; what it can do is run the download again.
+        mirrors = ["http://assets1.xboxlive.com/a.msixvc",
+                   "http://assets2.xboxlive.com/a.msixvc"]
+
+        def complete(d):
+            _install_build(d)
+            return (0, ["Complete"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            calls, exc = self._install(
+                Path(tmp) / "1.26.44.3",
+                [lambda d: (101, self.PANIC), complete],
+                sources=mirrors, size=3 * self.GIB, free=40 * self.GIB)
+        self.assertIsNone(exc)
+        # The same package on the same host, because the mirror was never the
+        # problem.
+        self.assertEqual(calls, mirrors[:1] * 2)
+
+    def test_a_cache_race_that_never_clears_gives_up_in_plain_words(self):
+        mirrors = ["http://assets1.xboxlive.com/a.msixvc",
+                   "http://assets2.xboxlive.com/a.msixvc"]
+        with tempfile.TemporaryDirectory() as tmp:
+            calls, exc = self._install(
+                Path(tmp) / "1.26.44.3",
+                [lambda d: (101, self.PANIC)] * 8,
+                sources=mirrors, size=3 * self.GIB, free=40 * self.GIB)
+        # Three extra goes at the first mirror, then the second one, and no
+        # unbounded loop.
+        self.assertEqual(calls, mirrors[:1] * 4 + mirrors[1:])
+        message = str(exc)
+        # Whatever the cause, the sentence is about the download and the disk,
+        # not about a Rust enum.
+        self.assertNotIn("Header(Io(", message)
+        self.assertIn("before the write landed", message)
+        self.assertIn("40.0 GiB is free", message)
+
+    def test_an_account_without_the_game_is_named_even_on_a_zero_exit(self):
+        # get_license() prints its refusal and returns; the process still
+        # exits 0, so this used to arrive as "installed no game".
+        with tempfile.TemporaryDirectory() as tmp:
+            calls, exc = self._install(
+                Path(tmp) / "1.26.44.3",
+                [lambda d: (0, ["not entitled to this content: The user does "
+                                "not have an entitlement."])],
+                size=3 * self.GIB, free=40 * self.GIB)
+        self.assertIsInstance(exc, xodus.NotOwned)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_expired_session_is_named_even_on_a_zero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, exc = self._install(
+                Path(tmp) / "1.26.44.3",
+                [lambda d: (0, ["Unspported user token"])],
+                size=3 * self.GIB, free=40 * self.GIB)
+        self.assertIsInstance(exc, xodus.NotSignedIn)
+
+    def test_a_download_that_installed_nothing_repeats_what_it_printed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, exc = self._install(
+                Path(tmp) / "1.26.44.3",
+                [lambda d: (0, ["unexpected number of content keys 0"])],
+                size=3 * self.GIB, free=40 * self.GIB)
+        self.assertIn("unexpected number of content keys 0", str(exc))
 
 
 class GameRootTests(unittest.TestCase):
@@ -729,6 +941,12 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn(xodus.PACKAGE_CACHE, message)
         self.assertIn(str(game), message)
+        # And it has to send the player somewhere that exists. It used to say
+        # "reinstall this Minecraft version from Install / Update" -- a CLI
+        # verb with no tab in the launcher window, and no way to reinstall a
+        # build from it even if there had been one (issue #216).
+        self.assertIn("PLAY", message)
+        self.assertNotIn("Install / Update", message)
 
     def test_xodus_reads_the_licence_from_the_launchers_home(self):
         with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:

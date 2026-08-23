@@ -122,8 +122,9 @@ jobs:
           f="dist/xodus-cli-${rev}.tar.gz"
           src="dist/xodus-src-${rev}.tar.gz"
           if [ ! -f "$f" ]; then
-            echo "::error::expected $f but it was not produced; XODUS_SOURCE_COMMIT" \
-                 "and XODUS_REV in bol/config.py must describe the same commit." >&2
+            echo "::error::expected $f but it was not produced. XODUS_REV in" \
+                 "bol/config.py is the pinned commit's first 12 characters," \
+                 "plus -p<n> for the n patches in third_party/xodus/patches." >&2
             ls -la dist || true
             exit 1
           fi

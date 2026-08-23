@@ -29,7 +29,13 @@ done
 
 COMMIT="$(grep -m1 '^XODUS_SOURCE_COMMIT = ' "$SRC/bol/config.py" | cut -d'"' -f2)"
 [ -n "$COMMIT" ] || { echo "!! XODUS_SOURCE_COMMIT missing from bol/config.py" >&2; exit 1; }
+# The patches are part of what the binary is, so the rev names them too: a
+# revision has to name exactly one set of bytes, or a rebuild silently
+# replaces a published asset with a different binary under the same name.
+PATCHES="$SRC/third_party/xodus/patches"
+PATCH_LEVEL="$(find "$PATCHES" -maxdepth 1 -name '*.patch' 2>/dev/null | wc -l)"
 REV="${COMMIT:0:12}"
+[ "$PATCH_LEVEL" -eq 0 ] || REV="$REV-p$PATCH_LEVEL"
 
 echo "== Fetching xodus $COMMIT"
 TREE="$WORK/xodus"
@@ -39,6 +45,17 @@ git init -q "$TREE"
 git -C "$TREE" remote add origin "$XODUS_REMOTE"
 git -C "$TREE" fetch -q --depth 1 origin "$COMMIT"
 git -C "$TREE" checkout -q FETCH_HEAD
+
+if [ "$PATCH_LEVEL" -gt 0 ]; then
+  echo "== Applying $PATCH_LEVEL patch(es) from third_party/xodus/patches"
+  # -3 is deliberately absent: a patch that no longer applies cleanly to the
+  # pinned commit is a patch that has to be re-read, not merged blind.
+  git -C "$TREE" -c user.email=build@bedrock-on-linux -c user.name=BedrockOnLinux \
+    am --keep-non-patch "$PATCHES"/*.patch
+  # Each patch carries the test that fails without it, and this is the only
+  # place they ever run: the crate is not vendored into this repository.
+  cargo test --release --manifest-path "$TREE/Cargo.toml" -p msixvc --locked
+fi
 
 echo "== Building xodus-cli"
 # key-chain-file is not optional: without it xodus stores tokens through a
@@ -66,6 +83,9 @@ mkdir -p "$SET"
 cp "$BIN" "$SET/xodus-cli"
 cp "$TREE/LICENSE" "$SET/LICENSE.GPL-3.0"
 printf '%s\n' "$COMMIT" > "$SET/SOURCE-COMMIT"
+if [ "$PATCH_LEVEL" -gt 0 ]; then
+  for patch in "$PATCHES"/*.patch; do basename "$patch"; done > "$SET/PATCHES"
+fi
 
 mkdir -p "$SRC/dist"
 OUT="$SRC/dist/xodus-cli-$REV.tar.gz"
@@ -74,9 +94,11 @@ tar --sort=name --format=gnu --hard-dereference \
   -C "$SET" -cf - . | gzip -n -6 > "$OUT"
 
 # GPL-3.0 requires the source to be available from the same place as the
-# binary, so the workflow publishes this tarball beside it.
+# binary, so the workflow publishes this tarball beside it -- archived from
+# HEAD rather than FETCH_HEAD, so a patched build ships the source it was
+# actually built from.
 SRC_OUT="$SRC/dist/xodus-src-$REV.tar.gz"
-git -C "$TREE" archive --format=tar --prefix="xodus-$REV/" FETCH_HEAD \
+git -C "$TREE" archive --format=tar --prefix="xodus-$REV/" HEAD \
   | gzip -n -6 > "$SRC_OUT"
 
 SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"

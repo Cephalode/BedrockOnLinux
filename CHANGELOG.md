@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The Minecraft download was losing a race against its own cache** (#217,
+  #200, #215). *The Minecraft download failed: ok: Header(Io(Custom { kind:
+  UnexpectedEof, error: "cache ended before cached_len" }))* reads like a
+  corrupt package, and it is nothing of the kind. The downloader streams the
+  package through a cache file in the game folder and reads that cache back to
+  find out what the package holds — writing through one handle, reading
+  through a second — but it counts the bytes it *handed to* the write, not the
+  bytes the write put there. Both run on the same pool of threads, so the read
+  can overtake the write, find the file short of what the counter claims, and
+  take that for a broken download. Measured against the shipped downloader,
+  the cache claimed as much as 17 KiB more than the file held, on an idle disk
+  with room to spare: nothing to do with the disk, the network or the account,
+  which is why it stops some machines every time and others never. The race is
+  fixed in the downloader itself now — `third_party/xodus/patches/`, on its
+  way upstream — and until that build is published the launcher runs the
+  download again when it sees the short read, which is what a race responds
+  to. A destination that really has run out of room is told apart by the
+  arithmetic and still refused outright.
+
 ## 2.2.3 — 2026-08-23
 
 ### Added

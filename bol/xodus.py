@@ -25,6 +25,7 @@ import tarfile
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from . import webview
@@ -61,11 +62,44 @@ class NotOwned(XodusError):
 
 # "Package was not found, is it owned by the user?" is what xodus prints when
 # GetBasePackage refuses; it is by far the most common real-world failure, and
-# it means something the user can act on rather than a bug.
-_NOT_OWNED = re.compile(r"package was not found|is it owned by the user", re.I)
+# it means something the user can act on rather than a bug. "not entitled to
+# this content" is the same answer from the licensing service, which is the
+# one a download started from a CDN URL gets -- and it arrives with exit
+# code 0, so it used to be reported as "installed no game".
+_NOT_OWNED = re.compile(
+    r"package was not found|is it owned by the user|"
+    r"not entitled to this content", re.I)
+# The token failures are quoted from xodus-cli, typo included ("Unspported
+# user token"), because that is what has to be matched.
 _NO_CREDENTIALS = re.compile(
     r"unable to initialize credentials|invalid sts token|"
-    r"no user token|not logged in|didn't log in", re.I)
+    r"no user token|not logged in|didn't log in|"
+    r"un(sup|sp)ported (user )?token|failed to get exchange ms token", re.I)
+# Out of room, said outright: "not enough free disk space on /home: need
+# 2182632068 bytes, have 4096 bytes (files: 2182632068)". xodus-cli prints it
+# and returns -- exiting 0 -- before a single game file is written.
+_NO_ROOM = re.compile(
+    r"not enough free disk space|failed to determine available space", re.I)
+# The download racing its own package cache, which is what most reports of a
+# failed install turn out to be (#217). xodus-cli streams the package through
+# ".xodus-streaming-tmp.msixvc" in the destination and reads it back through a
+# second handle to parse the package layout out of it -- but it counts the
+# bytes tokio *accepted*, and tokio reports a file write accepted as soon as it
+# has handed it to a blocking thread. A read dispatched to that same pool can
+# overtake the write it is waiting for, find the file short, and take that for
+# a corrupt package:
+#   ok: Header(Io(Custom { kind: UnexpectedEof,
+#                          error: "cache ended before cached_len" }))
+# Measured against the pinned build, the cache claimed as much as 17 KiB more
+# than the file held, on an idle disk with room to spare. A disk with no room
+# left produces the same short read, so the two are told apart by the
+# arithmetic below rather than by the message.
+_CACHE_SHORT = re.compile(r"cache ended before cached_len", re.I)
+# How many extra goes that race is worth. It is lost on a small fraction of
+# the reads that land on a boundary, so a second attempt usually gets through
+# and a third almost always does; past that the destination is telling us
+# something else is wrong with it.
+_CACHE_RACE_RETRIES = 3
 # Microsoft licenses Store content to a device, and an account may hold ten of
 # them at once. Until issue #198 every restart of the Flatpak claimed another,
 # so an account can arrive here with its ten devices taken by a bug rather than
@@ -493,6 +527,27 @@ def has_package_cache(directory):
         return False
 
 
+def lost_package_cache(game_dir):
+    """Whether ``game_dir`` holds a build it can no longer decrypt.
+
+    A Store build keeps its executable as ciphertext and the package beside it
+    is the only thing that can turn it back into a program, at every launch --
+    so a directory that lost that file looks like a complete install and is
+    not one. Until issue #216 nothing acted on that: the folder still had an
+    exe and a manifest, so it counted as installed, the download was skipped
+    as unnecessary and the launch died on the missing package every time. The
+    only way out was to delete the build by hand.
+
+    A build from before the move to the Store carries a plaintext executable
+    and needs no package at all, so it is never reported here.
+    """
+    game_dir = Path(game_dir)
+    exe = game_dir / "Minecraft.Windows.exe"
+    if not exe.is_file() or not exe_is_encrypted(exe):
+        return False
+    return not has_package_cache(game_dir)
+
+
 def _drop_cache(dest):
     """Delete the package cache xodus-cli left behind in ``dest``.
 
@@ -526,7 +581,117 @@ _DEVICE_LIMIT_MESSAGE = (
     "then try again.")
 
 
-def _raise_unretryable(text):
+def _human(size):
+    """A size a sentence can carry."""
+    value = float(size)
+    for unit in ("B", "KiB", "MiB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
+def _free_space(path):
+    """Bytes free where ``path`` lives, or None when that cannot be read."""
+    try:
+        return shutil.disk_usage(str(path)).free
+    except OSError:
+        return None
+
+
+def _package_size(sources):
+    """What the CDN says the package weighs, or 0 when it will not say.
+
+    One HEAD against the same URL xodus-cli is about to stream from, so the
+    answer describes the exact build being installed rather than an average.
+    Anything that goes wrong -- a mirror that refuses HEAD, no network yet, a
+    product id rather than a URL -- returns 0 and the caller simply does not
+    check, because a size we could not read is not a reason to refuse an
+    install that might well fit.
+    """
+    for source in sources:
+        url = str(source)
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        try:
+            request = urllib.request.Request(
+                url, method="HEAD", headers={"User-Agent": APP})
+            with urllib.request.urlopen(request, timeout=15) as response:
+                length = int(response.headers.get("Content-Length") or 0)
+        except (OSError, ValueError):
+            continue
+        if length > 0:
+            return length
+    return 0
+
+
+# What a Bedrock download needs when the CDN would not say how big it is: no
+# build has ever come close to being this small, so a destination with less
+# than this left is out of room whatever the exact figure turns out to be.
+_MIN_ROOM = 1 << 30
+
+
+def _room_needed(package):
+    """What a first install of a package that size takes in ``dest``.
+
+    The build decrypted out of the package is about the size of the package
+    itself, and the prefix xodus-cli caches beside it is not free either: for
+    1.26.44.3 the CDN reports 2.32 GiB and what stays on disk is 2.32 GiB of
+    game plus a 187 MiB cache. Measuring the package alone would wave through
+    a disk that then fills up mid-download, which is the failure this check
+    exists to prevent, so the figure carries the cache and a little slack.
+    """
+    if not package:
+        return 0
+    return package + max(package // 8, 256 << 20)
+
+
+def _short_of_room(needed, free):
+    """Whether ``free`` bytes cannot hold this download."""
+    if free is None:
+        return False
+    return free < (needed or _MIN_ROOM)
+
+
+def _no_room_message(dest, needed, free):
+    """Say how much room the download wants and how much there is."""
+    where = f"There is not enough room to download Minecraft into {dest}"
+    if needed:
+        return (
+            f"{where}: it needs about {_human(needed)} free — the "
+            f"package is streamed through a cache beside the game and the "
+            f"build is decrypted out of it — and "
+            + (f"only {_human(free)} is left. " if free is not None else
+               "there is less than that. ")
+            + "Free up some space, or install to another drive, and try "
+              "again.")
+    return (
+        f"{where}"
+        + (f": only {_human(free)} is left there. " if free is not None
+           else ". ")
+        + "Free up some space, or install to another drive, and try again.")
+
+
+def _cache_short_clause(dest, needed, free):
+    """Why a download died on its own cache, without the Rust wording."""
+    short = (f"the package cache in {dest} read back shorter than what had "
+             "been written to it")
+    if not _short_of_room(needed, free):
+        # The downloader outran its own write rather than ran out of disk, so
+        # say which of the two it was; the disk is the first thing anyone
+        # suspects, and here it is the one thing that was fine.
+        return short + (
+            f" — the downloader read it back before the write landed, not for "
+            f"want of room ({_human(free)} is free there)"
+            if free is not None else
+            " — the downloader read it back before the write landed")
+    room = f"{_human(free)} free"
+    if needed:
+        room += f", and the download needs about {_human(needed)}"
+    return f"{short}, which is what a disk with no room left does ({room})"
+
+
+def _raise_unretryable(text, dest=None, needed=0):
     """Raise for the download failures another mirror cannot fix."""
     if _DEVICE_LIMIT.search(text):
         raise XodusError(_DEVICE_LIMIT_MESSAGE)
@@ -537,6 +702,17 @@ def _raise_unretryable(text):
     if _NO_CREDENTIALS.search(text):
         raise NotSignedIn(
             "The Microsoft session for the download expired. Sign in again.")
+    if dest is not None:
+        free = _free_space(dest)
+        # xodus-cli measured the room itself, so this one is settled.
+        if _NO_ROOM.search(text):
+            raise XodusError(_no_room_message(dest, needed, free))
+        # A short cache is what a full disk looks like from inside the parse,
+        # and only the arithmetic can tell that from a write that failed for
+        # some other reason -- so it is fatal only when the room really is
+        # missing, and otherwise stays worth asking another mirror about.
+        if _CACHE_SHORT.search(text) and _short_of_room(needed, free):
+            raise XodusError(_no_room_message(dest, needed, free))
     loader = _loader_failure(text)
     if loader:
         raise XodusError(loader)
@@ -554,9 +730,24 @@ def install(product, dest: Path, progress=None):
     it compares the local segment hashes against the remote package, fetches
     only the changed files, and renames its work package into place at the end.
     So there is deliberately no staging/rollback dance around it here — adding
-    one would defeat the delta and re-download the whole 800+ MiB every time.
-    What a failure does need is _drop_cache(): the delta is only a shortcut
-    while the cache it reads is intact.
+    one would defeat the delta and re-download the whole 2+ GiB every time.
+    What it does need is _drop_cache(): the delta is a shortcut only while the
+    cache it reads belongs to a build that is really there.
+
+    A fresh install is also measured against the free space first. Everything
+    xodus-cli needs lands in ``dest``: the package it streams through, and the
+    build decrypted out of it -- 2.32 GiB of game beside a 187 MiB cache for
+    1.26.44.3 -- so the package's own Content-Length is a fair figure for
+    both, and it is one HEAD away. Without that check a disk with a few
+    hundred MiB left produced two failures that named neither the disk nor the
+    room: the cache write was refused mid-parse and xodus-cli panicked on the
+    short read, and once the cache was dropped the next attempt got as far as
+    xodus-cli's own space check, which prints its verdict and exits 0.
+
+    A short cache read on a disk that has the room is not the disk at all but
+    xodus-cli racing its own write (see _CACHE_SHORT), and that is worth
+    simply running again: a fresh attempt re-reads only the prefix the parse
+    needs rather than the whole build.
     """
     binary = ensure_cli()
     if not signed_in():
@@ -569,19 +760,57 @@ def install(product, dest: Path, progress=None):
         raise XodusError("This Minecraft build has no download location.")
     dest.mkdir(parents=True, exist_ok=True)
 
+    # A package cache with no build beside it is what an attempt that never
+    # finished leaves behind, and xodus-cli resumes from it: nothing here can
+    # be resumed -- it truncates its work cache at every start -- so all it
+    # can still do is make the delta look empty, which is a download that
+    # "succeeds" and installs nothing at all.
+    _drop_cache(dest)
+
+    # Only for a download of the whole package: an update to a build already
+    # here fetches a delta of unknown size, and refusing that on the whole
+    # package's figure would block updates that fit perfectly well. A build
+    # that lost its package is not an update -- there is no cache left to
+    # delta against, so the entire 2+ GiB comes down again (issue #216).
+    needed = 0
+    if game_root(dest) is None or lost_package_cache(dest):
+        needed = _room_needed(_package_size(sources))
+        free = _free_space(dest)
+        if _short_of_room(needed, free):
+            raise XodusError(_no_room_message(dest, needed, free))
+
     failure = ""
-    for index, source in enumerate(sources):
+    # Every mirror once, plus a few goes at whichever one loses the cache
+    # race, which is the same package either way.
+    plan = list(sources)
+    races_left = _CACHE_RACE_RETRIES
+    while plan:
+        source = plan.pop(0)
         cmd = [str(binary), "streaming", source, str(dest)]
         code, tail = _run_streaming(cmd, progress)
         root = game_root(dest)
         if code == 0 and root is not None and has_package_cache(dest):
             return dest
+        _drop_cache(dest)
+        text = "\n".join(tail)
+        line = _failure_line(tail)
+        # Whatever it exited with. Most of the paths that end a download early
+        # -- no licence, no room, an expired session -- print their reason and
+        # then exit 0 anyway, so classifying only the non-zero exits reported
+        # an account that does not own Minecraft as "installed no game".
+        _raise_unretryable(text, dest, needed)
+        raced = False
+        if _CACHE_SHORT.search(text):
+            free = _free_space(dest)
+            line = _cache_short_clause(dest, needed, free)
+            raced = not _short_of_room(needed, free)
         # Xodus also exits 0 having installed nothing at all, when the cache it
         # resumed from makes the delta look empty. Treat that as the failure it
         # is, or the caller starts a game directory that was never written.
         if code == 0 and root is None:
-            failure = ("The Minecraft download reported success but installed "
-                       "no game.")
+            failure = ("The Minecraft download installed no game"
+                       + (f": {line}" if line else
+                          " and printed no reason for it."))
         elif code == 0:
             # Every path that ends the download early -- no licence, no disk
             # space -- returns before xodus-cli renames its package into
@@ -589,17 +818,17 @@ def install(product, dest: Path, progress=None):
             # here that used to read as a finished install, and the game only
             # failed hours later, at launch, on the package that was never
             # written. It is not installed until it can be decrypted.
-            line = _failure_line(tail)
             failure = ("The Minecraft download did not complete"
                        + (f": {line}" if line else
                           ", so the game cannot be decrypted."))
         else:
-            _raise_unretryable("\n".join(tail))
-            line = _failure_line(tail)
             failure = "The Minecraft download failed" + (
                 f": {line}" if line else ".")
-        _drop_cache(dest)
-        if index + 1 < len(sources):
+        if raced and races_left:
+            races_left -= 1
+            plan.insert(0, source)
+            warn(f"{failure} Starting it again …")
+        elif plan:
             warn(f"{failure} Retrying from another Microsoft mirror …")
     raise XodusError(failure)
 
@@ -914,12 +1143,17 @@ def wrap_encrypted_launch(argv, game_dir: Path, work_dir: Path,
         # that died with it. Say which file is missing, and that only a fresh
         # download brings it back: the segments it holds exist nowhere else
         # on disk.
+        # Name something that exists, too: this used to send the player to
+        # "Install / Update", which is a CLI verb the launcher window has no
+        # tab for, and there was no way to reinstall a build from it anyway
+        # (issue #216). PLAY is the answer now — a build that lost its
+        # package no longer counts as installed, so setup fetches it again.
         raise XodusError(
             f"Minecraft's encrypted package ({PACKAGE_CACHE}) is missing "
             f"from {game_dir}. The game executable there is ciphertext and "
             "that package is what decrypts it, so this build cannot start "
-            "until it is downloaded again — reinstall this Minecraft "
-            "version from Install / Update.")
+            "until it is downloaded again. Open the launcher and press "
+            "PLAY: it downloads a build whose package went missing.")
     binary = ensure_cli()
     _sweep_staged_images()
     restore = webview.apply(binary, env) if env is not None else None

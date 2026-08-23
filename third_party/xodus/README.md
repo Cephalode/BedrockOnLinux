@@ -61,6 +61,26 @@ Linux — `key-chain-file` stops that store from being *used*, but it is still
 compiled, so `libssl-dev` is required to build even though the file keyring
 never touches it.
 
+## The patches carried here
+
+`third_party/xodus/patches/` holds what BedrockOnLinux fixes in Xodus itself.
+`scripts/build-xodus-cli.sh` applies them with `git am` after checking the
+pinned commit out, runs the tests they bring, and archives the *patched* tree
+as the GPL source tarball. Anything in there is meant to go upstream: each one
+is a self-contained commit with the test that fails without it.
+
+| Patch | What it fixes |
+|---|---|
+| `0001-msixvc-only-count-cache-bytes-that-are-on-disk.patch` | The download aborting on its own package cache (issue #217). `PrefixCacheFile` counts the bytes tokio *accepted*, and tokio reports a file write accepted as soon as it has queued it on a blocking thread, so a read through the second handle can outrun the write and find the file short — `Header(Io(Custom { kind: UnexpectedEof, error: "cache ended before cached_len" }))`, which kills the whole download. Measured over a 4 MiB body on an idle disk, the cache claimed up to 17 KiB more than the file held. |
+
+A patched binary is not the upstream commit's binary, so the rev names the
+patches too: `<commit12>-p<n>`, where `n` is how many patch files there are.
+Publishing one takes two passes, like every other pinned artifact — run
+`.github/workflows/build-xodus.yml`, read the SHA-256 it reports, pin
+`XODUS_REV` and `XODUS_ARCHIVE_SHA256` in `bol/config.py`, then run it again
+with `publish` on. Until that pin lands, the launcher keeps downloading the
+unpatched asset it names today.
+
 ## The WebKitGTK runtime beside it
 
 `mod webview` is not behind a feature, so `libwebkit2gtk-4.1.so.0` has to load

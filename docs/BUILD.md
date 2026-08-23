@@ -106,6 +106,10 @@ not to loosen the check:
 - WineGDK prefix → `WINEGDK_PREFIX_SHA256` (the reuse path and `build-winegdk.yml` both assert it).
 - engine → `WINEGDK_ARCHIVE_SHA256` and the `bol/vkd3d.py` manifest pins.
 - xodus-cli → `XODUS_SOURCE_COMMIT` + `XODUS_REV` + `XODUS_ARCHIVE_SHA256`.
+  `XODUS_REV` is the commit's first 12 characters, plus `-p<n>` for the
+  `n` patches in `third_party/xodus/patches/` that the build applies —
+  a patched binary is not the upstream commit's binary and must not
+  answer to its name.
 - WebKitGTK runtime → `XODUS_WEBVIEW_REV` + `XODUS_WEBVIEW_SHA256`. It is the
   only pin that may legitimately be empty: the launcher then refuses to install
   it and asks for the host package instead, which is what a first publish looks
