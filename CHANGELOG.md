@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.3 — 2026-08-23
 
 ### Added
 
@@ -34,6 +34,19 @@
   sandbox binds its socket at startup.
 
 ### Fixed
+
+- **A fresh install could not fetch the game engine**, on 2.2.0, 2.2.1 and
+  2.2.2 alike. The engine archive those releases are pinned against was rebuilt
+  in place — same revision name, same file name, same URL — to carry a Wayland
+  driver of our own build. Different bytes at an address three published
+  releases had already shipped trusting: the launcher checks what it downloads
+  against a SHA-256 it carries, found bytes it had never been told about, and
+  refused the engine with *Prebuilt engine rejected (engine archive SHA-256
+  mismatch)* — on a first install, with nothing there to fall back on. The
+  engine now lives under a revision of its own, `wow64-archs-native17`, at its
+  own URL, and the archives the older releases point at are back to being left
+  alone. A revision names one set of bytes; a rebuild gets a new one rather
+  than overwriting a published archive.
 
 - **The version picker now takes the version you highlighted.** Arrowing down
   the list and pressing Enter picked the first row that had survived the filter

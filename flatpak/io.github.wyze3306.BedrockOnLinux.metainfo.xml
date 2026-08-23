@@ -70,6 +70,22 @@
   </content_rating>
 
   <releases>
+    <release version="2.2.3" date="2026-08-23">
+      <description>
+        <p>Fixes a first install that could not fetch the game engine, adds
+           controller navigation of the launcher window back, and shows the
+           play session on Discord.</p>
+        <ul>
+          <li>fetches the game engine again on a first install, which 2.2.0 to
+              2.2.2 refused after its archive was rebuilt at the same address</li>
+          <li>drives the launcher window with a controller again, rewritten for
+              the Qt window</li>
+          <li>shows what you are playing on Discord, and can be turned off</li>
+          <li>takes the version you highlighted in the picker, not the first
+              one in the list</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.2.2" date="2026-08-22">
       <description>
         <p>The launcher window is rebuilt on Qt, both Microsoft sign-ins now
