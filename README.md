@@ -68,9 +68,11 @@ The first launch downloads the game and everything it needs, so give it a
 while; after that it starts straight away. You can install an older version
 too, which is handy when a server hasn't updated yet.
 
-The launcher can be used with a controller, and **Tools ▸ Create direct launch
-shortcut** adds a *Minecraft Bedrock* entry to your app menu or to Steam. That
-is the one to use on a Steam Deck.
+The launcher can be used with a controller — the d-pad or left stick moves the
+highlight, **A** selects, **B** goes back, the shoulder buttons change tab and
+**Start** plays — and **Tools ▸ Create direct launch shortcut** adds a
+*Minecraft Bedrock* entry to your app menu or to Steam. That is the one to use
+on a Steam Deck.
 
 ## What you need
 

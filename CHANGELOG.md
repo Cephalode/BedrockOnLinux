@@ -4,6 +4,21 @@
 
 ### Added
 
+- **The controller can drive the launcher again**. Navigating the window with
+  a gamepad was lost in the PySide6 rewrite: the ring it moved was built on Tk
+  internals and was removed with the toolkit, leaving Steam Game Mode and every
+  other couch setup back at a window that needs a mouse to get past. It is
+  back, written against Qt. A highlight follows the d-pad or the left stick, A
+  activates, B goes back, the shoulder buttons change tab, Start plays and the
+  right stick scrolls — across the dock, the version picker, the profile and
+  account menus, every Settings tab and any dialog that opens over the window.
+  Opening Settings or What's New takes the highlight with it, and a list, a tab
+  bar or a text field is handed the key press so it navigates the way Qt
+  already knows how to. Reading controllers never changed: the same
+  `/dev/input` reader that survived the rewrite feeds it, so there is still no
+  new dependency and hot-plug still needs no restart. Off with *Settings ▸
+  General ▸ Controller*, or `BOL_CONTROLLER=0` for one session.
+
 - **Discord now shows what you are playing.** Start Minecraft and your friends
   see *Playing BedrockOnLinux* on Discord, with the build you are on, how long
   you have been playing, and buttons that lead to the project and to its
@@ -17,6 +32,13 @@
   the game, and **Settings ▸ General ▸ Discord** turns it off. Inside the
   Flatpak, Discord has to be running before the launcher is, because the
   sandbox binds its socket at startup.
+
+### Fixed
+
+- **The version picker now takes the version you highlighted.** Arrowing down
+  the list and pressing Enter picked the first row that had survived the filter
+  instead of the highlighted one, so keyboard and controller users could ask
+  for one build and install another.
 
 ## 2.2.2 — 2026-08-22
 

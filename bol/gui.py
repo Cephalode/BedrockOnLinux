@@ -41,6 +41,7 @@ from .games import list_editions, list_versions
 from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
+from .navigation import ControllerNav
 from . import log
 from .log import BolError, _LEVELS, desktop_notify, warn
 from .prefix import _mc_running, kill_wine, prefix_operation_lock, reset_prefix
@@ -701,6 +702,14 @@ class VersionPicker(Popup):
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            # The highlighted row wins when there is one: arrowing down the
+            # list (or walking it with a controller) and pressing Enter has
+            # to pick what is highlighted, not the first row that survived
+            # the filter.
+            current = self.list.currentItem()
+            if current is not None and not current.isHidden():
+                self.picked.emit(current.text())
+                return
             for i in range(self.list.count()):
                 it = self.list.item(i)
                 if not it.isHidden():
@@ -988,6 +997,10 @@ class MainWindow(QMainWindow):
         self._workers: dict[str, QThread] = {}
         self.na = NativeAuth()
         self._switches: list[SwitchRow] = []
+        # Controller navigation (bol.navigation): built once every widget the
+        # ring can land on exists, at the end of __init__.
+        self.nav: Optional[ControllerNav] = None
+        self._nav_devices: tuple = ()
         self._log_bridge = LogBridge()
         self._log_bridge.line.connect(self._on_log_line)
         log._LOG_SINK = lambda m: self._log_bridge.line.emit(m)
@@ -1049,6 +1062,12 @@ class MainWindow(QMainWindow):
         if self.settings.get("show_changelog_on_startup", False):
             QTimer.singleShot(0, self.toggle_changelog)
 
+        # BOL_CONTROLLER=0 turns navigation off for one session without
+        # touching the saved setting.
+        if (self.settings.get("controller_nav", True)
+                and os.environ.get("BOL_CONTROLLER") != "0"):
+            self.apply_controller_nav(True)
+
     def _start_worker(self, slot, worker) -> bool:
         """Start `worker`, holding the only reference the GUI thread keeps.
 
@@ -1096,6 +1115,8 @@ class MainWindow(QMainWindow):
             row.switch.set_theme(self.theme)
         if getattr(self, "settings_btn", None):
             self.settings_btn.set_theme(self.theme)
+        if getattr(self, "nav", None) is not None:
+            self.nav.set_accent(self.theme.accent)
         if _alive(getattr(self, "accounts_menu", None)):
             self.accounts_menu.set_theme(self.theme)
             self._refresh_accounts()
@@ -1175,9 +1196,21 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ status row
     def _build_status_row(self) -> QVBoxLayout:
         col = QVBoxLayout()
+        line = QHBoxLayout()
         self.status_label = QLabel("Ready to play.")
         self.status_label.setObjectName("Sub")
-        col.addWidget(self.status_label)
+        line.addWidget(self.status_label)
+        line.addStretch(1)
+        # Which button does what, shown only while a controller is connected.
+        # The names are spelled out rather than drawn as circled glyphs: the
+        # Ⓐ/Ⓑ characters are missing from most Linux default fonts and would
+        # come out as boxes.
+        self.nav_legend = QLabel()
+        self.nav_legend.setObjectName("Muted")
+        self.nav_legend.setTextFormat(Qt.RichText)
+        self.nav_legend.hide()
+        line.addWidget(self.nav_legend)
+        col.addLayout(line)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.hide()
@@ -2016,15 +2049,35 @@ class MainWindow(QMainWindow):
     def toggle_settings(self):
         if self.stack.currentWidget() is self.settings_page:
             self.stack.setCurrentWidget(self.hero_page)
+            self._nav_follow_page()
         else:
             self.stack.setCurrentWidget(self.settings_page)
+            self._nav_follow_page(self.settings_page)
 
     def toggle_changelog(self):
         if self.stack.currentWidget() is self.changelog_page:
             self.stack.setCurrentWidget(self.hero_page)
+            self._nav_follow_page()
         else:
             self.stack.setCurrentWidget(self.changelog_page)
             self.load_changelogs()
+            self._nav_follow_page(self.changelog_page)
+
+    def _nav_follow_page(self, page=None):
+        """Move the controller highlight onto the page just opened.
+
+        Only when it is already showing: a page opened with the mouse must not
+        make a focus ring appear out of nowhere. Without this the highlight
+        would sit on the gear button it came from while the user looks at a
+        panel full of controls it has not reached.
+        """
+        nav = getattr(self, "nav", None)
+        if nav is None or not nav.is_showing():
+            return
+        if page is None:
+            nav.move_to_entry()
+        else:
+            nav.enter(page)
 
     # ------------------------------------------------------------ settings page
     def _build_settings(self) -> QWidget:
@@ -2082,6 +2135,24 @@ class MainWindow(QMainWindow):
         close_row.toggled.connect(lambda on: self._save_setting("close_on_launch", on))
         startup.addWidget(close_row)
 
+        controller = card_section(v, "Controller",
+            "Move a highlight around the launcher with a gamepad, for Steam "
+            "Game Mode and any other couch setup with no mouse in reach.")
+        controller_row = self._switch(
+            "Navigate with a controller",
+            self.settings.get("controller_nav", True),
+            "D-pad or left stick moves the highlight, A activates it, B goes "
+            "back, the shoulder buttons change tab and Start plays. The "
+            "highlight only appears once the controller is used, and goes "
+            "away as soon as the mouse moves.")
+        controller_row.toggled.connect(self._toggle_controller_nav)
+        controller.addWidget(controller_row)
+        self.controller_status = QLabel()
+        self.controller_status.setObjectName("Muted")
+        self.controller_status.setWordWrap(True)
+        controller.addWidget(self.controller_status)
+        self._refresh_controller_status()
+
         accounts = card_section(v, "Accounts",
             "Minecraft is downloaded from the Microsoft Store with the account "
             "that owns it — a separate, device-bound session from the "
@@ -2097,6 +2168,10 @@ class MainWindow(QMainWindow):
 
         v.addStretch(1)
         return w
+
+    def _toggle_controller_nav(self, on):
+        self._save_setting("controller_nav", on)
+        self.apply_controller_nav(on)
 
     def _save_theme_toggle(self, on):
         self._save_setting("light_theme", on)
@@ -2764,6 +2839,79 @@ class MainWindow(QMainWindow):
         except Exception:
             QApplication.instance().quit()
 
+    # ------------------------------------------------------------ controller
+    def apply_controller_nav(self, enabled):
+        """Start or stop watching for controllers, from the Settings switch."""
+        if not enabled:
+            nav, self.nav = self.nav, None
+            if nav is not None:
+                nav.stop()
+                self._on_nav_devices(())
+            self._refresh_controller_status()
+            return
+        if self.nav is not None:
+            return
+        nav = ControllerNav(
+            self,
+            accent=self.theme.accent,
+            on_back=self._controller_back,
+            # Whatever the big button says right now -- PLAY, or KILL once
+            # the game is running.
+            on_start=self.play_btn.click,
+            on_devices=self._on_nav_devices,
+            primary_item=lambda: self.play_btn,
+            # The pad keeps reporting while Minecraft is in the foreground
+            # and this window is still alive behind it.
+            accepts_input=lambda: not self.ui_state.get("launch_active"))
+        if not nav.start():
+            self._refresh_controller_status()
+            return
+        self.nav = nav
+        self._on_nav_devices(nav.device_names)
+
+    def _stop_controller_nav(self):
+        """Let go of the controller: the window is closing."""
+        nav, self.nav = self.nav, None
+        if nav is not None:
+            nav.stop()
+
+    def _controller_back(self):
+        """What B does with nothing opened over the window: leave the page
+        the user is in, which is what Escape would do with a keyboard."""
+        if self.stack.currentWidget() is self.settings_page:
+            self.toggle_settings()
+        elif self.stack.currentWidget() is self.changelog_page:
+            self.toggle_changelog()
+
+    def _on_nav_devices(self, names):
+        """A controller was plugged in or unplugged."""
+        self._nav_devices = tuple(names)
+        legend = getattr(self, "nav_legend", None)
+        if legend is not None:
+            if names and self.nav is not None:
+                accent = self.theme.accent
+                legend.setText("&nbsp;&nbsp;".join(
+                    f'<b style="color:{accent}">{key}</b> {what}'
+                    for key, what in (("A", "Select"), ("B", "Back"),
+                                      ("Start", "Play"))))
+                legend.show()
+            else:
+                legend.hide()
+        self._refresh_controller_status()
+
+    def _refresh_controller_status(self):
+        """Say in Settings what the controller support is currently doing."""
+        label = getattr(self, "controller_status", None)
+        if label is None:
+            return
+        if self.nav is None:
+            label.setText("Controller navigation is off.")
+        elif self._nav_devices:
+            label.setText("Ready — " + ", ".join(self._nav_devices))
+        else:
+            label.setText("Waiting for a controller. One plugged in now is "
+                          "picked up without restarting the launcher.")
+
     # ------------------------------------------------------------ message boxes
     def _box(self, icon, title, message) -> QMessageBox:
         box = QMessageBox(self)
@@ -2790,6 +2938,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ close handling
     def closeEvent(self, event):
         if self._force_close:
+            self._stop_controller_nav()
             event.accept()
             return
         if self.ui_state.get("launch_active"):
@@ -2805,6 +2954,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.na.stop()
+        self._stop_controller_nav()
         event.accept()
         # The app runs with setQuitOnLastWindowClosed(False) so that
         # "close the launcher when Minecraft starts" can drop the window while

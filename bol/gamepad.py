@@ -2,16 +2,13 @@
 
 The launcher window is the one screen a controller user cannot get past: in
 Steam Game Mode, on a Steam Deck, or on any couch setup there is no mouse to
-click PLAY with.  This module is the input half of the answer: it reads raw
-controller state so a focus ring can be driven over the launcher window.
+click PLAY with.  This module is the input half of the answer; `bol.navigation`
+turns what it reports into a moving focus ring over the Qt window.
 
-NOTE: the customtkinter-era `bol.navigation` (the output half, which turned
-this module's reports into a moving focus ring) was removed as dead code in
-the PySide6 rewrite -- it was built entirely on Tk internals (`winfo_children`,
-Canvas, `tkinter.Misc.bind`) that no longer exist. This module still runs and
-`doctor.py` still reports controller status, but nothing currently consumes
-that input to move focus in the new Qt window. Controller navigation of the
-launcher is a known regression until a Qt-native replacement is written.
+The two halves are deliberately separable, and the split has already paid for
+itself once: the PySide6 rewrite deleted the original ring, which was built on
+Tk internals, without touching a line of this file, and the Qt replacement
+reads controllers through exactly the same interface.
 
 It talks to ``/dev/input/event*`` directly instead of pulling in SDL, pygame or
 python-evdev.  The launcher ships as a .deb, an AppImage, a Flatpak and a
