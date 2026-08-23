@@ -22,7 +22,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QButtonGroup, QDialog, QFileDialog, QFrame,
+    QAbstractButton, QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
@@ -2468,13 +2468,22 @@ class MainWindow(QMainWindow):
         self.auto_switch.toggled.connect(lambda on: self._save_setting("injector_auto_enable", on))
         injector_sec.addWidget(self.auto_switch)
 
-        self.remote_switch = self._switch(
-            "Remote DLL via URL",
-            self.settings.get("injector_dll_type", "file") == "url",
-            "Toggle between using a local DLL file or downloading one from a URL."
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("DLL load mode:")
+        mode_label.setToolTip("Choose whether to inject a local DLL or download one from a URL.")
+        mode_layout.addWidget(mode_label)
+
+        self.dll_mode_combo = QComboBox()
+        self.dll_mode_combo.addItem("File", "file")
+        self.dll_mode_combo.addItem("Download", "url")
+        current_mode = self.settings.get("injector_dll_type", "file")
+        self.dll_mode_combo.setCurrentIndex(1 if current_mode == "url" else 0)
+        self.dll_mode_combo.currentIndexChanged.connect(
+            lambda idx: self._on_injector_dll_type_toggled(self.dll_mode_combo.itemData(idx))
         )
-        self.remote_switch.toggled.connect(self._on_injector_dll_type_toggled)
-        injector_sec.addWidget(self.remote_switch)
+        mode_layout.addWidget(self.dll_mode_combo)
+        mode_layout.addStretch(1)
+        injector_sec.addLayout(mode_layout)
 
         dll_layout = QHBoxLayout()
         is_url = self.settings.get("injector_dll_type") == "url"
@@ -2616,15 +2625,15 @@ class MainWindow(QMainWindow):
         w.failed.connect(failed)
         self._start_worker("inject", w)
 
-    def _on_injector_dll_type_toggled(self, on):
-        dll_type = "url" if on else "file"
+    def _on_injector_dll_type_toggled(self, dll_type):
+        dll_type = dll_type if dll_type in ("file", "url") else ("url" if dll_type else "file")
         self._save_setting("injector_dll_type", dll_type)
-        last_val = self.settings.get("injector_dll_url" if on else "injector_dll_path") or ""
+        last_val = self.settings.get("injector_dll_url" if dll_type == "url" else "injector_dll_path") or ""
         self.dll_input.setText(last_val)
         self._update_injector_settings_ui()
 
     def _on_injector_dll_text_changed(self, text):
-        on = self.remote_switch.isChecked()
+        on = self.dll_mode_combo.currentData() == "url"
         key = "injector_dll_url" if on else "injector_dll_path"
         self._save_setting(key, text)
 
@@ -2638,7 +2647,7 @@ class MainWindow(QMainWindow):
             self._save_setting("injector_dll_path", dll)
 
     def _update_injector_settings_ui(self):
-        is_url = self.remote_switch.isChecked()
+        is_url = self.dll_mode_combo.currentData() == "url"
         self.dll_browse_btn.setVisible(not is_url)
         if is_url:
             self.dll_input.setPlaceholderText("https://example.com/client.dll")

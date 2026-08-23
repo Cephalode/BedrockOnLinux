@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from PySide6.QtWidgets import QMainWindow, QPushButton, QTabWidget
+from PySide6.QtWidgets import QComboBox, QMainWindow, QPushButton, QTabWidget
 from PySide6.QtTest import QSignalSpy
 
 # Ensure we can import bol modules
@@ -182,6 +182,14 @@ class TestMainWindowInitialization:
         assert main_window.hero_page is not None
         assert main_window.settings_page is not None
         assert main_window.changelog_page is not None
+
+    def test_injector_dll_load_mode_combo(self, main_window):
+        """The DLL config uses a dropdown selecting file vs URL download."""
+        combo = next((cb for cb in main_window.findChildren(QComboBox)), None)
+        assert combo is not None
+        assert combo.count() == 2
+        assert combo.itemText(0) == "File"
+        assert combo.itemText(1) == "Download"
 
 
 # ======================================================================
