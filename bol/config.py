@@ -92,15 +92,22 @@ WINEGDK_OUT = PROTON_DIR / "GDK-Proton-xuser"
 WINEGDK_PREBUILT_REPO = "Wyze3306/BedrockOnLinux"
 # The commit alone does not identify vendored follow-up patches.
 WINEGDK_SOURCE_MANIFEST_SHA256 = "0feb01ca058086eccf4f4a0e6895f541547ae89aa0d2ab86f08291224de5ed46"
-WINEGDK_BUILD_REV = "wow64-archs-native16"
-# native16 carries the ntdll loader patches the Microsoft Store packages need:
+WINEGDK_BUILD_REV = "wow64-archs-native17"
+# native17 carries the ntdll loader patches the Microsoft Store packages need:
 # 0007 maps the main image from a descriptor, 0008 from a path so it survives
 # the Steam Linux Runtime container. Their game executable stays encrypted on
 # disk, so an engine without them cannot start the game -- which is why an
 # unset pin here makes _verify_engine_archive() refuse every candidate rather
 # than fall back. Produced by the reviewed build-engine.yml run of this branch,
 # which refuses any archive that does not reproduce these bytes.
-WINEGDK_ARCHIVE_SHA256 = "955ecfe33a655927f9f748aa62fe154ad7f6e899cb61c4f50748af8f2e155c34"
+#
+# It also carries the first Wayland driver of our own build (issue #180).
+# native16 was published twice: once before that fix and once after, under the
+# same release tag and the same file name, which replaced the bytes 2.2.2 was
+# pinned against and left every fresh install of it rejecting the engine. A
+# revision is a name for one set of bytes -- rebuild under a new one rather
+# than overwrite a published archive.
+WINEGDK_ARCHIVE_SHA256 = "12fa379f012410832eab54c719efaa4e0e327a3b6839b0859f851d1b952abed2"
 # Build workflows verify this deterministic intermediate before reusing it.
 WINEGDK_PREFIX_SHA256 = "bfbb08107e7aa16842cf12814013a1cb94acd5a1c2fe8eaec24a401c4b57fc09"
 
