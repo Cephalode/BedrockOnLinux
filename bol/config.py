@@ -107,7 +107,7 @@ WINEGDK_BUILD_REV = "wow64-archs-native17"
 # pinned against and left every fresh install of it rejecting the engine. A
 # revision is a name for one set of bytes -- rebuild under a new one rather
 # than overwrite a published archive.
-WINEGDK_ARCHIVE_SHA256 = "955ecfe33a655927f9f748aa62fe154ad7f6e899cb61c4f50748af8f2e155c34"
+WINEGDK_ARCHIVE_SHA256 = "12fa379f012410832eab54c719efaa4e0e327a3b6839b0859f851d1b952abed2"
 # Build workflows verify this deterministic intermediate before reusing it.
 WINEGDK_PREFIX_SHA256 = "bfbb08107e7aa16842cf12814013a1cb94acd5a1c2fe8eaec24a401c4b57fc09"
 
