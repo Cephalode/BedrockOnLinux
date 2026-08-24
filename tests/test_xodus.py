@@ -776,6 +776,26 @@ class ProgressTests(unittest.TestCase):
             tail, lambda done, total: captured.append((done, total)))
         self.assertEqual(captured, [(431 << 20, 862 << 20)])
 
+    def test_a_segment_bar_labelled_downloading_is_not_the_total_bar(self):
+        # #223: a per-file/segment bar can be captioned "Downloading <name>"
+        # rather than a bare filename. A prefix match on "downloading" would
+        # take its own (small, near-full) total for the aggregate one, and
+        # the launcher would show a percentage against the wrong package
+        # entirely for a frame -- "off the rails" until the real bar, whose
+        # label is exactly "Downloading", corrects it.
+        seen = []
+        tail = []
+        xodus._consume(
+            "Downloading segment_0000.msixvc    3.90 MiB/    4.00 MiB",
+            tail, seen.append)
+        self.assertEqual(seen, [])
+
+        captured = []
+        xodus._consume(
+            "Downloading    12.00 MiB/    862.00 MiB     12.00 MiB [#] 1%",
+            tail, lambda done, total: captured.append((done, total)))
+        self.assertEqual(captured, [(12 << 20, 862 << 20)])
+
     def test_a_session_without_a_terminal_still_gets_the_bars_drawn(self):
         # A launcher started from a desktop entry, Steam or Game Mode passes
         # no TERM, and indicatif draws nothing when TERM says the terminal

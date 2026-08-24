@@ -115,7 +115,14 @@ _PROGRESS = re.compile(
     r"(?P<total>[\d.]+)\s*(?P<tu>[KMGT]?i?B)")
 _UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30,
           "TiB": 1 << 40}
-_TOTAL_BAR = re.compile(r"^(initializing|downloading)", re.I)
+# Only the label is checked, and it has to be the *whole* label: a per-file
+# or per-segment bar can be captioned "Downloading <name>", and a prefix
+# match would take that for the aggregate bar too. Its own total is a single
+# file, almost always small next to the whole package, so for one frame the
+# launcher would report progress against the wrong denominator entirely --
+# a percentage that has nothing to do with the real download -- until the
+# next line carrying the real "Downloading" bar corrects it (#223).
+_TOTAL_BAR = re.compile(r"^(initializing|downloading)\s*$", re.I)
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 # ld.so, not Xodus: "…/xodus-cli: error while loading shared libraries:
 # libwebkit2gtk-4.1.so.0: cannot open shared object file: No such file or
