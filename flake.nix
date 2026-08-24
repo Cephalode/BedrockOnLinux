@@ -18,6 +18,9 @@
         python-xlib
         certifi
       ]);
+      steam-run = pkgs.steam-run.override (prev: {
+        targetPkgs = pkgs: prev.targetPkgs pkgs ++ [ pkgs.libxcomposite ];
+      });
     in
     {
       packages.x86_64-linux.default = pkgs.stdenv.mkDerivation {
@@ -37,7 +40,7 @@
           cp data/bedrock-on-linux.desktop $out/share/applications/
           cp data/icon.png $out/share/icons/hicolor/256x256/apps/bedrock-on-linux.png
 
-          makeWrapper ${pkgs.steam-run}/bin/steam-run $out/bin/bedrock-on-linux \
+          makeWrapper ${steam-run}/bin/steam-run $out/bin/bedrock-on-linux \
             --add-flags "${bolPython}/bin/python3" \
             --add-flags "$out/lib/bedrock-on-linux/bedrock-on-linux" \
             --prefix PYTHONPATH : "$out/lib/bedrock-on-linux"
