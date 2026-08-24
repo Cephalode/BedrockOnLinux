@@ -1228,6 +1228,61 @@ class LaunchStartedHookTests(ReadyLaunchHarness, unittest.TestCase):
         once.assert_called_once_with((71, 72), on_started=hook)
 
 
+class AutoInjectionLaunchTests(ReadyLaunchHarness, unittest.TestCase):
+    """Auto-injection belongs to the launch, not to the window that asked."""
+
+    def _play(self, settings, start_fails=False):
+        events = []
+
+        def popen(*_a, **_kw):
+            events.append("spawned")
+            proc = mock.Mock()
+            proc.wait.side_effect = lambda timeout=None: (
+                events.append("waited") or 0)
+            return proc
+
+        def start(passed):
+            events.append("auto-inject")
+            if start_fails:
+                raise RuntimeError("no thread")
+            self.injected_settings = passed
+            return mock.Mock()
+
+        self.injected_settings = None
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(launch, "start_auto_inject",
+                                  side_effect=start) as started:
+            rc = self._exercise_ready_launch(
+                Path(td), popen,
+                arm=lambda: "owned-token",
+                disarm=lambda _token: True,
+                extra_settings=settings,
+            )
+        return rc, events, started
+
+    def test_a_launcher_free_launch_still_injects(self):
+        """`bol play` is what a direct-launch shortcut and Game Mode run."""
+        rc, events, started = self._play({"injector_auto_enable": True})
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["spawned", "auto-inject", "waited"])
+        started.assert_called_once()
+        self.assertTrue(self.injected_settings["injector_auto_enable"])
+
+    def test_the_watcher_is_offered_every_launch_and_declines_by_default(self):
+        rc, events, started = self._play({})
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["spawned", "auto-inject", "waited"])
+        self.assertFalse(started.call_args.args[0].get("injector_auto_enable"))
+
+    def test_a_watcher_that_cannot_start_never_aborts_a_running_game(self):
+        rc, events, _started = self._play({"injector_auto_enable": True},
+                                          start_fails=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["spawned", "auto-inject", "waited"])
+        self.assertTrue(any("Automatic DLL injection" in warning
+                            for warning in self._warnings()))
+
+
 if __name__ == "__main__":
     unittest.main()
 

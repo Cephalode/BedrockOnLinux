@@ -961,12 +961,6 @@ class LaunchWorker(QThread):
                 elif action == "step-aside":
                     self.step_aside.emit()
 
-                s = load_settings()
-                if s.get("injector_auto_enable", False):
-                    from .inject import perform_auto_inject
-                    import threading
-                    threading.Thread(target=perform_auto_inject, args=(s,), daemon=True).start()
-
             try:
                 launch(on_started=on_started)
             finally:
@@ -2500,7 +2494,10 @@ class MainWindow(QMainWindow):
 
         delay_layout = QHBoxLayout()
         delay_label = QLabel("Injection delay (seconds):")
-        delay_label.setToolTip("Wait this many seconds after the process starts before injecting (used as a fallback if the window isn't detected).")
+        delay_label.setToolTip(
+            "Wait at least this long after the game starts before injecting. "
+            "Injection also waits for the game's window, so a DLL never loads "
+            "into a game that has not opened yet.")
         delay_layout.addWidget(delay_label)
 
         self.delay_spin = QSpinBox()

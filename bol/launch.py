@@ -37,6 +37,7 @@ from .gpu_safety import (
     require_safe_graphics_session,
     retire_idle_current_boot_marker,
 )
+from .inject import start_auto_inject
 from .log import BolError, die, info, ok, warn
 from .ntsync import inproc_sync_problem
 from .perfcheck import (
@@ -820,6 +821,14 @@ def _launch_once(lock_fds=(), on_started=None):
             except Exception as hook_error:
                 warn("The launcher could not step aside for the game window "
                      "(%s)." % type(hook_error).__name__)
+        # Auto-injection belongs to the launch and not to whoever asked for
+        # it: a direct-launch shortcut and Game Mode both come through
+        # `bol play`, which has no GUI worker to hang the watcher off.
+        try:
+            start_auto_inject(s)
+        except Exception as inject_error:
+            warn("Automatic DLL injection could not be started (%s)."
+                 % type(inject_error).__name__)
         started = time.time()
         # Say on Discord what is being played, for as long as it is played:
         # the launcher is found by word of mouth, and this is it saying its
