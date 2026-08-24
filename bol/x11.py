@@ -530,3 +530,38 @@ def tag_steam_game_windows(app_id, wm_class, display=None, windows=None,
         if opened is None:
             return ()
         return _tag_windows(opened, wanted, value, skip)
+
+
+def find_presentable_window(wm_class, display=None):
+    wanted = str(wm_class or "").strip().lower()
+    if not wanted:
+        return False
+    target = str(display if display is not None
+                 else os.environ.get("DISPLAY", "")).strip()
+    if not target:
+        return False
+    try:
+        with _x_windows(target) as opened:
+            if opened is None:
+                return False
+            pending = [(opened.root(), 0)]
+            depth = _WINDOW_SEARCH_DEPTH
+            budget = _WINDOW_SEARCH_BUDGET
+            while pending and budget > 0:
+                window, level = pending.pop(0)
+                budget -= 1
+                names = ()
+                if level:
+                    names = tuple(str(name).lower()
+                                  for name in opened.wm_classes(window))
+                    if wanted in names:
+                        if opened.is_presentable(window):
+                            return True
+                        continue
+                if not names and level < depth:
+                    pending.extend(
+                        (child, level + 1) for child in opened.children(window))
+    except Exception:
+        pass
+    return False
+
