@@ -482,6 +482,17 @@ def mc_releases(fetch_all=True, ignore_cache=False):
         for m in matches:
             parts = [int(x) if x else 0 for x in m]
             if parts[0] > 10:
+                # Article titles often carry a "YYYY.MM.DD"-style release
+                # date alongside the real version (e.g. "1.19.0, released
+                # 2023.05.01"). Without a ceiling, a 4+ digit year gets
+                # misread as an old-style "<major>.<minor>" version and
+                # reinterpreted as e.g. (1, 2023, 5, 1) -- which is high
+                # enough to pass the "recent version" filter below and lets
+                # a stale article slip back into the list. Minecraft's own
+                # version components never reach 1000, so anything at or
+                # above that is a date, not a version, and is dropped.
+                if parts[0] > 999:
+                    continue
                 parts = [1, parts[0], parts[1], parts[2]]
             res.append(tuple(parts))
         return res
