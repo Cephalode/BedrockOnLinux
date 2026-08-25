@@ -70,6 +70,24 @@
   </content_rating>
 
   <releases>
+    <release version="2.2.4" date="2026-08-25">
+      <description>
+        <p>Fixes the Play screen telling you to sign in to an account that is
+           already linked, and a Minecraft download that ended on the licence
+           Microsoft issued for it.</p>
+        <ul>
+          <li>keeps the Servers and Realms tabs reachable, and takes away the
+              in-game sign-in button that could only ever fail — the account is
+              linked from the launcher</li>
+          <li>says so when a Minecraft update moves the interface past those
+              patches, instead of passing over them in silence</li>
+          <li>finishes a download whose licence Microsoft granted as a trial
+              rather than outright</li>
+          <li>stops a download failing on a race against its own package
+              cache, and counting past a hundred percent while it ran</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.2.3" date="2026-08-23">
       <description>
         <p>Fixes a first install that could not fetch the game engine, adds
