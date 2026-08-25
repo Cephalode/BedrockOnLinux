@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import deps, discord, gamepad, webview
+from . import deps, discord, fixups, gamepad, webview
 from .config import DATA, PRETTY, VERSION
 from .gpu_safety import (
     GpuSafetyAcknowledgementStatus,
@@ -155,6 +155,16 @@ def doctor(acknowledge_gpu_crash=False):
               + ("OK" if not xodus.lost_package_cache(game_dir) else
                  f"MISSING ({xodus.PACKAGE_CACHE} in {game_dir}) — "
                  "press PLAY to download this build again"))
+    # Whether the installed build still carries the two HBUI patches that
+    # keep the Servers tab reachable and hide the in-game Sign-in link. They
+    # fail silently by nature -- a Minecraft build rebundles its minified UI
+    # and the anchors stop matching -- and nothing else notices: the game
+    # starts, setup reports success, and only the Play screen behaves as
+    # though no patch had run (#227/#228/#229).
+    signin_summary, signin_problem = fixups.hbui_signin_gate_status(game_dir)
+    print(f"  {'sign-in ui':12} : {signin_summary}")
+    if signin_problem:
+        warn(signin_problem)
     # Which controllers the launcher window itself can be driven with. The
     # game reads its own pad through GameInput inside the prefix, so a blank
     # here says nothing about playing -- only about navigating the launcher

@@ -83,52 +83,188 @@ def install_gdk_xbox_dlls(game_dir: Path):
     _patch_hbui_signin_gate(game_dir)
 
 
-def _patch_hbui_signin_gate(game_dir: Path):
-    """Bypass HBUI's 'You need a Microsoft account' banner that blocks the
-    Servers tab: its derived facet (wB() in the minified JS bundle) reports
-    not-signed-in because XSAPI never completes init under Wine, even though
-    the SISU/PlayFab auth works. An early `return ""` makes every consumer
-    fall through to `default: return null`. Idempotent; skips silently when
-    a Minecraft update rebundles the JS (pattern must then be re-found).
+# Both HBUI patches below are anchored on text a Minecraft build cannot rename
+# -- facet property names, the states they derive and the sign-in source --
+# with every minified identifier matched as \w+ instead. Anchoring them on the
+# minified names themselves is what silently retired both: the needles written
+# for 1.1.0 stopped matching once the UI was rebundled (the module alias moved
+# from `l.` to `r.` and every local name changed with it), and because the
+# patch skipped quietly, setup kept reporting success while the Servers tab
+# stayed blocked and the dead in-game "Sign in" link came back (#227/#228/#229).
+_HBUI_GATE = re.compile(r'(function\s+\w+\(\)\{)(return\(0,\w+\.useFacetMap\))')
+# The facet wanted is the one deriving the Play screen's guest/sign-in state,
+# recognised by what it reads out of the account facet and by the states it
+# returns -- none of which minification touches.
+_HBUI_GATE_MARKS = (
+    "isSignedInPlatformNetwork",
+    "isLoggedInWithMicrosoftAccount",
+    '"not-signed-in"',
+    '"msa-guest-playstation"',
+)
+_HBUI_GATE_DONE = re.compile(
+    r'function\s+\w+\(\)\{return"";return\(0,\w+\.useFacetMap\)')
+_HBUI_LINK = re.compile(r'(_NotLoggedInWarning_OreUI`\)\}\),\[[^\]]*\]\);)'
+                        r'(return \w+\.createElement\(\w+,)')
+_HBUI_LINK_DONE = re.compile(
+    r'_NotLoggedInWarning_OreUI`\)\}\),\[[^\]]*\]\);return null;')
 
-    NOTE: forcing the isLoggedInWithMicrosoftAccount facet true (to unlock
-    Profiles / Skins / Realms / the Sign-in button) was tried and reverted —
-    it only removes the UI gate, exposing that those features genuinely need
-    XSAPI social/persona, which does not work under Wine (they then loop or
-    crash). That's an engine-level (WineGDK) problem, not a UI patch."""
-    import glob, re
-    for js in glob.glob(str(game_dir / "data/gui/dist/hbui/index-*.js")):
+
+def _hbui_gate_patch(data):
+    """Make the derived 'not signed in' facet report nothing.
+
+    Its consumers all switch on the state it returns and end in
+    ``default: return null``, so an empty string takes the "You need a
+    Microsoft account" notice off the Servers and Realms tabs. The notice is
+    there because XSAPI never completes its init under Wine, not because the
+    account is missing -- the SISU/PlayFab auth behind it works.
+
+    The early return is unconditional, so the function contributes the same
+    (zero) hooks on every render and React's hook order stays consistent.
+    Returns ``(text, status)`` with status "applied", "already" or "missing".
+
+    NOTE: forcing the isLoggedInWithMicrosoftAccount facet true instead (to
+    unlock Profiles / Skins / Realms / the Sign-in button) was tried and
+    reverted -- it only removes the UI gate, exposing that those features
+    genuinely need XSAPI social/persona, which does not work under Wine (they
+    then loop or crash). That is an engine-level problem, not a UI patch.
+    """
+    if _HBUI_GATE_DONE.search(data):
+        return data, "already"
+    for m in _HBUI_GATE.finditer(data):
+        # Bound the window at the next function declaration: the marks are
+        # common enough that an unbounded look-ahead matches the neighbour.
+        stop = data.find("}function ", m.end())
+        body = data[m.end():stop if stop != -1 else m.end() + 2000]
+        if all(mark in body for mark in _HBUI_GATE_MARKS):
+            return data[:m.end(1)] + 'return"";' + data[m.end(1):], "applied"
+    return data, "missing"
+
+
+def _hbui_link_patch(data):
+    """Remove the in-game "Sign in" link of the not-logged-in notice.
+
+    It reaches an interactive XUser sign-in the engine does not implement, so
+    it can only ever answer "Failed to log in ... Error Code: Llama"
+    (#227/#228); the account is linked from the launcher instead. The early
+    return goes *after* the component's hooks -- the useCallback whose body
+    holds the immutable sign-in source -- so React's hook order is preserved,
+    unlike a naive return at the top. Returns ``(text, status)``.
+    """
+    if _HBUI_LINK_DONE.search(data):
+        return data, "already"
+    m = _HBUI_LINK.search(data)
+    if not m:
+        return data, "missing"
+    return data[:m.end(1)] + "return null;" + data[m.end(1):], "applied"
+
+
+def _hbui_bundles(game_dir):
+    import glob
+
+    return sorted(glob.glob(
+        str(Path(game_dir) / "data/gui/dist/hbui/index-*.js")))
+
+
+def _hbui_read_status(game_dir):
+    """Both patch states in an installed game directory, without writing.
+
+    Returns ``(name, gate, link)`` for the bundle carrying the Play screen, or
+    ``(None, "missing", "missing")`` when no bundle has either anchor.
+    """
+    results = []
+    for js in _hbui_bundles(game_dir):
+        try:
+            data = Path(js).read_text()
+        except OSError:
+            continue
+        results.append((Path(js).name,
+                        _hbui_gate_patch(data)[1], _hbui_link_patch(data)[1]))
+    return max(results,
+               key=lambda r: (r[1] != "missing") + (r[2] != "missing"),
+               default=(None, "missing", "missing"))
+
+
+_HBUI_LOST_CONSEQUENCE = (
+    "the Servers tab can stay blocked behind 'You need a Microsoft account' "
+    "and the in-game Sign-in link answers 'Failed to log in'. Sign in from "
+    "the launcher instead, and report the Minecraft version so the patch can "
+    "be re-anchored."
+)
+
+
+def hbui_signin_gate_status(game_dir):
+    """What the HBUI patches are doing in an installed game directory.
+
+    Reported by ``doctor`` because their failure mode is otherwise invisible:
+    the game starts, setup says it completed, and only the Servers tab and the
+    in-game Sign-in link behave as though nothing had been done (#227/#229).
+    Returns ``(summary, problem)``; problem is None when nothing is wrong.
+    """
+    game_dir = (game_dir or "").strip()
+    if not game_dir:
+        return "no game installed", None
+    if not _hbui_bundles(game_dir):
+        return "no HBUI bundle in this build", None
+    _name, gate, link = _hbui_read_status(game_dir)
+    lost = _hbui_lost_labels(gate, link)
+    if lost:
+        return ("NOT PATCHED (this build rebundled its UI)",
+                "This Minecraft build rebundled its UI past "
+                + " and ".join(lost) + ", so " + _HBUI_LOST_CONSEQUENCE)
+    if gate == "applied" or link == "applied":
+        return ("not applied yet",
+                "The in-game Microsoft-account gate is not patched in the "
+                "installed build yet — run Install / Update.")
+    return "OK (gate + link patched)", None
+
+
+def _hbui_lost_labels(gate, link):
+    return [label for label, status in
+            (("the Microsoft-account gate", gate),
+             ("the dead in-game Sign-in link", link))
+            if status == "missing"]
+
+
+def _patch_hbui_signin_gate(game_dir: Path):
+    """Neutralise HBUI's Microsoft-account gate and its dead "Sign in" link.
+
+    Never fatal, but never silent either: a build that rebundles the UI past
+    these anchors leaves both problems in place, which is indistinguishable
+    from a broken install unless the launcher says so. Idempotent.
+    """
+    bundles = _hbui_bundles(game_dir)
+    if not bundles:
+        warn("No HBUI bundle in this game directory, so the in-game "
+             "Microsoft-account gate could not be patched.")
+        return False
+
+    results = []
+    for js in bundles:
         try:
             data = Path(js).read_text()
         except OSError:
             continue
         orig = data
+        data, gate = _hbui_gate_patch(data)
+        data, link = _hbui_link_patch(data)
+        if data != orig:
+            bak = js + ".bol-orig"
+            if not Path(bak).exists():
+                shutil.copy2(js, bak)
+            Path(js).write_text(data)
+        results.append((Path(js).name, gate, link))
 
-        needle = 'function wB(){return(0,l.useFacetMap)'
-        if needle in data and 'function wB(){return"";return' not in data:
-            data = data.replace(needle, 'function wB(){return"";return', 1)
-
-        # (2) Remove the broken in-game "Sign in" button. The PlayScreen
-        #     not-logged-in warning component (kB) renders a noticeTint with a
-        #     sign-in link; under Wine the MSA facet never flips so it shows
-        #     forever and the button does nothing useful. Make that component
-        #     render null — AFTER its hooks (the useCallback whose body holds the
-        #     stable "_NotLoggedInWarning_OreUI" sign-in source), so React's hook
-        #     order is preserved (unlike a naive early return). Version-tolerant:
-        #     anchored on the immutable signInSource string, minified names free.
-        m = re.search(r'(_NotLoggedInWarning_OreUI`\)\}\),\[[^\]]*\]\);)'
-                      r'(return r\.createElement\(sx,)', data)
-        if m and 'return null;return r.createElement(sx,' not in data:
-            data = data[:m.start()] + m.group(1) + 'return null;' + m.group(2) + data[m.end():]
-
-        if data == orig:
-            continue
-        bak = js + ".bol-orig"
-        if not Path(bak).exists():
-            shutil.copy2(js, bak)
-        Path(js).write_text(data)
-        ok(f"HBUI sign-in gate + button patched in {Path(js).name}")
-        return
+    # The Play screen lives in a single bundle; report on the one that had it.
+    name, gate, link = max(
+        results, key=lambda r: (r[1] != "missing") + (r[2] != "missing"),
+        default=(None, "missing", "missing"))
+    lost = _hbui_lost_labels(gate, link)
+    if lost:
+        warn("This Minecraft build rebundled its UI past "
+             + " and ".join(lost) + ", so " + _HBUI_LOST_CONSEQUENCE)
+        return False
+    ok(f"HBUI sign-in gate + link patched in {name}")
+    return True
 
 
 def ensure_openssl_xcurl_set():

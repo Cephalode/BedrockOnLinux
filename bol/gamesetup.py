@@ -62,7 +62,11 @@ def _do_setup(game_dir=None, mc_edition=None, mc_version=None, proton_tag=None,
         )
     install_gameinput(active_prefix(), gd)
     hide_signin_button(gd)
-    ok("Setup complete — click PLAY, then sign in to Microsoft in-game.")
+    # Not "sign in in-game": that button reaches a sign-in the engine does
+    # not implement, and telling people to use it is how #227/#228 were
+    # filed. The account is linked here, and PLAY carries it into the
+    # prefix for the game to pick up.
+    ok("Setup complete — sign in from the launcher, then click PLAY.")
 
 
 _DIAG_RULES = [

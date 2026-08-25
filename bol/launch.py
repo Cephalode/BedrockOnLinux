@@ -779,7 +779,10 @@ def _launch_once(lock_fds=(), on_started=None):
     # The Servers tab is read from disk at startup, so the servers this
     # launcher ships with have to be in the list before the game opens it.
     seed_default_servers(prefix_idle=True)
-    info("Starting Minecraft … sign in with Microsoft in-game, then "
+    # The account travelled into the prefix a few lines above, so the
+    # game signs itself in; the in-game button reaches a sign-in the
+    # engine does not implement and only ever fails (#227/#228).
+    info("Starting Minecraft … your account is already linked; "
          "join your server from the Servers tab.")
     glog = open(LOGS / "minecraft.log", "w")
     rc = None

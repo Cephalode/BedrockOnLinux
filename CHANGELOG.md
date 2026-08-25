@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **The in-game sign-in was back, and it has never worked** (#227, #228,
+  #229). Two patches keep Minecraft's Play screen usable under Wine. One takes
+  down the *You need a Microsoft account* notice that blocks the Servers and
+  Realms tabs — it is there because the Xbox social layer never finishes
+  starting under Wine, not because the account is missing. The other removes
+  the sign-in link inside that notice, which reaches an interactive sign-in
+  the engine does not implement and can only ever answer *Failed to log in.
+  Error Code: Llama*; the account is linked from the launcher instead. Both
+  were anchored on names Minecraft's interface invents afresh every time it is
+  built. It was rebuilt, the names changed, and both patches quietly stopped
+  matching anything — so setup kept reporting success on an installation where
+  the Play screen still said the account was missing and offered a button that
+  could only fail. They are anchored on the account fields and on the sign-in
+  address now, neither of which a rebuild renames, and a build that moves past
+  even those is reported rather than passed over: setup says so, and `doctor`
+  gained a `sign-in ui` line telling you whether the installed build still
+  carries both.
+
 - **The Minecraft download died on the licence Microsoft issued for it.**
   *The Minecraft download failed: called `Result::unwrap()` on an `Err` value:
   Custom("unknown variant `Trial`, expected one of `Device`, `User`, `Full`,
