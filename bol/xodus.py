@@ -106,6 +106,23 @@ _CACHE_RACE_RETRIES = 3
 # by ten machines -- and Microsoft's own sentence says nothing about where they
 # are given back.
 _DEVICE_LIMIT = re.compile(r"device group is full", re.I)
+# The licence Microsoft issues for the content, and xodus-cli refusing to read
+# it. LicenseInfo/@Type names the kind of entitlement it was granted for, and
+# the deserializer names four of them -- Microsoft also issues "Trial", for an
+# entitlement that is time limited rather than owned outright, and a licence
+# carrying it takes the download down from inside the library:
+#   called `Result::unwrap()` on an `Err` value: Custom("unknown variant
+#     `Trial`, expected one of `Device`, `User`, `Full`, `KeyHolder`")
+# Nothing in xodus reads that field -- the content key travels in the
+# SPLicenseBlock beside it -- so third_party/xodus/patches/0002 keeps a type it
+# cannot name instead of refusing the licence, and 0003 turns whatever else a
+# licence can fail to be into the sentence matched on the second line here
+# rather than a panic. Both are matched: the patched binary is what the
+# launcher downloads only once its rev is published and pinned, and until then
+# this is the one thing that can say what happened.
+_LICENSE_UNREADABLE = re.compile(
+    r"unknown variant `[^`]*`, expected one of[^\n]*`(KeyHolder|Offline)`|"
+    r"the license could not be read", re.I)
 
 # indicatif renders "  12.34 MiB/ 862.00 MiB"; the total bar is the one whose
 # message is the launcher-visible stage rather than a file name.
@@ -581,6 +598,13 @@ def _drop_cache(dest):
             pass
 
 
+_LICENSE_UNREADABLE_MESSAGE = (
+    "Microsoft answered with a Minecraft licence this downloader cannot "
+    "read, and the download cannot go on without the content key that "
+    "licence carries. It is not the account: the licence exists, and the "
+    "same request has been answered with an ordinary licence minutes later. "
+    "Leave it a few minutes and start the download again.")
+
 _DEVICE_LIMIT_MESSAGE = (
     "Microsoft will not license Minecraft to this machine: the account has "
     "reached its limit of ten Microsoft Store download devices. Remove the "
@@ -709,6 +733,11 @@ def _raise_unretryable(text, dest=None, needed=0):
     if _NO_CREDENTIALS.search(text):
         raise NotSignedIn(
             "The Microsoft session for the download expired. Sign in again.")
+    # Every mirror carries the same package, and the licence for it comes from
+    # the licensing service rather than from any of them, so asking the next
+    # one buys nothing but another header download.
+    if _LICENSE_UNREADABLE.search(text):
+        raise XodusError(_LICENSE_UNREADABLE_MESSAGE)
     if dest is not None:
         free = _free_space(dest)
         # xodus-cli measured the room itself, so this one is settled.

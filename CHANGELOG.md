@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **The Minecraft download died on the licence Microsoft issued for it.**
+  *The Minecraft download failed: called `Result::unwrap()` on an `Err` value:
+  Custom("unknown variant `Trial`, expected one of `Device`, `User`, `Full`,
+  `KeyHolder`")* is the downloader refusing the answer to its own licence
+  request. Microsoft describes the kind of entitlement a licence was granted
+  for — owned outright, tied to a device, time limited — and the downloader
+  knew four of those words, so the fifth one ended a download that had already
+  fetched the package and asked for the key to open it. Nothing anywhere reads
+  that word: the content key travels beside it, in the block the download
+  actually needs. It is a licence the account holds, refused over the label on
+  the envelope. The downloader now keeps a description it does not recognise
+  instead of throwing the licence away, and a licence it genuinely cannot read
+  ends the download with a sentence rather than a panic
+  (`third_party/xodus/patches/`, on its way upstream). Until that build is
+  published the launcher recognises the panic, says what happened in words
+  about a licence, and stops asking other mirrors for a package whose licence
+  was never theirs to give.
+
 - **The Minecraft download was losing a race against its own cache** (#217,
   #200, #215). *The Minecraft download failed: ok: Header(Io(Custom { kind:
   UnexpectedEof, error: "cache ended before cached_len" }))* reads like a

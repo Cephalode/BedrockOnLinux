@@ -404,6 +404,41 @@ class InstallErrorTests(unittest.TestCase):
         # Not an ownership failure, which is what "not entitled" looks like.
         self.assertNotIsInstance(raised.exception, xodus.NotOwned)
 
+    def test_a_licence_type_the_downloader_cannot_name_is_explained(self):
+        # Microsoft issued the licence for a "Trial" entitlement, and the
+        # pinned xodus-cli deserializes four types that are not that one, so
+        # it panicked in the middle of the download instead of ever saying
+        # the word licence.
+        ensure, signed, stream, size = self._patched(101, [
+            "thread 'main' panicked at "
+            "crates/xodus/src/licensing/content.rs:76:64:",
+            'called `Result::unwrap()` on an `Err` value: Custom("unknown '
+            'variant `Trial`, expected one of `Device`, `User`, `Full`, '
+            '`KeyHolder`")',
+            "note: run with `RUST_BACKTRACE=1` environment variable",
+        ])
+        with tempfile.TemporaryDirectory() as tmp, \
+                ensure, signed, stream, size:
+            with self.assertRaises(xodus.XodusError) as raised:
+                xodus.install("9NBLGGH2JHXJ", Path(tmp))
+        message = str(raised.exception)
+        self.assertIn("licence", message)
+        self.assertNotIn("unwrap", message)
+        # The account holds a licence -- reading it is what failed -- so this
+        # is not the "you do not own it" answer.
+        self.assertNotIsInstance(raised.exception, xodus.NotOwned)
+
+    def test_a_licence_the_patched_downloader_refuses_is_explained(self):
+        # What the same failure says once the patched binary is what runs:
+        # a printed reason, and exit 0 like every other early return.
+        ensure, signed, stream, size = self._patched(0, [
+            "the license could not be read: unknown variant `Trial`"])
+        with tempfile.TemporaryDirectory() as tmp, \
+                ensure, signed, stream, size:
+            with self.assertRaises(xodus.XodusError) as raised:
+                xodus.install("9NBLGGH2JHXJ", Path(tmp))
+        self.assertIn("licence", str(raised.exception))
+
     def test_other_failures_keep_the_last_line(self):
         ensure, signed, stream, size = self._patched(1, ["", "disk on fire"])
         with tempfile.TemporaryDirectory() as tmp, \
@@ -529,6 +564,25 @@ class InstallCacheTests(unittest.TestCase):
             self.assertEqual(calls, mirrors)
             # The good mirror's cache survives; only the bad one's was dropped.
             self.assertTrue((dest / ".xodus-streaming.msixvc").exists())
+
+    def test_a_licence_failure_does_not_try_the_next_mirror(self):
+        # Every mirror serves the same package, and the licence comes from the
+        # licensing service rather than from any of them.
+        mirrors = ["http://assets1.xboxlive.com/a.msixvc",
+                   "http://assets2.xboxlive.com/a.msixvc"]
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "1.26.42.1"
+            calls, exc = self._install(
+                dest,
+                [lambda d: (101, [
+                    "thread 'main' panicked at content.rs:76:64:",
+                    'called `Result::unwrap()` on an `Err` value: '
+                    'Custom("unknown variant `Trial`, expected one of '
+                    '`Device`, `User`, `Full`, `KeyHolder`")'])],
+                mirrors)
+        self.assertIsInstance(exc, xodus.XodusError)
+        self.assertIn("licence", str(exc))
+        self.assertEqual(calls, mirrors[:1])
 
     def test_an_ownership_failure_does_not_try_the_next_mirror(self):
         mirrors = ["http://assets1.xboxlive.com/a.msixvc",

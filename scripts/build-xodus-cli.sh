@@ -53,8 +53,10 @@ if [ "$PATCH_LEVEL" -gt 0 ]; then
   git -C "$TREE" -c user.email=build@bedrock-on-linux -c user.name=BedrockOnLinux \
     am --keep-non-patch "$PATCHES"/*.patch
   # Each patch carries the test that fails without it, and this is the only
-  # place they ever run: the crate is not vendored into this repository.
-  cargo test --release --manifest-path "$TREE/Cargo.toml" -p msixvc --locked
+  # place they ever run: the crate is not vendored into this repository. Both
+  # crates the patches touch, or a patch lands with its test never run.
+  cargo test --release --manifest-path "$TREE/Cargo.toml" \
+    -p msixvc -p xodus --locked
 fi
 
 echo "== Building xodus-cli"
