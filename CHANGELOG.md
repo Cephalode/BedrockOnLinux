@@ -18,6 +18,32 @@
   back. `bedrock-on-linux play` prints the same warning rather than launching
   in silence.
 
+### Fixed
+
+- **The Microsoft sign-in window no longer dies where the desktop has
+  accessibility running**
+  ([#236](https://github.com/Wyze3306/BedrockOnLinux/issues/236)). Signing in
+  to download Minecraft went blank part-way through — reported on Ubuntu with
+  KDE, and recognised straight away as something other WebKitGTK windows do on
+  Arch and NixOS too — leaving nothing to go on but a `WebKitWebProcess`
+  coredump in the system journal, and a launcher that could only say the
+  sign-in had not completed. That page is drawn by a process of its own, and
+  WebKitGTK publishes it on the accessibility bus; its AT-SPI text interface
+  then maps an attribute run back onto UTF-8 offsets by indexing a table with
+  the end of that run, which the code above it allows to point past the end of
+  the text it belongs to. A single `GetAttributeRun` landing on such a run
+  reads off the end of the array and aborts the process on the spot, taking
+  the sign-in with it. Nobody asks for that: the caller is whichever
+  accessibility client happens to walk the window, and the fault is still
+  present in WebKit's own tree, so there is no version to update to. The
+  launcher now keeps that window off the accessibility bus, the same way it
+  already keeps it off the DMABUF renderer, and for every `xodus-cli` call
+  rather than the sign-in alone. Nothing else about the window changes — it is
+  simply no longer readable by assistive technology, which is a real loss
+  where it is needed: `BOL_WEBVIEW_A11Y=1` asks for the bridge back, a
+  `WEBKIT_A11Y_BUS_ADDRESS` you set yourself still wins, and the game is never
+  started with either.
+
 ## 2.2.4 — 2026-08-25
 
 ### Fixed

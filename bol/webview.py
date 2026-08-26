@@ -25,9 +25,11 @@ Two details make the bundle work anywhere:
   backend, the pixbuf loaders, the GSettings schemas — is redirected with
   environment variables that are set for xodus-cli alone.
 
-Whichever library ends up being used, it is asked to render the sign-in page
-without the DMABUF renderer, which is how that window dies on a good many
-Wayland desktops (issue #186).
+Whichever library ends up being used, it is asked for the two settings that
+keep that window alive on someone else's desktop: no DMABUF renderer, which is
+how it dies on a good many Wayland compositors (issue #186), and no
+accessibility bus, whose text interface aborts the web process outright
+(issue #236).
 """
 # SPDX-License-Identifier: MIT
 
@@ -54,7 +56,7 @@ from .config import (
     XODUS_WEBVIEW_SHA256,
 )
 from .log import BolError, info, ok
-from .util import asset_url, download, gh_releases
+from .util import asset_url, download, env_flag, gh_releases
 
 # The GUI and the game launch both ask several times per run whether the host
 # can load the binary; the answer cannot change while the launcher lives.
@@ -85,6 +87,27 @@ _PACKAGES = (("apt-get", "libwebkit2gtk-4.1-0"), ("dnf", "webkit2gtk4.1"),
 # one login page costs nothing anybody can measure, so it is not worth making
 # conditional on a compositor or a driver we would have to guess at.
 _RENDERER = "WEBKIT_DISABLE_DMABUF_RENDERER"
+
+# WebKitGTK also publishes the page on the accessibility bus, and its AT-SPI
+# text interface is not safe to call. GetAttributes and GetAttributeRun map the
+# attribute run they found back onto UTF-8 offsets by indexing an offset table
+# with the end of that run -- which the code above them lets reach past the end
+# of the object's own text. Indexing a WTF::Vector out of range aborts on the
+# spot, so it is the *web process* that dies: the sign-in page goes blank in
+# the middle of the login and the launcher is left with "sign-in did not
+# complete", the reason for it only in a coredump (issue #236; still WebKitGTK
+# 2.52's AccessibilityObjectTextAtspi.cpp). One accessibility client walking
+# the window is enough to reach that, and a desktop running one is not
+# something the user chose or can see.
+#
+# Set and empty, this puts WebKit's whole bridge out of reach: the page is
+# never registered on the a11y bus, so nothing can call into that code. The
+# window renders and behaves as before; it is simply not published to
+# assistive technology. That is a real loss for anyone who needs a screen
+# reader here, so it is one variable to take back -- and an address set by the
+# session already wins, the same way the renderer's does.
+_A11Y = "WEBKIT_A11Y_BUS_ADDRESS"
+_A11Y_OPT_IN = "BOL_WEBVIEW_A11Y"
 
 
 def host_package_name():
@@ -414,6 +437,22 @@ def portable_renderer(env):
     return previous
 
 
+def quiet_accessibility(env):
+    """Keep the sign-in page off the accessibility bus.
+
+    Returns what it replaced, in restore_env()'s shape, so the game can be
+    handed back the environment it would have had. Whether the variable is
+    already there is what decides, not whether it says anything: empty is the
+    value that means "no bridge", so a session that set it has already made
+    this choice. BOL_WEBVIEW_A11Y=1 is how someone who needs a screen reader on
+    that window asks for the bridge back, and takes the abort with it.
+    """
+    previous = {_A11Y: env.get(_A11Y)}
+    if _A11Y not in env and not env_flag(os.environ.get(_A11Y_OPT_IN)):
+        env[_A11Y] = ""
+    return previous
+
+
 def restore_env(env, previous):
     """Undo runtime_env() on ``env`` (a mapping, usually os.environ)."""
     for name, value in (previous or {}).items():
@@ -436,16 +475,17 @@ def missing_message(detail=None):
 def apply(binary, env, force=False):
     """Make ``binary`` usable from ``env``; return what that replaced.
 
-    The renderer setting goes in either way -- the sign-in window is just as
-    fragile against the host's WebKitGTK as against the bundled one. The
-    library itself is only added where the host has none, which is the
-    exception; everywhere it is packaged, that half is a no-op.
+    The renderer and accessibility settings go in either way -- the sign-in
+    window is just as fragile against the host's WebKitGTK as against the
+    bundled one. The library itself is only added where the host has none,
+    which is the exception; everywhere it is packaged, that half is a no-op.
 
     The return value is always a restore map, in restore_env()'s shape. A
     failure leaves ``env`` exactly as it was found, and raises BolError with
     the host-package alternative spelled out.
     """
     previous = portable_renderer(env)
+    previous.update(quiet_accessibility(env))
     if not force and _host_can_run(binary):
         return previous
     try:

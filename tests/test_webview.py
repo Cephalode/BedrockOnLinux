@@ -302,6 +302,37 @@ class EnvironmentTests(unittest.TestCase):
                          {webview._RENDERER: "0"})
         self.assertEqual(env, {webview._RENDERER: "0"})
 
+    def test_the_accessibility_bridge_is_turned_off(self):
+        """Issue #236: WebKit's AT-SPI text interface aborts the web process.
+
+        Nothing about the window changes -- it just stops being something an
+        accessibility client can walk into that code through.
+        """
+        env = {"PATH": "/usr/bin"}
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(webview._A11Y_OPT_IN, None)
+            previous = webview.quiet_accessibility(env)
+        self.assertEqual(env[webview._A11Y], "")
+
+        webview.restore_env(env, previous)
+        self.assertEqual(env, {"PATH": "/usr/bin"})
+
+    def test_an_accessibility_bus_the_session_set_wins(self):
+        """Set is what counts, not set to something: empty already means off."""
+        for address in ("unix:path=/run/user/1000/at-spi/bus_0", ""):
+            env = {webview._A11Y: address}
+            self.assertEqual(webview.quiet_accessibility(env),
+                             {webview._A11Y: address})
+            self.assertEqual(env, {webview._A11Y: address})
+
+    def test_the_accessibility_bridge_can_be_asked_back(self):
+        """BOL_WEBVIEW_A11Y=1, for whoever needs that page read out to them."""
+        env = {"PATH": "/usr/bin"}
+        with mock.patch.dict(os.environ, {webview._A11Y_OPT_IN: "1"}):
+            self.assertEqual(webview.quiet_accessibility(env),
+                             {webview._A11Y: None})
+        self.assertEqual(env, {"PATH": "/usr/bin"})
+
     def test_every_xodus_command_gets_the_renderer_setting(self):
         """Not the sign-in alone: the download draws the same window."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,9 +344,14 @@ class EnvironmentTests(unittest.TestCase):
                     mock.patch.object(xodus, "home",
                                       return_value=Path(tmp) / "xodus-home"):
                 os.environ.pop(webview._RENDERER, None)
-                self.assertEqual(xodus._env(binary)[webview._RENDERER], "1")
+                os.environ.pop(webview._A11Y, None)
+                os.environ.pop(webview._A11Y_OPT_IN, None)
+                environment = xodus._env(binary)
+                self.assertEqual(environment[webview._RENDERER], "1")
+                self.assertEqual(environment[webview._A11Y], "")
             # The launcher's own environment is never touched by that.
             self.assertNotIn(webview._RENDERER, os.environ)
+            self.assertNotIn(webview._A11Y, os.environ)
 
     def test_a_host_that_can_run_the_binary_keeps_its_own_library(self):
         """Nothing of the bundle is added -- but the renderer setting is."""
@@ -325,9 +361,13 @@ class EnvironmentTests(unittest.TestCase):
             binary.chmod(0o755)
             env = {"PATH": "/usr/bin"}
 
-            previous = webview.apply(binary, env)
-            self.assertEqual(previous, {webview._RENDERER: None})
-            self.assertEqual(env, {"PATH": "/usr/bin", webview._RENDERER: "1"})
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(webview._A11Y_OPT_IN, None)
+                previous = webview.apply(binary, env)
+            self.assertEqual(previous, {webview._RENDERER: None,
+                                        webview._A11Y: None})
+            self.assertEqual(env, {"PATH": "/usr/bin", webview._RENDERER: "1",
+                                   webview._A11Y: ""})
             webview.restore_env(env, previous)
             self.assertEqual(env, {"PATH": "/usr/bin"})
 
@@ -452,8 +492,12 @@ class LauncherIntegrationTests(unittest.TestCase):
             self.assertEqual(_restore_map(wrapper),
                              {"LD_LIBRARY_PATH": "/game/lib", "HOME": None})
 
-    def test_a_host_with_webkitgtk_restores_only_the_renderer(self):
-        """No bundle to take back out, but the game still loses #186's fix."""
+    def test_a_host_with_webkitgtk_restores_only_the_webview_settings(self):
+        """No bundle to take back out, but the game still loses #186 and #236.
+
+        Neither belongs to Minecraft: it draws nothing through WebKitGTK, and
+        its own accessibility is Wine's business.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             binary = base / "xodus" / "xodus-cli"
@@ -474,7 +518,8 @@ class LauncherIntegrationTests(unittest.TestCase):
             self.assertEqual(env[webview._RENDERER], "1")
             wrapper = (base / "run" / "xodus-launch-wrapper.py").read_text()
             self.assertEqual(_restore_map(wrapper),
-                             {webview._RENDERER: None, "HOME": None})
+                             {webview._RENDERER: None, webview._A11Y: None,
+                              "HOME": None})
 
     def test_the_game_launch_hands_over_its_environment(self):
         """env= is what carries both the bundle and #186 into xodus-cli run.
