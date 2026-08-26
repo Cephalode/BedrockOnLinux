@@ -1,7 +1,7 @@
 From d7609308729a5763923bd798f6fbcb0fe30feff4 Mon Sep 17 00:00:00 2001
 From: Wyze3306 <contact.wyze3306@gmail.com>
 Date: Sun, 23 Aug 2026 23:52:34 +0200
-Subject: [PATCH 3/3] licensing: report a license that cannot be read
+Subject: [PATCH 3/4] licensing: report a license that cannot be read
 
 Turning a licenses response into a License is three steps that can each meet
 something other than what was expected -- take the first key, base64-decode
