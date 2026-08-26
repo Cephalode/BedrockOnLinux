@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **PLAY says so when nothing is signed in for online play** (#240). The
+  launcher asks for two Microsoft sign-ins, and only one of them ever asks for
+  itself: the account that downloads Minecraft is offered at PLAY, the moment
+  it is needed. The account that plays online never was, so its absence
+  surfaced only inside the game, as Realms, servers and friends quietly
+  missing — with nothing in the launcher having mentioned a sign-in. Pressing
+  PLAY without it now warns first, says what offline mode costs, and offers
+  the sign-in on the spot; taking it resumes the launch on its own rather than
+  asking you to press PLAY again. Offline is still a legitimate way to play,
+  so it is a warning and not a refusal: *Play offline* carries straight on,
+  the warning can be turned off from itself, and Settings ▸ Accounts puts it
+  back. `bedrock-on-linux play` prints the same warning rather than launching
+  in silence.
+
 ## 2.2.4 — 2026-08-25
 
 ### Fixed

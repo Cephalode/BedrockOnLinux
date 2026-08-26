@@ -10,6 +10,8 @@ menu that asked it.
 # SPDX-License-Identifier: MIT
 
 import unittest
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest import mock
 
 from bol import gui, xodus
@@ -257,6 +259,181 @@ class DownloadSignInIsOfferedWhereItIsMissedTests(unittest.TestCase):
                     mock.patch.object(window, "_offer_store_account_link") as offer:
                 window._offer_download_sign_in()
             self.assertFalse(offer.called)
+
+
+class PlayingOfflineIsWarnedAboutTests(unittest.TestCase):
+    """PLAY with no account for online play (#240).
+
+    The sign-in players remember doing is the download's -- PLAY asks for
+    that one on its own when it is missing. The online one never asks, so its
+    absence used to surface only inside the game, as Realms, servers and
+    friends quietly missing, with nothing in the launcher having said a word.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        qt_app()
+
+    @staticmethod
+    @contextmanager
+    def _armed(window, answer="play"):
+        """PLAY with a version picked, the launch stubbed out, and the
+        warning answering without a modal anyone has to click."""
+        stubs = {
+            "selected_version": mock.Mock(
+                return_value={"edition": {"id": "release"}, "tag": "1.0"}),
+            "_start_worker": mock.Mock(return_value=True),
+            "_offer_online_sign_in": mock.Mock(return_value=answer),
+            "acct_click": mock.Mock(),
+        }
+        with mock.patch.multiple(window, **stubs):
+            yield SimpleNamespace(**stubs)
+
+    def test_play_warns_before_starting_the_game(self):
+        with headless_window() as window, self._armed(window) as patched:
+            window.do_play()
+            self.assertTrue(patched._offer_online_sign_in.called)
+
+    def test_playing_offline_still_plays(self):
+        with headless_window() as window, self._armed(window, "play") as patched:
+            window.do_play()
+            self.assertTrue(patched._start_worker.called)
+            self.assertTrue(window.ui_state["launch_active"])
+
+    def test_choosing_to_sign_in_holds_the_launch_back(self):
+        with headless_window() as window, self._armed(window, "signin") as patched:
+            window.do_play()
+            self.assertFalse(patched._start_worker.called)
+            self.assertTrue(patched.acct_click.called)
+            # ...and PLAY resumes on its own, rather than making them press
+            # it again once the sign-in lands.
+            self.assertTrue(window.ui_state["play_after_signin"])
+            self.assertFalse(window.ui_state["busy"])
+
+    def test_a_signed_in_player_is_not_warned(self):
+        with headless_window() as window, self._armed(window) as patched:
+            with mock.patch.object(gui, "msa_signed_in", return_value=True):
+                window.do_play()
+            self.assertFalse(patched._offer_online_sign_in.called)
+            self.assertTrue(patched._start_worker.called)
+
+    def test_the_warning_can_be_turned_off(self):
+        with headless_window(warn_offline_play=False) as window, \
+                self._armed(window) as patched:
+            window.do_play()
+            self.assertFalse(patched._offer_online_sign_in.called)
+            self.assertTrue(patched._start_worker.called)
+
+    def test_a_sign_in_already_on_screen_is_not_warned_about(self):
+        # Warning about the sign-in the player is in the middle of doing
+        # helps nobody, and the device code is already the thing to act on.
+        with headless_window() as window, self._armed(window) as patched:
+            window._refresh_account_row("auth")
+            window.do_play()
+            self.assertFalse(patched._offer_online_sign_in.called)
+            self.assertTrue(patched._start_worker.called)
+
+    def test_signing_in_resumes_the_play_that_asked_for_it(self):
+        with headless_window() as window:
+            window.ui_state["play_after_signin"] = True
+            with mock.patch.object(window, "_warm_xbox_preauth"), \
+                    mock.patch.object(window, "_offer_download_sign_in",
+                                      return_value=False), \
+                    mock.patch.object(window, "do_play") as play:
+                window._on_online()
+            self.assertTrue(play.called)
+            self.assertNotIn("play_after_signin", window.ui_state)
+
+    def test_the_download_sign_in_takes_the_resume_over(self):
+        # Both accounts were missing: launching while the download's browser
+        # sign-in is still open would start the game out from under it.
+        with headless_window() as window:
+            window.ui_state["play_after_signin"] = True
+            with mock.patch.object(window, "_warm_xbox_preauth"), \
+                    mock.patch.object(window, "_offer_store_account_link",
+                                      return_value=True), \
+                    mock.patch.object(window, "_link_store_account") as link, \
+                    mock.patch.object(window, "do_play") as play:
+                window._on_online()
+            self.assertFalse(play.called)
+            self.assertEqual(link.call_args.kwargs["then"], play)
+
+    def test_signing_in_without_a_pending_play_starts_nothing(self):
+        with headless_window() as window:
+            with mock.patch.object(window, "_warm_xbox_preauth"), \
+                    mock.patch.object(window, "_offer_download_sign_in",
+                                      return_value=False), \
+                    mock.patch.object(window, "do_play") as play:
+                window._on_online()
+            self.assertFalse(play.called)
+
+    def test_cancelling_the_sign_in_withdraws_the_pending_play(self):
+        with headless_window() as window:
+            window._refresh_account_row("auth")
+            window.ui_state["play_after_signin"] = True
+            window.acct_click()          # arms the confirmation
+            window.acct_click()          # confirms the cancel
+            self.assertNotIn("play_after_signin", window.ui_state)
+
+    def test_the_warning_says_what_offline_costs(self):
+        for missing in ("Realms", "servers", "friends"):
+            self.assertIn(missing, gui.OFFLINE_PLAY_EXPLAINER)
+
+    def _dialog(self, window, click=None):
+        """The real warning, answered by picking one of its own buttons
+        instead of running a modal no one is there to click."""
+        seen = {}
+
+        def answer(box):
+            seen["buttons"] = [b.text() for b in box.buttons()]
+            seen["checkbox"] = box.checkBox()
+            chosen = next((b for b in box.buttons() if b.text() == click), None)
+            if chosen is not None:
+                chosen.click()
+            return 0
+
+        with mock.patch.object(gui.QMessageBox, "exec", answer):
+            seen["choice"] = window._offer_online_sign_in()
+        return seen
+
+    def test_the_warning_offers_both_ways_out(self):
+        with headless_window() as window:
+            seen = self._dialog(window)
+            self.assertIn("Play offline", seen["buttons"])
+            self.assertIn("Sign in", seen["buttons"])
+
+    def test_the_warning_can_be_silenced_from_itself(self):
+        with headless_window() as window:
+            with mock.patch.object(window, "_save_setting") as saved:
+                def answer(box):
+                    box.checkBox().setChecked(True)
+                    return 0
+                with mock.patch.object(gui.QMessageBox, "exec", answer):
+                    window._offer_online_sign_in()
+            saved.assert_called_once_with("warn_offline_play", False)
+
+    def test_dismissing_the_warning_plays_offline(self):
+        # A dialog closed by the window manager clicks nothing. Treating that
+        # as "Sign in" would hijack PLAY into a sign-in nobody asked for.
+        with headless_window() as window:
+            self.assertEqual(self._dialog(window)["choice"], "play")
+
+    def test_each_button_answers_as_itself(self):
+        with headless_window() as window:
+            self.assertEqual(self._dialog(window, "Sign in")["choice"], "signin")
+            self.assertEqual(self._dialog(window, "Play offline")["choice"],
+                             "play")
+
+    def test_settings_can_put_the_warning_back(self):
+        # "Don't warn me again" is only fair if there is somewhere to undo it.
+        with headless_window(warn_offline_play=False) as window:
+            row = next(r for r in window._switches
+                       if any("offline" in c.text().lower()
+                              for c in r.findChildren(gui.QLabel)))
+            self.assertFalse(row.switch.isChecked())
+            with mock.patch.object(window, "_save_setting") as saved:
+                row.switch.click()
+            saved.assert_called_once_with("warn_offline_play", True)
 
 
 class XboxPreauthWarmUpTests(unittest.TestCase):

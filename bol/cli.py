@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 
-from .auth import NativeAuth
+from .auth import NativeAuth, msa_signed_in
 from .config import APP, PRETTY, VERSION
 from .content import cmd_import
 from .doctor import doctor
@@ -172,6 +172,14 @@ def main():
             do_setup(mc_edition=mc, mc_version=a.version, force=a.force)
             ok(f"Done. Run:  {APP} play")
         elif a.cmd == "play":
+            # Offline is a real way to play, so this warns and carries on --
+            # but it says so here rather than letting Realms, servers and
+            # friends come up missing in-game with nothing having mentioned
+            # a sign-in (#240).
+            if not msa_signed_in():
+                warn("Not signed in for online play: no Realms, no servers, "
+                     "no friends and no Marketplace.")
+                info(f"Sign in with:  {APP} login")
             launch()
         elif a.cmd == "shortcut":
             require_shortcuts_supported()

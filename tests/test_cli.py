@@ -43,6 +43,34 @@ class CliTests(unittest.TestCase):
         setup.assert_called_once_with(
             mc_edition=None, mc_version=None, force=True)
 
+    def test_play_says_when_nothing_is_signed_in_for_online_play(self):
+        # The launcher window warns before starting the game (#240); a
+        # terminal that just launches leaves the same absence to be found
+        # in-game, as Realms and servers quietly missing.
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "play"]), \
+                mock.patch.object(cli, "msa_signed_in", return_value=False), \
+                mock.patch.object(cli, "launch") as launch, \
+                contextlib.redirect_stdout(output):
+            cli.main()
+
+        # A warning, not a refusal: offline is a real way to play.
+        self.assertTrue(launch.called)
+        printed = output.getvalue()
+        self.assertIn("Not signed in for online play", printed)
+        self.assertIn("login", printed)
+
+    def test_play_says_nothing_when_the_account_is_there(self):
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["bedrock-on-linux", "play"]), \
+                mock.patch.object(cli, "msa_signed_in", return_value=True), \
+                mock.patch.object(cli, "launch") as launch, \
+                contextlib.redirect_stdout(output):
+            cli.main()
+
+        self.assertTrue(launch.called)
+        self.assertNotIn("Not signed in", output.getvalue())
+
     def test_profile_create_prints_profile_shortcut_and_command(self):
         profile = Path("/tmp/bol-profiles/family")
         shortcut = Path("/tmp/applications/bol-family.desktop")

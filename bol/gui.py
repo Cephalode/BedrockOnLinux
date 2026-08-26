@@ -22,7 +22,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame,
+    QAbstractButton, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit,
@@ -452,6 +452,20 @@ class Theme:
             border: none;
         }}
         QMessageBox {{ background: {self.card}; }}
+        /* Qt draws a message box's checkbox with the platform style, which on
+           a dark palette comes out as an unlit square nobody can see they are
+           allowed to tick. */
+        QMessageBox QCheckBox {{ color: {self.sub}; }}
+        QMessageBox QCheckBox::indicator {{
+            width: 14px; height: 14px;
+            border: 1px solid {self.border};
+            border-radius: 4px;
+            background: {self.card2};
+        }}
+        QMessageBox QCheckBox::indicator:checked {{
+            background: {self.accent};
+            border-color: {self.accent};
+        }}
         #ActivityLog QTextEdit {{
             background: {self.console_bg};
             color: {self.console_fg};
@@ -806,6 +820,14 @@ STORE_LINK_EXPLAINER = (
     "device-bound session the in-game sign-in cannot stand in for. So the "
     "launcher asks twice, once for each job. Use the same Microsoft account "
     "for both."
+)
+
+OFFLINE_PLAY_EXPLAINER = (
+    "Minecraft will start, but in offline mode: no Realms, no servers, no "
+    "friends and no Marketplace. Signing in for online play is a separate "
+    "step from the sign-in that downloaded the game — the launcher never "
+    "does it on its own, because playing offline is a legitimate thing to "
+    "want."
 )
 
 
@@ -1756,6 +1778,7 @@ class MainWindow(QMainWindow):
         elif mode == "cancel":
             if self._acct_confirm:
                 self.na.stop()
+                self.ui_state.pop("play_after_signin", None)
                 self._acct_confirm = False
                 self._refresh_account_row("in" if msa_signed_in() else "out")
                 if getattr(self, "_auth_dialog", None) and _alive(self._auth_dialog):
@@ -1857,21 +1880,72 @@ class MainWindow(QMainWindow):
         box.exec()
         return box.clickedButton() is not no
 
-    def _offer_download_sign_in(self):
+    def _offer_download_sign_in(self, then=None):
         """Chain the download's sign-in onto the one just completed.
 
         Two sign-ins is the shape of the system rather than a choice, and
         asking for the second here keeps them together, while the player is
-        still in the middle of signing in.
+        still in the middle of signing in. Returns True when a sign-in was
+        started, so a caller waiting to do something afterwards knows whether
+        to wait for ``then`` or to carry on itself.
         """
         from . import xodus
         if self.ui_state.get("store_login_active") or xodus.signed_in():
-            return
+            return False
         if self._offer_store_account_link(
                 "You are signed in for playing online. Minecraft itself is "
                 "downloaded with a second, separate sign-in.",
                 title="One more sign-in"):
-            self._link_store_account()
+            self._link_store_account(then=then)
+            return True
+        return False
+
+    def _offer_online_sign_in(self):
+        """PLAY was pressed with no account for online play.
+
+        Nothing has failed -- offline is a real way to play -- so this warns
+        rather than blocks. It exists because the sign-in people remember
+        doing is the download's, which happens on its own at PLAY; the online
+        one never does, and its absence used to show up only inside the game,
+        as Realms and servers quietly missing (#240).
+
+        Returns "signin" or "play".
+        """
+        box = self._box(QMessageBox.Warning, "Not signed in for online play",
+                        OFFLINE_PLAY_EXPLAINER)
+        again = QCheckBox("Don't warn me again")
+        box.setCheckBox(again)
+        # RejectRole so Escape lands here too: dismissing the warning leaves
+        # the launcher doing what it did before the warning existed.
+        box.addButton("Play offline", QMessageBox.RejectRole)
+        sign = box.addButton("Sign in", QMessageBox.AcceptRole)
+        box.setDefaultButton(sign)
+        box.exec()
+        if again.isChecked():
+            self._save_setting("warn_offline_play", False)
+        # Anything other than the explicit "Sign in" -- including a dismissal
+        # with no button at all -- leaves PLAY doing what it has always done.
+        return "signin" if box.clickedButton() is sign else "play"
+
+    def _online_sign_in_settled(self):
+        """Whether PLAY may go ahead now.
+
+        False means the warning sent the player to the sign-in instead, and
+        PLAY resumes on its own once that finishes.
+        """
+        if msa_signed_in() or not self.settings.get("warn_offline_play", True):
+            return True
+        if getattr(self, "_acct_mode", "in") in ("loading", "cancel"):
+            # A device code is already in flight or on screen; warning about
+            # the sign-in the player is in the middle of doing helps nobody.
+            return True
+        if self._offer_online_sign_in() == "play":
+            return True
+        self.ui_state["play_after_signin"] = True
+        if _alive(getattr(self, "accounts_menu", None)):
+            self.accounts_menu.close()
+        self.acct_click()
+        return False
 
     def _on_auth(self, url, code):
         # Reached via AuthBridge.auth, already queued onto the UI thread.
@@ -1884,13 +1958,20 @@ class MainWindow(QMainWindow):
         # Reached via AuthBridge.online, already queued onto the UI thread.
         if not _alive(self):
             return
+        # Read before closing the dialog below: closing it runs the same
+        # teardown a cancel does, which withdraws a pending PLAY.
+        resume = bool(self.ui_state.pop("play_after_signin", False))
         self._refresh_account_row("in")
         if getattr(self, "_auth_dialog", None) and _alive(self._auth_dialog):
             self._auth_dialog.close()
         self._warm_xbox_preauth()
         # Ask for the second sign-in while the player is still in the middle
         # of signing in, rather than letting them find out at PLAY.
-        self._offer_download_sign_in()
+        started = self._offer_download_sign_in(then=self.do_play if resume else None)
+        # PLAY was what asked for this sign-in, so finish what it started --
+        # unless the download's sign-in is now running, which will do it.
+        if resume and not started:
+            self.do_play()
 
     def _on_refreshed(self):
         # Reached via AuthBridge.refreshed, emitted from the raw worker
@@ -1950,6 +2031,7 @@ class MainWindow(QMainWindow):
 
         def on_close():
             self.na.stop()
+            self.ui_state.pop("play_after_signin", None)
             self._refresh_account_row("in" if msa_signed_in() else "out")
             dlg.close()
         dlg.finished.connect(lambda _r: on_close())
@@ -2023,6 +2105,8 @@ class MainWindow(QMainWindow):
         ver = self.selected_version()
         if ver is None:
             self.warn_box("No version selected", "Pick a Minecraft version first.")
+            return
+        if not self._online_sign_in_settled():
             return
         self._set_busy(True)
         self.set_status("Preparing…")
@@ -2256,6 +2340,15 @@ class MainWindow(QMainWindow):
         store_row.addWidget(self.store_btn)
         accounts.addLayout(store_row)
         self._refresh_store_row()
+
+        offline_row = self._switch("Warn before playing offline",
+                                 self.settings.get("warn_offline_play", True),
+                                 "PLAY says so first when nothing is signed in "
+                                 "for online play, instead of leaving Realms, "
+                                 "servers and friends to come up missing "
+                                 "in-game.")
+        offline_row.toggled.connect(lambda on: self._save_setting("warn_offline_play", on))
+        accounts.addWidget(offline_row)
 
         v.addStretch(1)
         return w

@@ -424,6 +424,32 @@ class PopupTests(RingTestCase):
         self.assertEqual(len(seen["items"]), 2)
 
 
+    def test_the_offline_warning_is_answerable_with_a_pad(self):
+        """PLAY's offline warning stands between a couch player and the game
+        (#240). Game Mode has no mouse in reach, so the ring has to reach both
+        of its buttons -- and B has to answer it, or the warning is a wall."""
+        window = self.window()
+        seen = {}
+
+        def inspect():
+            self.app.processEvents()
+            items, _rects = window.nav._items()
+            seen["labels"] = sorted(w.text() for w in items
+                                    if isinstance(w, QPushButton))
+            window.nav.dispatch("back")
+
+        QTimer.singleShot(0, inspect)
+        QTimer.singleShot(2000, lambda: QApplication.activeModalWidget()
+                          and QApplication.activeModalWidget().reject())
+        choice = window._offer_online_sign_in()
+
+        self.assertEqual(seen["labels"], ["Play offline", "Sign in"])
+        # B is the way out of every other dialog in the launcher, so it has to
+        # mean the harmless answer here: play, rather than a sign-in nobody
+        # asked for.
+        self.assertEqual(choice, "play")
+
+
 class InputGateTests(RingTestCase):
     def test_input_is_ignored_while_the_game_is_running(self):
         window = self.window()
