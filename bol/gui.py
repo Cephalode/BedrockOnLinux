@@ -31,13 +31,13 @@ from PySide6.QtWidgets import (
 
 from .auth import NativeAuth, msa_logout, msa_signed_in, msa_gamertag
 from .config import (
-    LOGS, PRETTY, VERSION, get_install_location, clear_install_location,
+    GAMES, LOGS, PRETTY, VERSION, get_install_location, clear_install_location,
     default_install_location, is_relocation_allowed,
 )
 from .relocation import migrate_data, paths_overlap, DIRS_TO_MOVE, FILES_TO_MOVE
 from .content import game_content_dir, import_content
 from .doctor import acknowledge_gpu_crash, gpu_crash_acknowledgement_status
-from .games import list_editions, list_versions
+from .games import installed_builds, list_editions, list_versions, remove_build
 from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
@@ -1503,18 +1503,26 @@ class MainWindow(QMainWindow):
         if self.settings.get("ui_is_beta") != is_beta:
             self.settings["ui_is_beta"] = is_beta
             changed = True
-        cur_mc_ver = lab.split("  ")[0]
+        # What the picker shows is a shortened label -- "26.44" for
+        # 1.26.44.3 -- and what gets saved has to be the build itself. Saving
+        # the label named no build anything could find: setup answered "no
+        # longer listed" and installed the newest instead, so a launcher
+        # restarted after playing an older build quietly downloaded another
+        # 2.5 GB of game nobody had asked for (#214).
+        display = lab.split("  ")[0]
+        picked = self.selected_version()
+        cur_mc_ver = picked["tag"] if picked else display
         if self.settings.get("mc_version") != cur_mc_ver:
             self.settings["mc_version"] = cur_mc_ver
             changed = True
         if changed:
             save_settings(self.settings)
-        self.selected_chip.setText(f"  {cur_mc_ver}{'  ·  BETA' if is_beta else ''}  ")
+        self.selected_chip.setText(f"  {display}{'  ·  BETA' if is_beta else ''}  ")
         (self.preview_btn if is_beta else self.stable_btn).setChecked(True)
         self.theme.beta = is_beta
         self.apply_theme()
         cur_kill = self.ui_state.get("busy")
-        self.play_btn.setToolTip(f"{'Kill' if cur_kill else 'Play'} {cur_mc_ver}")
+        self.play_btn.setToolTip(f"{'Kill' if cur_kill else 'Play'} {display}")
 
     def selected_version(self):
         lab = self.ver_label.text()
@@ -1572,11 +1580,33 @@ class MainWindow(QMainWindow):
         labels = [format_display_version(v["tag"], v["beta"]) + ("  ·  BETA" if v["beta"] else "")
                   for v in versions]
         self.ui_state["labels"] = labels
-        cur = load_settings().get("mc_version") or ""
-        pick = next((x for x in labels if x.split("  ")[0] == cur
-                     or x.split("  ")[0].startswith(cur + ".")), labels[0])
-        self.ver_label.setText(pick)
+        self.ver_label.setText(
+            labels[self._saved_version_index(versions)])
         self._update_selected_chip()
+
+    @staticmethod
+    def _saved_version_index(versions):
+        """Which build the saved selection means; the newest when none does.
+
+        Matched on the build tag, because that is what a selection is. Two
+        older shapes still turn up in a settings file written by an earlier
+        release and both keep working: the shortened label the chip used to
+        save ("26.44"), and a partial version. Falling through to the newest
+        build is the part that has to be rare -- it is a silent 2.5 GB
+        download the next time PLAY is pressed.
+        """
+        wanted = (load_settings().get("mc_version") or "").strip()
+        if not wanted:
+            return 0
+        for index, version in enumerate(versions):
+            if version["tag"] == wanted:
+                return index
+        for index, version in enumerate(versions):
+            if (version["tag"].startswith(wanted + ".")
+                    or format_display_version(version["tag"],
+                                              version["beta"]) == wanted):
+                return index
+        return 0
 
     # ------------------------------------------------------------ profile menu
     def _wire_profile_menu(self):
@@ -1686,7 +1716,12 @@ class MainWindow(QMainWindow):
     def _store_state(self):
         """The same, for the download account."""
         if self.ui_state.get("store_login_active"):
-            return self.theme.gold, "Signing in…", "Signing in…", None
+            # A sign-in window that stops making progress is the whole of
+            # issue #214, and a row that can only say "Signing in…" leaves
+            # nothing to do about it but restart the launcher.
+            return (self.theme.gold, "Waiting for the sign-in window…",
+                    "Cancel?" if self._store_confirm else "Cancel",
+                    self.theme.red if self._store_confirm else None)
         try:
             from . import xodus
             linked = xodus.signed_in()
@@ -1798,6 +1833,12 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------- download account
     def store_click(self):
         if self.ui_state.get("store_login_active"):
+            if self._store_confirm:
+                self._store_confirm = False
+                self._cancel_store_login()
+            else:
+                self._store_confirm = True
+                self._refresh_accounts()
             return
         from . import xodus
         if not xodus.signed_in():
@@ -1819,6 +1860,13 @@ class MainWindow(QMainWindow):
             "Microsoft Store account", e))
         self._start_worker("store-account", w)
 
+    # How long a sign-in may sit there before the launcher says something
+    # about it. Microsoft's page is normally through in well under this; past
+    # it, the window of issue #214 looks exactly like a window someone simply
+    # has not finished typing into, and only one of the two has anything the
+    # launcher can suggest.
+    _STORE_LOGIN_HINT_MS = 120_000
+
     def _link_store_account(self, then=None):
         """Run the download's Microsoft sign-in from wherever it was asked for.
 
@@ -1829,29 +1877,51 @@ class MainWindow(QMainWindow):
         press it again.
         """
         if self.ui_state.get("store_login_active"):
+            # Returning quietly here is how a sign-in that never finished
+            # turned every later attempt into a button that does nothing
+            # (#214): the window is already open, somewhere, and saying so is
+            # the only thing that leads anywhere.
+            self._store_login_already_open()
             return
         from . import xodus
         self.ui_state["store_login_active"] = True
         self._refresh_store_row()
         self.set_status("Finish the Microsoft sign-in in the window that opens…")
         self._show_bar_busy()
+        # Only the hint armed by *this* sign-in may fire: a second one
+        # started later must not be talked about by the first one's timer.
+        token = self.ui_state["store_login_token"] = (
+            self.ui_state.get("store_login_token", 0) + 1)
+        QTimer.singleShot(self._STORE_LOGIN_HINT_MS,
+                          lambda: self._store_login_slow(token))
 
-        def finished(_result):
+        def settled():
             self.ui_state["store_login_active"] = False
+            self._store_confirm = False
             if not _alive(self):
-                return
+                return False
             self.end_progress()
             self._refresh_store_row()
+            return True
+
+        def finished(_result):
+            if not settled():
+                return
             self.set_status("Microsoft account linked.", self.theme.green)
             if then:
                 then()
 
         def failed(message):
-            self.ui_state["store_login_active"] = False
-            if not _alive(self):
+            from .xodus import LOGIN_CANCELLED_MESSAGE
+            cancelled = message == LOGIN_CANCELLED_MESSAGE
+            if not settled():
                 return
-            self.end_progress()
-            self._refresh_store_row()
+            if cancelled:
+                # Asked for, from the row that says "Cancel": reporting it in
+                # a box the player has to dismiss would be the launcher
+                # complaining about being obeyed.
+                self.set_status("Microsoft sign-in cancelled.", self.theme.gold)
+                return
             self.set_status("Microsoft account not linked.", self.theme.red)
             self.error_box("Microsoft account", message[:2000])
 
@@ -1861,6 +1931,60 @@ class MainWindow(QMainWindow):
         if not self._start_worker("store-account", w):
             self.ui_state["store_login_active"] = False
             self.end_progress()
+
+    def _store_login_already_open(self):
+        """Say where the sign-in that is already running went."""
+        box = self._box(QMessageBox.Warning, "Sign-in already open",
+                        "A Microsoft sign-in window is already open for the "
+                        "Minecraft download.\n\nFinish it, or close it — if "
+                        "it is stuck on a page that never stops loading, "
+                        "cancel it here and start it again.")
+        cancel = box.addButton("Cancel the sign-in", QMessageBox.DestructiveRole)
+        box.addButton("Keep waiting", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is cancel:
+            self._cancel_store_login()
+
+    def _store_login_slow(self, token):
+        """Nothing has failed, but the window has been up a long time."""
+        if not _alive(self) or not self.ui_state.get("store_login_active"):
+            return
+        if self.ui_state.get("store_login_token") != token:
+            return
+        self.set_status(
+            "Still waiting for the Microsoft sign-in. If its window is stuck "
+            "loading, cancel it from the account menu and try again.",
+            self.theme.gold)
+
+    def _cancel_store_login(self):
+        """Close the sign-in window from the launcher.
+
+        xodus.cancel_login() signals the whole webview process group and
+        waits for it, so it runs off the UI thread; the login worker's own
+        failed() reports the cancellation once the process is gone.
+        """
+        from . import xodus
+        self.set_status("Closing the Microsoft sign-in window…", self.theme.gold)
+        w = Worker(xodus.cancel_login)
+        w.done.connect(lambda closed: _alive(self)
+                       and self._store_login_cancel_done(closed))
+        self._start_worker("store-cancel", w)
+
+    def _store_login_cancel_done(self, closed):
+        """Clear the waiting state when there was no process left to close.
+
+        Normally the login worker's failed() does this, on its way out of a
+        process that has just been signalled. A flag left set with nothing
+        running behind it is the state that makes every later sign-in a
+        button that does nothing, so it is cleared here too.
+        """
+        if closed or not self.ui_state.get("store_login_active"):
+            return
+        self.ui_state["store_login_active"] = False
+        self._store_confirm = False
+        self.end_progress()
+        self._refresh_store_row()
+        self.set_status("Microsoft sign-in cancelled.", self.theme.gold)
 
     def _offer_store_account_link(self, reason="",
                                    title="Sign in to download Minecraft",
@@ -2106,6 +2230,13 @@ class MainWindow(QMainWindow):
         if ver is None:
             self.warn_box("No version selected", "Pick a Minecraft version first.")
             return
+        if self.ui_state.get("store_login_active"):
+            # The download needs the account that sign-in is for, so starting
+            # it now buys one certain failure: setup gets as far as the
+            # download, finds no account and stops. Three of those in a row
+            # is what issue #214 was reported with.
+            self._store_login_already_open()
+            return
         if not self._online_sign_in_settled():
             return
         self._set_busy(True)
@@ -2152,6 +2283,7 @@ class MainWindow(QMainWindow):
 
     def _play_finished(self, _result):
         self.ui_state["launch_active"] = False
+        self.ui_state.pop("store_signin_offered", None)
         if self.ui_state.get("window_gone"):
             QApplication.instance().quit()
             return
@@ -2161,6 +2293,7 @@ class MainWindow(QMainWindow):
 
     def _play_failed(self, message):
         self.ui_state["launch_active"] = False
+        self.ui_state.pop("store_signin_offered", None)
         log._LOG_SINK(f"xx {message}")
         if self.ui_state.get("window_gone"):
             desktop_notify(message[:400], "Minecraft could not start")
@@ -2197,7 +2330,14 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.set_status("Microsoft sign-in needed to download Minecraft.",
                         self.theme.gold)
+        if self.ui_state.pop("store_signin_offered", False):
+            # PLAY already went through the sign-in once for this attempt and
+            # the download still says there is no account. Offering the same
+            # window again is the loop from issue #214, not a fix.
+            self.error_box("Minecraft could not be downloaded", message[:2000])
+            return
         if self._offer_store_account_link(message):
+            self.ui_state["store_signin_offered"] = True
             self._link_store_account(then=self.do_play)
 
     def _set_busy(self, on):
@@ -2227,6 +2367,7 @@ class MainWindow(QMainWindow):
             self._nav_follow_page()
         else:
             self.stack.setCurrentWidget(self.settings_page)
+            self._on_settings_tab(self.settings_tabs.currentIndex())
             self._nav_follow_page(self.settings_page)
 
     def toggle_changelog(self):
@@ -2270,9 +2411,20 @@ class MainWindow(QMainWindow):
         outer.addWidget(tabs, 1)
 
         tabs.addTab(self._scrollable(self._build_general_tab()), "General")
+        self._versions_tab = tabs.addTab(
+            self._scrollable(self._build_versions_tab()), "Versions")
         tabs.addTab(self._scrollable(self._build_advanced_tab()), "Advanced")
         tabs.addTab(self._scrollable(self._build_tools_tab()), "Tools")
+        # Adding up what every build weighs means walking tens of thousands
+        # of files, so it happens when someone opens the tab that shows the
+        # figure -- not on the way to a window that may never show it.
+        self.settings_tabs = tabs
+        tabs.currentChanged.connect(self._on_settings_tab)
         return page
+
+    def _on_settings_tab(self, index):
+        if index == getattr(self, "_versions_tab", -1):
+            self.refresh_builds()
 
     def _scrollable(self, inner: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -2374,8 +2526,9 @@ class MainWindow(QMainWindow):
             return
         if _alive(getattr(self, "store_label", None)) and _alive(self.store_btn):
             if self.ui_state.get("store_login_active"):
-                self.store_label.setText("Store account: signing in…")
-                self.store_btn.setText("Signing in…")
+                self.store_label.setText(
+                    "Store account: waiting for the sign-in window…")
+                self.store_btn.setText("Cancel")
             else:
                 from . import xodus
                 linked = xodus.signed_in()
@@ -2386,10 +2539,197 @@ class MainWindow(QMainWindow):
 
     def _toggle_store_account(self):
         from . import xodus
+        if self.ui_state.get("store_login_active"):
+            self._cancel_store_login()
+            return
         if xodus.signed_in():
             self._unlink_store_account()
         else:
             self._link_store_account()
+
+    # ------------------------------------------------------- installed builds
+    # What a build folder is, in one place, because it is the sentence the
+    # whole tab exists to say: the download and nothing else. Worlds, options,
+    # screenshots, skins and packs live in the profile's Wine prefix, beside
+    # the account that made them, and no removal here touches them.
+    _BUILDS_EXPLAINER = (
+        "Every build is downloaded into a folder of its own, so going back to "
+        "one you already have is instant — and so three builds tried out are "
+        "three copies of a game that size. Remove the ones you are finished "
+        "with here.\n\n"
+        "Your worlds, settings, screenshots, skins and packs are not kept in "
+        "these folders. They belong to the profile, so removing a build never "
+        "removes anything you made — and playing that version again simply "
+        "downloads it back."
+    )
+
+    def _build_versions_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        builds = card_section(v, "Downloaded Minecraft versions",
+                              self._BUILDS_EXPLAINER)
+        self.builds_summary = QLabel("Reading what is installed…")
+        self.builds_summary.setObjectName("Muted")
+        self.builds_summary.setWordWrap(True)
+        builds.addWidget(self.builds_summary)
+
+        self.builds_list = QVBoxLayout()
+        self.builds_list.setSpacing(6)
+        builds.addLayout(self.builds_list)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(btn("Refresh", self.refresh_builds, kind="ghost",
+                              w=84, h=30,
+                              tip="Read the installed builds and their sizes "
+                                  "again."))
+        builds.addLayout(actions)
+
+        v.addStretch(1)
+        return w
+
+    def refresh_builds(self):
+        """Re-read what is on disk, off the UI thread.
+
+        Each build is a tree of tens of thousands of files, and adding up
+        what they weigh is what makes this worth a worker rather than a
+        function call in a paint path.
+        """
+        if not _alive(getattr(self, "builds_summary", None)):
+            return
+        self.builds_summary.setText("Reading what is installed…")
+        worker = Worker(installed_builds)
+        worker.done.connect(
+            lambda builds: _alive(self) and self._show_builds(builds))
+        worker.failed.connect(
+            lambda message: _alive(self) and self.builds_summary.setText(
+                f"Could not read the installed builds: {message}"))
+        self._start_worker("builds", worker)
+
+    def _show_builds(self, builds):
+        if not _alive(getattr(self, "builds_summary", None)):
+            return
+        while self.builds_list.count():
+            item = self.builds_list.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        if not builds:
+            self.builds_summary.setText(
+                "No Minecraft build is installed yet — PLAY downloads the "
+                "version selected on the main screen.")
+            return
+        total = sum(build["size"] or 0 for build in builds)
+        summary = (f"{len(builds)} build{'s' if len(builds) != 1 else ''} "
+                   f"installed, {self._fmt_size(total)} in total.")
+        # The figure the whole tab is about: what removing one would buy.
+        try:
+            summary += (f" {self._fmt_size(shutil.disk_usage(str(GAMES)).free)}"
+                        " free on this drive.")
+        except OSError:
+            pass
+        self.builds_summary.setText(summary)
+        for build in builds:
+            self.builds_list.addWidget(self._build_row(build))
+        # Built after this tab, so on the first pass there is no label to
+        # write the new figure into yet.
+        if _alive(getattr(self, "free_space_label", None)):
+            self._refresh_free_space()
+
+    def _build_notes(self, build):
+        """The short, true things to say about one build under its name."""
+        notes = [self._fmt_size(build["size"] or 0)]
+        if build["in_use"]:
+            notes.append("in use")
+        if not build["playable"]:
+            # A Store build that lost the package its executable is decrypted
+            # from: it looks installed and cannot start (#216).
+            notes.append("incomplete — PLAY downloads it again")
+        if build["legacy"]:
+            notes.append("installed before the move to the Microsoft Store")
+        elif not build["managed"]:
+            notes.append("your own folder — the launcher will not remove it")
+        return "  ·  ".join(notes)
+
+    def _build_row(self, build):
+        row = QFrame()
+        row.setObjectName("CardFlat")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(8)
+
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        title = QLabel(f"{build['name']}  {build['version']}")
+        title.setStyleSheet("font-weight:600;")
+        text.addWidget(title)
+        notes = QLabel(self._build_notes(build))
+        notes.setObjectName("Muted")
+        notes.setStyleSheet("font-size:11px;")
+        notes.setWordWrap(True)
+        text.addWidget(notes)
+        layout.addLayout(text, 1)
+
+        layout.addWidget(btn("Open", lambda: self._open_build(build),
+                             kind="ghost-small", w=64, h=28,
+                             tip=str(build["path"])))
+        if build["managed"]:
+            layout.addWidget(btn("Remove", lambda: self._remove_build(build),
+                                 kind="danger-small", w=76, h=28,
+                                 tip="Delete this download. Worlds and "
+                                     "settings are kept."))
+        return row
+
+    def _open_build(self, build):
+        subprocess.Popen(["xdg-open", str(build["path"])],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _remove_build(self, build):
+        if self.ui_state.get("launch_active") or _mc_running():
+            self.warn_box("Minecraft is running",
+                          "Close the game before removing a build.")
+            return
+        where = str(build["path"])
+        detail = (
+            f"This deletes the {self._fmt_size(build['size'] or 0)} download "
+            f"in\n{where}\n\n"
+            "Your worlds, settings, screenshots and packs are kept — they "
+            "are stored with your profile, not with the build.")
+        if build["in_use"]:
+            detail += ("\n\nThis is the build the launcher currently starts. "
+                       "PLAY will download it again if you pick it.")
+        box = self._box(QMessageBox.Warning,
+                        f"Remove {build['name']} {build['version']}?", detail)
+        remove = box.addButton("Remove", QMessageBox.DestructiveRole)
+        box.addButton("Keep", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not remove:
+            return
+        self.builds_summary.setText(f"Removing {build['version']}…")
+        worker = Worker(remove_build, build["path"])
+        worker.done.connect(
+            lambda freed: _alive(self) and self._build_removed(build, freed))
+        worker.failed.connect(
+            lambda message: _alive(self) and self._build_removal_failed(message))
+        # Its own slot: a listing still adding up sizes must not swallow the
+        # removal that was just confirmed.
+        if not self._start_worker("build-remove", worker):
+            self.refresh_builds()
+
+    def _build_removed(self, build, freed):
+        self.set_status(
+            f"Removed {build['name']} {build['version']} — "
+            f"{self._fmt_size(freed)} freed.", self.theme.green)
+        # The main screen marks the builds that are already downloaded, and
+        # one of them just stopped being.
+        self.refresh_versions()
+        self.refresh_builds()
+
+    def _build_removal_failed(self, message):
+        self.refresh_builds()
+        self.error_box("Remove build", message[:2000])
 
     def _build_advanced_tab(self) -> QWidget:
         w = QWidget()

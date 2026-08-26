@@ -19,10 +19,12 @@ import pty
 import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -35,6 +37,7 @@ from .config import (
     CACHE,
     GDK_LINKS_URL,
     LEGACY_XODUS_KEYRING,
+    LOGS,
     MC_PRODUCTS,
     WINEGDK_PREBUILT_REPO,
     XODUS_ARCHIVE_SHA256,
@@ -58,6 +61,15 @@ class NotSignedIn(XodusError):
 
 class NotOwned(XodusError):
     """The linked account does not own the requested edition."""
+
+
+class LoginCancelled(XodusError):
+    """The sign-in was closed from the launcher rather than by Microsoft."""
+
+
+# Named, because it is also how the window tells a cancellation from a
+# failure: a worker thread carries the message across and not the exception.
+LOGIN_CANCELLED_MESSAGE = "The Microsoft sign-in was cancelled."
 
 
 # "Package was not found, is it owned by the user?" is what xodus prints when
@@ -432,7 +444,87 @@ def signed_in():
     return b"user-tokens" in blob
 
 
-def login():
+# The one command the launcher cannot see inside: xodus-cli opens Microsoft's
+# own sign-in page in a webview, and when that page stops making progress --
+# the "Please wait" screen of issue #214 -- it prints nothing and never
+# exits. Run through subprocess.run(capture_output=True) that is a launcher
+# hung for ever on a window it cannot close, holding output nobody will read
+# because it only arrives when the process ends. So the process is kept: it
+# can be closed from the launcher, and what it printed is written out either
+# way.
+_LOGIN = {"proc": None, "cancelled": False}
+_LOGIN_LOCK = threading.Lock()
+LOGIN_LOG = LOGS / "store-login.log"
+
+# What xodus-cli prints when the sign-in window is closed before it got a
+# token -- exit code 0 and all. It is the ordinary "changed my mind", and it
+# deserves the sentence for that rather than the one for a failure.
+_LOGIN_ABANDONED = re.compile(r"didn'?t log in", re.I)
+
+
+def login_running():
+    """Whether a sign-in window this launcher opened is still up."""
+    with _LOGIN_LOCK:
+        proc = _LOGIN["proc"]
+    return proc is not None and proc.poll() is None
+
+
+def cancel_login(timeout=5):
+    """Close a sign-in that is not going to finish; True if one was open.
+
+    The window is not one process: WebKitGTK runs its network and its web
+    content in children of xodus-cli, and signalling only the parent leaves
+    those behind still holding the window. login() therefore starts it in a
+    session of its own, which is what makes the whole group addressable here.
+    """
+    with _LOGIN_LOCK:
+        proc = _LOGIN["proc"]
+        if proc is None or proc.poll() is not None:
+            return False
+        _LOGIN["cancelled"] = True
+    _end_process_group(proc, timeout)
+    return True
+
+
+def _end_process_group(proc, timeout):
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except OSError:
+            # Already gone, or never had a session of its own to signal.
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            return
+        try:
+            proc.wait(timeout)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _record_login_output(lines, outcome):
+    """Keep what the sign-in printed, for the bug report that follows it.
+
+    capture_output() held every line until the process exited, and a sign-in
+    stuck on Microsoft's page never does -- so the one thing that could say
+    which step stalled was discarded exactly when it was wanted (#214). An
+    empty log is an answer too: it means the window went up and Microsoft's
+    page never got far enough for xodus-cli to have anything to say.
+    """
+    try:
+        LOGIN_LOG.parent.mkdir(parents=True, exist_ok=True)
+        LOGIN_LOG.write_text(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} store sign-in: {outcome}\n"
+            + ("\n".join(lines) + "\n" if lines else
+               "(the sign-in printed nothing)\n"),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def login(on_line=None):
     """Run the interactive Xodus sign-in.
 
     This is a *separate* account link from bol.auth's device-code flow, which
@@ -441,27 +533,89 @@ def login():
     cannot stand in for. Opens Xodus's own webview window, so it needs a
     display and libwebkit2gtk-4.1 -- from the host, or from the runtime
     bol.webview installs where the host has none.
+
+    ``on_line`` is called with each line the sign-in prints, for a caller that
+    wants to show them; every line is written to LOGIN_LOG regardless.
     """
-    binary = ensure_cli()
-    info("Sign in to the Microsoft account that owns Minecraft …")
-    proc = subprocess.run([str(binary), "login"], env=_env(binary),
-                          capture_output=True, text=True)
-    if proc.returncode != 0 or not signed_in():
-        output = (proc.stderr or proc.stdout or "").strip()
-        detail = output.splitlines()
+    if login_running():
         raise XodusError(
-            _loader_failure(output) or
-            "Microsoft sign-in for the Minecraft download did not complete"
-            + (f": {detail[-1]}" if detail else ".")
-        )
-    ok("Microsoft account linked for the Minecraft download.")
-    return True
+            "A Microsoft sign-in window is already open. Finish it, or "
+            "cancel it, before starting another.")
+    binary = ensure_cli()
+    reset_webview_state()
+    info("Sign in to the Microsoft account that owns Minecraft …")
+    with _LOGIN_LOCK:
+        _LOGIN["cancelled"] = False
+    try:
+        proc = subprocess.Popen(
+            [str(binary), "login"], env=_env(binary),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, errors="replace",
+            # Its own session, so cancel_login() can take the webview's
+            # children with it.
+            start_new_session=True)
+    except OSError as exc:
+        raise XodusError(
+            f"Could not start the Microsoft sign-in: {exc}") from exc
+    with _LOGIN_LOCK:
+        _LOGIN["proc"] = proc
+    tail = []
+    try:
+        for raw in proc.stdout:
+            line = _ANSI.sub("", raw).rstrip()
+            if not line:
+                continue
+            tail.append(line)
+            del tail[:-40]
+            if on_line:
+                on_line(line)
+        code = proc.wait()
+    except BaseException:
+        # Ctrl-C at a terminal, most of all. The sign-in runs in a session of
+        # its own so that cancel_login() can reach the webview's children,
+        # and that is exactly what keeps it from receiving the interrupt with
+        # us -- so it has to be closed here, or the window outlives the
+        # command that opened it with nothing left to close it.
+        _end_process_group(proc, 5)
+        raise
+    finally:
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
+        with _LOGIN_LOCK:
+            if _LOGIN["proc"] is proc:
+                _LOGIN["proc"] = None
+            cancelled = _LOGIN["cancelled"]
+    output = "\n".join(tail)
+    if cancelled:
+        _record_login_output(tail, "cancelled from the launcher")
+        raise LoginCancelled(LOGIN_CANCELLED_MESSAGE)
+    if code == 0 and signed_in():
+        _record_login_output(tail, "linked")
+        ok("Microsoft account linked for the Minecraft download.")
+        return True
+    _record_login_output(tail, f"not linked (exit {code})")
+    if _LOGIN_ABANDONED.search(output):
+        raise XodusError(
+            "The Microsoft sign-in window was closed before the account was "
+            "linked. Open it again and finish signing in with the account "
+            "that owns Minecraft.")
+    raise XodusError(
+        _loader_failure(output) or
+        "Microsoft sign-in for the Minecraft download did not complete"
+        + (f": {tail[-1]}" if tail else ".")
+    )
 
 
 def logout(device=False):
     binary = ensure_cli()
     cmd = [str(binary), "logout"] + (["--device"] if device else [])
     subprocess.run(cmd, env=_env(binary), capture_output=True, text=True)
+    # The tokens are gone; the sign-in page's own memory of the account is
+    # not, and it is what makes the next sign-in open on a session that no
+    # longer exists here. Unlinking has to mean both.
+    reset_webview_state()
     # xodus-cli only knows about the keyring it was pointed at. The one
     # _adopt_legacy_keyring() copied from is still lying in the user's home
     # with live tokens in it, and "unlink this account" has to mean that one
@@ -489,6 +643,58 @@ def _loader_failure(text):
         f"{match.group(1)}, which this system does not have.")
 
 
+def _xdg_dirs(base=None):
+    """The XDG directories xodus-cli is given, inside its own home.
+
+    $HOME alone does not decide where the sign-in window's state lands: glib
+    reads XDG_DATA_HOME and XDG_CACHE_HOME first and only falls back to $HOME
+    when they are unset, so on a desktop session that sets either -- and
+    plenty do -- WebKitGTK put the login page's cache and localStorage in the
+    user's real ~/.local/share/xodus-cli. That is the directory issue #198
+    moved Xodus out of, and it is the state reset_webview_state() has to be
+    able to find. Pinned here, both are true wherever the launcher runs.
+    """
+    base = Path(base if base is not None else home())
+    return {
+        "XDG_DATA_HOME": base / ".local" / "share",
+        "XDG_CACHE_HOME": base / ".cache",
+        "XDG_STATE_HOME": base / ".local" / "state",
+    }
+
+
+def webview_state_dirs():
+    """Where the sign-in window keeps its cache and its page storage.
+
+    WebKitGTK names them after the program, which is why they are xodus-cli's
+    and not the launcher's.
+    """
+    return [parent / "xodus-cli" for parent in _xdg_dirs().values()]
+
+
+def reset_webview_state():
+    """Throw away what the sign-in page left behind last time.
+
+    None of it is the account -- the tokens are in the keyring, and this is
+    the login page's own cache and localStorage. What it can be is a sign-in
+    abandoned half-way, which the next one resumes into: Microsoft's page
+    picks its state back up, decides it is mid-flow, and shows a screen that
+    loads for ever with nothing on it to click (#214). Starting each sign-in
+    from nothing costs one page load and takes that failure off the table.
+    """
+    cleared = False
+    for path in webview_state_dirs():
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            warn(f"Could not clear the sign-in window's saved state in "
+                 f"{path} ({exc}).")
+        else:
+            cleared = True
+    return cleared
+
+
 def _env(binary=None):
     """The environment xodus-cli runs in.
 
@@ -499,7 +705,10 @@ def _env(binary=None):
     env = os.environ.copy()
     # Xodus writes its file keyring under $HOME, so $HOME is what decides
     # whether the sign-in outlives the window it was made in: see home().
-    env["HOME"] = str(home())
+    base = home()
+    env["HOME"] = str(base)
+    for name, path in _xdg_dirs(base).items():
+        env[name] = str(path)
     webview.apply(binary if binary is not None else XODUS_BIN, env)
     return env
 

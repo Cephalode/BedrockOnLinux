@@ -4,12 +4,18 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from .auth import NativeAuth, msa_signed_in
 from .config import APP, PRETTY, VERSION
 from .content import cmd_import
 from .doctor import doctor
-from .games import list_editions, list_versions
+from .games import (
+    installed_builds,
+    list_editions,
+    list_versions,
+    remove_build,
+)
 from .gamesetup import do_setup
 from .launch import (
     direct_launch_readiness,
@@ -42,6 +48,82 @@ def _run_network_diagnostics(host_ip=None):
             f"  {check.kind:14} {check.target}: {state} — {check.detail}"
         )
     return healthy
+
+
+def _fmt_size(size):
+    value = float(size or 0)
+    for unit in ("B", "KiB", "MiB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
+def _build_notes(build):
+    notes = []
+    if build["in_use"]:
+        notes.append("in use")
+    if not build["playable"]:
+        notes.append("incomplete")
+    if build["legacy"]:
+        notes.append("installed before the move to the Store")
+    if not build["managed"]:
+        notes.append("your own folder")
+    return notes
+
+
+# Said by every command that lists or removes a build, because it is the one
+# thing a player needs to know before deleting one and the one thing the
+# folder name does not tell them.
+_BUILDS_KEEP_NOTE = (
+    "Worlds, settings, screenshots and packs are kept with your profile, not "
+    "in these folders, so removing a build removes only the download."
+)
+
+
+def _list_installed_builds():
+    """Every Minecraft build on this machine, and what it takes up."""
+    builds = installed_builds()
+    if not builds:
+        info("No Minecraft build is installed.")
+        return
+    total = 0
+    for build in builds:
+        total += build["size"] or 0
+        notes = _build_notes(build)
+        print(f"  {build['version']:<14}{_fmt_size(build['size']):>10}  "
+              f"{build['name']}"
+              + (f"  ({', '.join(notes)})" if notes else ""))
+        print(f"      {build['path']}")
+    info(f"{len(builds)} build(s), {_fmt_size(total)} in total. "
+         + _BUILDS_KEEP_NOTE)
+
+
+def _remove_installed_build(wanted, edition_id=None):
+    """Delete one downloaded build, named by version or by folder."""
+    builds = installed_builds(with_size=False)
+    if "/" in wanted:
+        target = Path(wanted).expanduser().resolve()
+        matches = [b for b in builds if b["path"].resolve() == target]
+    else:
+        matches = [b for b in builds if b["version"] == wanted]
+        if edition_id:
+            matches = [b for b in matches if b["edition"] == edition_id]
+    if not matches:
+        die(f"No installed build matches '{wanted}'. See: {APP} versions "
+            "--installed")
+    if len(matches) > 1:
+        die(f"'{wanted}' matches {len(matches)} installed builds. Name the "
+            "edition with --mc, or pass the folder instead: "
+            + ", ".join(str(b["path"]) for b in matches))
+    build = matches[0]
+    if not build["managed"]:
+        die(f"{build['path']} is a folder you pointed the launcher at, so it "
+            "is not the launcher's to delete.")
+    freed = remove_build(build["path"])
+    ok(f"Removed {build['name']} {build['version']} — {_fmt_size(freed)} "
+       "freed.")
+    info(_BUILDS_KEEP_NOTE)
 
 
 def _open_gui():
@@ -101,6 +183,18 @@ def main():
     sp.add_argument("--force", action="store_true", help="re-download / rebuild")
     lv = sub.add_parser("versions", help="list installable Minecraft builds")
     lv.add_argument("--beta", action="store_true")
+    lv.add_argument(
+        "--installed", action="store_true",
+        help="list the builds downloaded on this machine and what they take "
+             "up, instead of what can be installed")
+    lv.add_argument(
+        "--remove", metavar="BUILD",
+        help="delete a downloaded build, by version or by folder; worlds, "
+             "settings and screenshots are kept")
+    lv.add_argument(
+        "--mc", metavar="EDITION",
+        help="which edition --remove means, when a build is installed for "
+             "more than one")
     sub.add_parser("login", help="sign in to a Microsoft account")
     sub.add_parser(
         "store-login",
@@ -195,13 +289,18 @@ def main():
             for pending in ([] if profile else direct_launch_readiness()):
                 warn(pending)
         elif a.cmd == "versions":
-            for edition in list_editions(a.beta):
-                print(f"{edition['name']}  (--mc {edition['id']})")
-                for build in list_versions(edition["id"]):
-                    print(f"    {build['version']:<14}"
-                          f"{'installed' if build['installed'] else ''}")
-            info("Builds are downloaded from Microsoft's own CDN with your "
-                 "account, which must own Minecraft.")
+            if a.remove:
+                _remove_installed_build(a.remove, a.mc)
+            elif a.installed:
+                _list_installed_builds()
+            else:
+                for edition in list_editions(a.beta):
+                    print(f"{edition['name']}  (--mc {edition['id']})")
+                    for build in list_versions(edition["id"]):
+                        print(f"    {build['version']:<14}"
+                              f"{'installed' if build['installed'] else ''}")
+                info("Builds are downloaded from Microsoft's own CDN with "
+                     "your account, which must own Minecraft.")
         elif a.cmd == "store-login":
             from . import xodus as _xodus
             if _xodus.signed_in():

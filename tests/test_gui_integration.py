@@ -328,6 +328,57 @@ class TestVersionPicker:
             assert len(_visible_rows(picker)) == 3
 
 
+class TestRememberedVersion:
+    """The build the launcher comes back to (issue #214).
+
+    The picker shows a shortened label -- "26.44" for 1.26.44.3 -- and the
+    selection used to be saved in that shape. Nothing could read it back: the
+    installer answered "no longer listed" and took the newest build instead,
+    so a launcher restarted after playing an older build silently downloaded
+    another 2.5 GB of game.
+    """
+
+    RELEASE = {"id": "release", "name": "Minecraft for Windows", "beta": False}
+
+    def _versions(self):
+        return [
+            {"tag": "1.26.50.1", "beta": False, "edition": self.RELEASE,
+             "installed": False},
+            {"tag": "1.26.44.3", "beta": False, "edition": self.RELEASE,
+             "installed": True},
+            {"tag": "1.26.42.1", "beta": False, "edition": self.RELEASE,
+             "installed": True},
+        ]
+
+    def _picked(self, window, saved):
+        with mock.patch("bol.gui.load_settings", lambda: {"mc_version": saved}):
+            window._on_versions_loaded(self._versions())
+        return window.selected_version()["tag"]
+
+    def test_the_build_last_played_is_the_one_offered(self, main_window):
+        assert self._picked(main_window, "1.26.44.3") == "1.26.44.3"
+
+    def test_a_selection_saved_by_an_older_release_still_resolves(self,
+                                                                  main_window):
+        # "26.44" is what the chip used to write.
+        assert self._picked(main_window, "26.44") == "1.26.44.3"
+
+    def test_an_unknown_build_falls_back_to_the_newest(self, main_window):
+        assert self._picked(main_window, "1.20.0.1") == "1.26.50.1"
+
+    def test_nothing_saved_offers_the_newest(self, main_window):
+        assert self._picked(main_window, "") == "1.26.50.1"
+
+    def test_choosing_a_build_saves_the_build_and_not_the_label(self,
+                                                                main_window):
+        saved = {}
+        with mock.patch("bol.gui.load_settings", lambda: dict(saved)), \
+                mock.patch("bol.gui.save_settings", saved.update):
+            main_window._on_versions_loaded(self._versions())
+            main_window.set_version("26.44")
+        assert saved["mc_version"] == "1.26.44.3"
+
+
 # ======================================================================
 # Settings Persistence Tests
 # ======================================================================
@@ -541,10 +592,10 @@ class TestSettingsTab:
     """Test settings interface."""
 
     def test_general_tab_created(self, main_window):
-        """Settings carries all three tabs, in order."""
+        """Settings carries all four tabs, in order."""
         tabs = main_window.settings_page.findChild(QTabWidget)
         assert [tabs.tabText(i) for i in range(tabs.count())] == [
-            "General", "Advanced", "Tools"]
+            "General", "Versions", "Advanced", "Tools"]
 
     def test_theme_toggle_in_settings(self, main_window):
         """The General tab carries the light-theme switch, and flipping it

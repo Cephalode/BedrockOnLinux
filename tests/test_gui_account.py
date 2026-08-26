@@ -504,3 +504,106 @@ class XboxPreauthWarmUpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ASignInThatNeverFinishesTests(unittest.TestCase):
+    """Issue #214: the window that loads for ever.
+
+    xodus-cli opens Microsoft's own page in a webview, and a page that stops
+    making progress there prints nothing and never exits. What the launcher
+    did with that was the actual report: PLAY kept starting downloads the
+    missing account would refuse, and every "Sign in" after the first was a
+    button that did nothing at all, because the flag saying one was in flight
+    was never going to be cleared.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        qt_app()
+
+    @contextmanager
+    def _signing_in(self):
+        with headless_window() as window:
+            window.ui_state["store_login_active"] = True
+            window._refresh_store_row()
+            yield window
+
+    def test_the_row_offers_to_close_the_window(self):
+        with self._signing_in() as window:
+            self.assertEqual(_menu(window).download.button.text(), "Cancel")
+            self.assertEqual(window.store_btn.text(), "Cancel")
+
+    def test_cancelling_closes_the_sign_in(self):
+        with self._signing_in() as window:
+            with mock.patch.object(window, "_cancel_store_login") as cancel:
+                window.store_click()          # arms the confirmation
+                self.assertFalse(cancel.called)
+                window.store_click()          # confirms it
+            self.assertTrue(cancel.called)
+
+    def test_play_does_not_start_a_download_the_sign_in_would_refuse(self):
+        with self._signing_in() as window:
+            with mock.patch.object(
+                    window, "selected_version",
+                    return_value={"edition": {"id": "release"}, "tag": "1.0"}), \
+                    mock.patch.object(window, "_store_login_already_open") as said, \
+                    mock.patch.object(window, "_start_worker") as started:
+                window.do_play()
+            # One certain failure otherwise: setup gets as far as the
+            # download, finds no account and stops. Three of those in a row
+            # is what #214 was reported with.
+            self.assertTrue(said.called)
+            self.assertFalse(started.called)
+
+    def test_asking_for_a_second_sign_in_says_where_the_first_one_went(self):
+        with self._signing_in() as window:
+            with mock.patch.object(window, "_store_login_already_open") as said:
+                window._link_store_account()
+            # Returning quietly here is what made every later attempt look
+            # like a dead button.
+            self.assertTrue(said.called)
+
+    def test_a_flag_with_no_sign_in_behind_it_is_cleared(self):
+        with self._signing_in() as window:
+            window._store_login_cancel_done(False)
+            self.assertFalse(window.ui_state["store_login_active"])
+            self.assertEqual(_menu(window).download.button.text(), "Sign in")
+
+    def test_signing_in_twice_for_one_play_is_not_offered_a_third_time(self):
+        with headless_window() as window:
+            with mock.patch.object(window, "_offer_store_account_link",
+                                   return_value=True), \
+                    mock.patch.object(window, "_link_store_account"):
+                window._store_signin_needed("no account")
+            self.assertTrue(window.ui_state["store_signin_offered"])
+            # The sign-in went through and the download still says there is
+            # no account: asking for the same window again is the loop.
+            with mock.patch.object(window, "_offer_store_account_link") as offer, \
+                    mock.patch.object(window, "error_box") as box:
+                window._store_signin_needed("no account")
+            self.assertFalse(offer.called)
+            self.assertTrue(box.called)
+
+    def test_a_cancelled_sign_in_is_not_reported_as_a_failure(self):
+        with headless_window() as window:
+            failures = []
+            with mock.patch.object(gui, "Worker") as worker, \
+                    mock.patch.object(window, "error_box",
+                                      side_effect=failures.append):
+                window._link_store_account()
+                failed = worker.return_value.failed.connect.call_args[0][0]
+                failed(xodus.LOGIN_CANCELLED_MESSAGE)
+            self.assertEqual(failures, [])
+            self.assertFalse(window.ui_state["store_login_active"])
+            self.assertIn("cancel", window.status_label.text().lower())
+
+    def test_any_other_sign_in_failure_is_still_reported(self):
+        with headless_window() as window:
+            failures = []
+            with mock.patch.object(gui, "Worker") as worker, \
+                    mock.patch.object(window, "error_box",
+                                      side_effect=lambda *a: failures.append(a)):
+                window._link_store_account()
+                failed = worker.return_value.failed.connect.call_args[0][0]
+                failed("Microsoft would not")
+            self.assertTrue(failures)

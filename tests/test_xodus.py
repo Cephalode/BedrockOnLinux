@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1249,3 +1251,183 @@ class WrapEncryptedLaunchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoreSignInTests(unittest.TestCase):
+    """The sign-in that would not finish (issue #214).
+
+    xodus-cli opens Microsoft's own page in a webview. When that page stops
+    making progress it prints nothing and the process never exits, so the
+    launcher used to wait on it for ever: nothing could close the window,
+    nothing had been logged, and every later attempt at the sign-in was
+    refused by a flag that was never going to be cleared.
+    """
+
+    def setUp(self):
+        xodus._LOGIN["proc"] = None
+        xodus._LOGIN["cancelled"] = False
+
+    tearDown = setUp
+
+    @contextlib.contextmanager
+    def _login(self, tmp, script):
+        """Run login() against a stand-in for xodus-cli."""
+        tmp = Path(tmp)
+        binary = tmp / "xodus-cli"
+        binary.write_text("#!/bin/sh\n" + script, encoding="utf-8")
+        binary.chmod(0o755)
+        log = tmp / "logs" / "store-login.log"
+        with _own_home(tmp), \
+                mock.patch.object(xodus, "ensure_cli", return_value=binary), \
+                mock.patch.object(xodus, "LOGIN_LOG", log), \
+                mock.patch.object(xodus.webview, "apply", return_value={}):
+            yield log
+
+    def test_a_sign_in_window_can_be_closed_from_the_launcher(self):
+        started = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._login(tmp, "echo opening; sleep 30\n"):
+            def watch():
+                started.wait(10)
+                # The page is up and going nowhere: this is the button.
+                while not xodus.login_running():
+                    time.sleep(0.02)
+                xodus.cancel_login()
+
+            waiter = threading.Thread(target=watch, daemon=True)
+            waiter.start()
+            started.set()
+            with self.assertRaises(xodus.LoginCancelled):
+                xodus.login()
+            waiter.join(10)
+
+        self.assertFalse(xodus.login_running())
+
+    def test_what_the_sign_in_printed_is_kept_for_the_bug_report(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._login(tmp, "echo 'fault without inline auth'; exit 1\n"
+                            ) as log:
+            with self.assertRaises(xodus.XodusError):
+                xodus.login()
+
+            self.assertIn("fault without inline auth", log.read_text())
+
+    def test_the_sign_in_output_reaches_the_caller_as_it_arrives(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._login(tmp, "echo first; echo second; exit 1\n"):
+            with self.assertRaises(xodus.XodusError):
+                xodus.login(on_line=seen.append)
+
+        self.assertEqual(seen, ["first", "second"])
+
+    def test_a_closed_window_is_not_reported_as_a_failure_of_the_launcher(self):
+        # xodus-cli exits 0 having linked nothing when the window is closed.
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._login(tmp, "echo \"Didn't log in\"; exit 0\n"):
+            with self.assertRaises(xodus.XodusError) as caught:
+                xodus.login()
+
+        self.assertIn("closed before the account was linked",
+                      str(caught.exception))
+        self.assertNotIsInstance(caught.exception, xodus.LoginCancelled)
+
+    def test_a_second_sign_in_is_refused_while_one_is_open(self):
+        # Two xodus-cli logins at once write the same keyring; the launcher
+        # asks for the second one every time PLAY meets a window that is
+        # still up.
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._login(tmp, "sleep 30\n"):
+            worker = threading.Thread(target=self._swallow, daemon=True)
+            worker.start()
+            try:
+                while not xodus.login_running():
+                    time.sleep(0.02)
+                with self.assertRaises(xodus.XodusError) as caught:
+                    xodus.login()
+                self.assertIn("already open", str(caught.exception))
+            finally:
+                xodus.cancel_login()
+                worker.join(10)
+
+    def _swallow(self):
+        try:
+            xodus.login()
+        except xodus.XodusError:
+            pass
+
+
+class WebviewStateTests(unittest.TestCase):
+    """The sign-in page's own cache, and where it is allowed to live."""
+
+    def test_the_login_pages_state_stays_inside_the_launchers_home(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home, \
+                mock.patch.object(xodus.webview, "apply", return_value={}):
+            # A desktop session that sets these is what used to put the login
+            # page's cookies in the user's real home (#198's directory).
+            with mock.patch.dict(os.environ,
+                                 {"XDG_DATA_HOME": "/somewhere/else",
+                                  "XDG_CACHE_HOME": "/somewhere/else"}):
+                env = xodus._env(Path("/opt/xodus-cli"))
+
+        for name in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+            self.assertTrue(env[name].startswith(str(home)), env[name])
+
+    def test_an_abandoned_sign_in_is_not_resumed_by_the_next_one(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp) as home:
+            keyring = home / ".xodus-keyring.ron"
+            keyring.parent.mkdir(parents=True, exist_ok=True)
+            keyring.write_bytes(b'("user-tokens","live")')
+            stale = home / ".local" / "share" / "xodus-cli" / "localstorage"
+            stale.mkdir(parents=True)
+            (stale / "https_login.live.com_0.localstorage").write_bytes(b"x")
+
+            self.assertTrue(xodus.reset_webview_state())
+
+            self.assertFalse(stale.exists())
+            # The account is in the keyring, not in the page's storage:
+            # clearing one must never sign anybody out.
+            self.assertEqual(keyring.read_bytes(), b'("user-tokens","live")')
+
+    def test_clearing_nothing_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp, _own_home(tmp):
+            self.assertFalse(xodus.reset_webview_state())
+
+
+class SignInInterruptTests(unittest.TestCase):
+    """Ctrl-C at a terminal has to take the sign-in window with it.
+
+    The webview runs in a session of its own -- that is what lets
+    cancel_login() reach WebKitGTK's children -- and the same thing keeps it
+    from receiving the interrupt alongside the launcher.
+    """
+
+    def setUp(self):
+        xodus._LOGIN["proc"] = None
+        xodus._LOGIN["cancelled"] = False
+
+    tearDown = setUp
+
+    def test_an_interrupted_sign_in_does_not_leave_its_window_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            binary = tmp / "xodus-cli"
+            binary.write_text("#!/bin/sh\necho opening; sleep 60\n",
+                              encoding="utf-8")
+            binary.chmod(0o755)
+            with _own_home(tmp), \
+                    mock.patch.object(xodus, "ensure_cli", return_value=binary), \
+                    mock.patch.object(xodus, "LOGIN_LOG", tmp / "login.log"), \
+                    mock.patch.object(xodus.webview, "apply", return_value={}):
+                held = {}
+
+                def interrupt(_line):
+                    with xodus._LOGIN_LOCK:
+                        held["proc"] = xodus._LOGIN["proc"]
+                    raise KeyboardInterrupt
+
+                with self.assertRaises(KeyboardInterrupt):
+                    xodus.login(on_line=interrupt)
+
+            # Still sleeping out its minute if the interrupt did not reach it.
+            self.assertIsNotNone(held["proc"].poll())

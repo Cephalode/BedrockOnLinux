@@ -4,6 +4,25 @@
 
 ### Added
 
+- **Settings ▸ Versions: see every Minecraft build you have downloaded, and
+  remove the ones you are done with**
+  ([#214](https://github.com/Wyze3306/BedrockOnLinux/issues/214)). Each build
+  is downloaded into a folder of its own, which is what makes going back to
+  one instant — and what made them pile up, because nothing ever removed one
+  and nothing ever said they were still there. Three versions tried out is
+  three copies of a 2.5 GB game, and the only way back was `rm -rf` on a path
+  the launcher never showed. The new tab lists every build on disk with what
+  it weighs, marks the one in use, the one that lost its package and the one
+  installed before the move to the Microsoft Store, and removes any of them on
+  request. Nothing you made is in those folders: worlds, settings,
+  screenshots, skins and packs belong to the profile, so a build can be
+  removed and downloaded again without touching a single world — which the tab
+  says in as many words, because "delete this version" reads like something
+  else entirely. A finished download now also names what the builds beside it
+  are taking up, instead of leaving the total to be discovered on a full disk.
+  On the command line: `bedrock-on-linux versions --installed` lists them and
+  `bedrock-on-linux versions --remove <build>` removes one.
+
 - **PLAY says so when nothing is signed in for online play** (#240). The
   launcher asks for two Microsoft sign-ins, and only one of them ever asks for
   itself: the account that downloads Minecraft is offered at PLAY, the moment
@@ -19,6 +38,43 @@
   in silence.
 
 ### Fixed
+
+- **The launcher no longer forgets which build you play, and downloads
+  another one** ([#214](https://github.com/Wyze3306/BedrockOnLinux/issues/214)).
+  The version picker shows a shortened label — `26.44` for build 1.26.44.3 —
+  and that label was what got saved as the selection. Nothing could read it
+  back: it names no build the installer can find, so setup reported the choice
+  as no longer listed and installed the newest build instead. Playing an older
+  version, closing the launcher and opening it again therefore landed on the
+  newest one with nothing having said so, and the next PLAY downloaded 2.5 GB
+  of a game that was never asked for. The selection is now the build itself,
+  labels written by earlier releases are still understood, and the picker
+  comes back to what you last played.
+
+- **A Microsoft sign-in stuck on "Please wait" no longer takes the launcher
+  with it**
+  ([#214](https://github.com/Wyze3306/BedrockOnLinux/issues/214)). The account
+  that downloads Minecraft is linked through Microsoft's own page, in a
+  webview `xodus-cli` owns. When that page stops making progress it prints
+  nothing and the process never exits — and the launcher waited on it for
+  ever, with `capture_output` holding every line it might have printed until
+  an exit that was not coming. What the player saw was worse than the stall:
+  PLAY still ran the whole setup, got as far as the download, found no account
+  and stopped — three times over in the report — and every later *Sign in* was
+  a button that did nothing at all, because the flag saying a sign-in was in
+  flight had no way left to be cleared. The sign-in is now something the
+  launcher holds rather than waits on. Its window can be closed from the
+  account menu or from Settings, which signals the whole webview process
+  group; PLAY says the window is open instead of starting a download that
+  cannot work; a sign-in that has been up a long time says so; and a second
+  one is never silently swallowed. Whatever the sign-in prints is streamed as
+  it arrives and kept in `logs/store-login.log`, so a stall that reaches
+  nobody's terminal still leaves something to read. The page's own cache and
+  storage — never the tokens, which live in the keyring — are cleared before
+  each sign-in and pinned inside the launcher's Xodus home, so a flow
+  abandoned half-way is not resumed into by the next one, and nothing of it
+  lands in `~/.local/share` again. Closing the window is reported as the
+  ordinary change of mind it is, rather than as a failure of the launcher.
 
 - **The Microsoft sign-in window no longer dies where the desktop has
   accessibility running**

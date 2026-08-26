@@ -1,6 +1,7 @@
 """Regression tests for Minecraft edition installation through Xodus."""
 # SPDX-License-Identifier: MIT
 
+import contextlib
 import json
 import tempfile
 import unittest
@@ -343,3 +344,240 @@ class ManifestVersionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstalledBuildTests(unittest.TestCase):
+    """What is on disk, and removing one of it (issue #214).
+
+    Every build is downloaded into a folder of its own, which is what makes
+    switching back to one instant -- and what makes them pile up: nothing but
+    `rm -rf` ever removed one, so trying three builds cost three copies of a
+    2.5 GiB game and the launcher never mentioned it.
+    """
+
+    @contextlib.contextmanager
+    def _tree(self, settings=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            games_dir = base / "games"
+            games_dir.mkdir(parents=True)
+            store = dict(settings or {})
+            with mock.patch.object(games, "GAMES", games_dir), \
+                    mock.patch.object(games, "CONTENT", base / "content"), \
+                    mock.patch.object(games, "load_settings",
+                                      side_effect=lambda: dict(store)), \
+                    mock.patch.object(games, "save_settings",
+                                      side_effect=lambda new: (store.clear(),
+                                                               store.update(new))):
+                yield base, games_dir, store
+
+    def test_every_downloaded_build_is_listed_newest_first(self):
+        with self._tree() as (_base, games_dir, _settings):
+            _write_store_game(games_dir / "release" / "1.26.42.1")
+            _write_store_game(games_dir / "release" / "1.26.44.3")
+            _write_game(games_dir / "preview" / "1.26.50.25")
+
+            builds = games.installed_builds()
+
+        self.assertEqual([b["version"] for b in builds],
+                         ["1.26.50.25", "1.26.44.3", "1.26.42.1"])
+        self.assertEqual({b["edition"] for b in builds}, {"release", "preview"})
+        self.assertTrue(all(b["managed"] and b["playable"] for b in builds))
+
+    def test_a_build_from_before_the_store_switch_is_listed_too(self):
+        # games/<version>/, with no edition folder above it: the layout an
+        # upgrade inherits. It is a real build and the one some players are
+        # still on, so it is listed -- and it is removable, because it is the
+        # copy that is most often the duplicate.
+        with self._tree() as (_base, games_dir, _settings):
+            _write_game(games_dir / "1.26.44.3")
+
+            builds = games.installed_builds()
+
+        self.assertEqual(len(builds), 1)
+        self.assertTrue(builds[0]["legacy"])
+        self.assertTrue(builds[0]["managed"])
+        self.assertIsNone(builds[0]["edition"])
+
+    def test_a_build_that_lost_its_package_is_listed_as_incomplete(self):
+        with self._tree() as (_base, games_dir, _settings):
+            _write_store_game(games_dir / "release" / "1.26.44.3",
+                              package=False)
+
+            builds = games.installed_builds()
+
+        # It has an exe and a manifest and it cannot start (#216): saying so
+        # is the difference between "remove this" and "download it again".
+        self.assertFalse(builds[0]["playable"])
+
+    def test_the_build_the_launcher_would_start_is_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            games_dir = base / "games"
+            root = _write_store_game(games_dir / "release" / "1.26.44.3")
+            _write_store_game(games_dir / "release" / "1.26.42.1")
+            settings = {"game_dir": str(root)}
+            with mock.patch.object(games, "GAMES", games_dir), \
+                    mock.patch.object(games, "CONTENT", base / "content"), \
+                    mock.patch.object(games, "load_settings",
+                                      return_value=settings):
+                builds = games.installed_builds()
+
+        in_use = [b["version"] for b in builds if b["in_use"]]
+        self.assertEqual(in_use, ["1.26.44.3"])
+
+    def test_a_folder_the_player_pointed_at_is_listed_but_not_ours(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            games_dir = base / "games"
+            games_dir.mkdir(parents=True)
+            elsewhere = _write_game(base / "somewhere" / "Minecraft")
+            settings = {"game_dir": str(elsewhere)}
+            with mock.patch.object(games, "GAMES", games_dir), \
+                    mock.patch.object(games, "CONTENT", base / "content"), \
+                    mock.patch.object(games, "load_settings",
+                                      return_value=settings):
+                builds = games.installed_builds()
+
+        self.assertEqual(len(builds), 1)
+        self.assertTrue(builds[0]["in_use"])
+        self.assertFalse(builds[0]["managed"])
+
+    def test_removing_a_build_frees_its_folder_and_nothing_else(self):
+        with self._tree() as (base, games_dir, _settings):
+            keep = _write_store_game(games_dir / "release" / "1.26.44.3")
+            drop = _write_store_game(games_dir / "release" / "1.26.42.1")
+            # Worlds and settings live in the prefix, beside the account that
+            # made them -- never in a build folder. This is the promise every
+            # "Remove" button in the launcher makes.
+            worlds = base / "prefix" / "minecraftWorlds" / "my world"
+            worlds.mkdir(parents=True)
+
+            with mock.patch("bol.prefix._mc_running", return_value=False):
+                freed = games.remove_build(drop)
+
+            self.assertGreater(freed, 0)
+            self.assertFalse(drop.exists())
+            self.assertTrue(keep.exists())
+            self.assertTrue(worlds.exists())
+
+    def test_removing_the_build_in_use_takes_the_selection_with_it(self):
+        with self._tree() as (base, games_dir, settings):
+            root = _write_store_game(games_dir / "release" / "1.26.44.3")
+            settings["game_dir"] = str(root)
+            content = base / "content"
+            content.symlink_to(root)
+            with mock.patch.object(games, "CONTENT", content), \
+                    mock.patch("bol.prefix._mc_running", return_value=False):
+                games.remove_build(root)
+
+            # A setting left pointing at a folder that is gone turns the next
+            # PLAY into a launch failure instead of the download it should be.
+            self.assertNotIn("game_dir", settings)
+            self.assertFalse(content.is_symlink())
+
+    def test_a_folder_outside_the_games_tree_is_never_removed(self):
+        with self._tree() as (base, _games_dir, _settings):
+            elsewhere = _write_game(base / "somewhere" / "Minecraft")
+
+            with mock.patch("bol.prefix._mc_running", return_value=False), \
+                    self.assertRaises(BolError):
+                games.remove_build(elsewhere)
+
+            self.assertTrue(elsewhere.exists())
+
+    def test_the_games_folder_itself_is_never_removed(self):
+        with self._tree() as (_base, games_dir, _settings):
+            _write_store_game(games_dir / "release" / "1.26.44.3")
+
+            with mock.patch("bol.prefix._mc_running", return_value=False), \
+                    self.assertRaises(BolError):
+                games.remove_build(games_dir)
+
+            self.assertTrue(games_dir.exists())
+
+    def test_nothing_is_removed_while_minecraft_is_running(self):
+        with self._tree() as (_base, games_dir, _settings):
+            root = _write_store_game(games_dir / "release" / "1.26.44.3")
+
+            with mock.patch("bol.prefix._mc_running", return_value=True), \
+                    self.assertRaises(BolError):
+                games.remove_build(root)
+
+            self.assertTrue(root.exists())
+
+    def test_a_whole_edition_folder_is_never_removed(self):
+        # games/<edition>/ holds every build of that edition and has exactly
+        # the depth of the pre-Store layout, so it is the one path a check on
+        # depth alone would wave through.
+        with self._tree() as (_base, games_dir, _settings):
+            _write_store_game(games_dir / "release" / "1.26.44.3")
+
+            with mock.patch("bol.prefix._mc_running", return_value=False), \
+                    self.assertRaises(BolError):
+                games.remove_build(games_dir / "release")
+
+            self.assertTrue((games_dir / "release" / "1.26.44.3").exists())
+
+    def test_a_folder_that_holds_no_build_is_left_alone(self):
+        with self._tree() as (_base, games_dir, _settings):
+            stray = games_dir / "release" / "notes"
+            stray.mkdir(parents=True)
+            (stray / "readme.txt").write_text("mine", encoding="utf-8")
+
+            with mock.patch("bol.prefix._mc_running", return_value=False), \
+                    self.assertRaises(BolError):
+                games.remove_build(stray)
+
+            self.assertTrue(stray.exists())
+
+
+class BuildsPilingUpAreMentionedTests(unittest.TestCase):
+    """A download never removes the build it follows, and nothing said so.
+
+    That is the right behaviour -- it is what makes going back to a build
+    instant -- but it was completely silent, so a few version changes quietly
+    became 10 GiB and the launcher read as downloading Minecraft over and
+    over (issue #214).
+    """
+
+    def setUp(self):
+        patcher = mock.patch.object(games.xodus, "version_catalogue",
+                                    side_effect=lambda _e, **k: list(_CATALOGUE))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _edition():
+        return {"id": "release", "product": "9NBLGGH2JHXJ",
+                "name": "Minecraft for Windows", "beta": False}
+
+    def _install(self, base, version):
+        def fake_install(_url, dest, progress=None):
+            _write_game(Path(dest))
+
+        said = []
+        with mock.patch.object(games, "GAMES", base), \
+                mock.patch.object(games, "info", side_effect=said.append), \
+                mock.patch.object(games, "load_settings", return_value={}), \
+                mock.patch.object(games.xodus, "install",
+                                  side_effect=fake_install):
+            games.install_game(self._edition(), version)
+        return said
+
+    def test_the_builds_left_behind_are_named_after_a_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_game(base / "release" / "1.26.42.1")
+
+            said = self._install(base, "1.26.44.3")
+
+        mention = [line for line in said if "still installed" in line]
+        self.assertEqual(len(mention), 1)
+        self.assertIn("Settings ▸ Versions", mention[0])
+
+    def test_the_first_build_is_not_talked_about(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            said = self._install(Path(tmp), "1.26.44.3")
+
+        self.assertFalse([line for line in said if "still installed" in line])
