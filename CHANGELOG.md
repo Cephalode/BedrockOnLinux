@@ -39,6 +39,28 @@
 
 ### Fixed
 
+- **Downloading Minecraft no longer fails on the downloader's own package
+  cache** ([#241](https://github.com/Wyze3306/BedrockOnLinux/issues/241),
+  [#242](https://github.com/Wyze3306/BedrockOnLinux/issues/242)). The
+  download read back shorter than what had been written to it, gave up, and
+  the attempt after it installed nothing at all without saying why — on a disk
+  with 75 GiB free in one report and 700 GiB in the other, so the room the
+  message ruled out was never the problem. The downloader streams the package
+  through a cache file beside the game and reads that cache back through a
+  second handle to work out the package layout, and it counted the bytes the
+  runtime had *accepted* rather than the bytes that had reached the file. A
+  write is accepted the moment it is queued on a background thread, so a read
+  sent to the same pool could overtake it, find the file short and call the
+  package corrupt. Retrying could not order those two operations — it only
+  bought another go at the same coin toss, and the go that lost it while
+  listing the package files rather than while reading its header exited
+  reporting success with no game installed. The fix has been carried in this
+  repository since [#217](https://github.com/Wyze3306/BedrockOnLinux/issues/217)
+  and reached nobody: a patched downloader is published under a revision of
+  its own, and the launcher still asked for the unpatched one. It now asks for
+  the fixed build, and continuous integration refuses a patch that is not
+  named by the pin, so this cannot happen again quietly.
+
 - **The launcher no longer forgets which build you play, and downloads
   another one** ([#214](https://github.com/Wyze3306/BedrockOnLinux/issues/214)).
   The version picker shows a shortened label — `26.44` for build 1.26.44.3 —
