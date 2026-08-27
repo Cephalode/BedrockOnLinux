@@ -21,7 +21,7 @@ from .auth import (
     xbl_preauth_diagnostic,
     xbl_preauth_error_message,
 )
-from . import discord, xodus
+from . import discord, presence as xbl_presence, xodus
 from .config import CONTENT, DATA, HOME, LOGS, WINEGDK_BUILD_REV
 from .deps import ensure_login_deps
 from .dgc import dgc_warning_message, intel_dgpus_on_legacy_driver
@@ -790,6 +790,7 @@ def _launch_once(lock_fds=(), on_started=None):
     gpu_marker_token = None
     game_returned = False
     presence = discord.Session()
+    xbl = xbl_presence.Session()
     try:
         # A hard reboot leaves this marker so the next launch fails closed.
         gpu_marker_token = arm_gpu_launch()
@@ -837,6 +838,13 @@ def _launch_once(lock_fds=(), on_started=None):
         # the launcher is found by word of mouth, and this is it saying its
         # own name. Settings turns it off, and it never affects the game.
         presence = discord.start_session(s, started_at=started)
+        # And say it on Xbox Live, which is the half that other players act
+        # on: nothing in the game publishes presence under Wine, so without
+        # this the account reads "Offline" to its own dressing room and to
+        # every friend, and no one can join or invite it (#238, #243).
+        if online:
+            xbl = xbl_presence.start_session(s)
+            xbl_presence.warn_if_unavailable(xbl, s)
         announced = False
         # There is no window yet to give Steam's identity to, so this watches
         # for one on the same tick that waits on the game process rather than
@@ -859,6 +867,7 @@ def _launch_once(lock_fds=(), on_started=None):
         # First: the teardown below can take a while, and nobody should be
         # left showing as in-game through it.
         presence.stop()
+        xbl.stop()
         prefix_idle = None
         if game_returned and gpu_marker_token:
             try:

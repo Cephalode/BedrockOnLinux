@@ -39,6 +39,38 @@
 
 ### Fixed
 
+- **Your Xbox friends can see you again while you play**
+  ([#238](https://github.com/Wyze3306/BedrockOnLinux/issues/238),
+  [#243](https://github.com/Wyze3306/BedrockOnLinux/issues/243),
+  [#244](https://github.com/Wyze3306/BedrockOnLinux/issues/244)). The
+  dressing room said "Offline" under your own gamertag, the social tab said
+  it too, and no friend could invite you or be joined. It was not the game
+  misreading anything: asked straight out, Xbox Live agreed. Minutes after a
+  full launch the presence service still answered `state: Offline`, last seen
+  twelve days earlier — nothing had ever told it Minecraft was running. That
+  write belongs to the Xbox services layer the engine cannot bring up under
+  Wine, so it never happened, and every reader downstream of it was correctly
+  reporting an account that really was offline. The launcher now sends the
+  heartbeat itself, for exactly as long as the game runs, using the Xbox Live
+  token it already holds for Friends and Social; Xbox names the title, so it
+  can say only that Minecraft is being played, and by whom. Stopping the game
+  takes it down again, and Xbox drops it by itself a few minutes later if the
+  launcher is killed, so nothing can be left permanently in-game. It is on by
+  default and Settings ▸ Accounts turns it off.
+
+- **`bedrock-on-linux doctor --network` now answers "why can't I join my
+  friend's world?"** (#243, #244). The reports were unanswerable: the account
+  being invisible, the friends list not loading, and the friend simply not
+  being in a joinable world all look identical from the outside, and every
+  host in the report resolved and handshook perfectly through all three. The
+  report now asks Xbox Live directly and prints what it says — how this
+  account looks to other people, whether its friends list reads at all, and
+  how many of those friends are in a multiplayer session at this moment. None
+  of the three fail the report: an account nobody can see is a real problem
+  but not a broken host, and an evening with nobody in a world is not a fault
+  at all. `doctor` also gained an offline `xbox presence` line saying whether
+  the next launch will publish anything.
+
 - **Downloading Minecraft no longer fails on the downloader's own package
   cache** ([#241](https://github.com/Wyze3306/BedrockOnLinux/issues/241),
   [#242](https://github.com/Wyze3306/BedrockOnLinux/issues/242)). The

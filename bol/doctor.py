@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import deps, discord, fixups, gamepad, webview
+from . import deps, discord, fixups, gamepad, presence, webview
 from .config import DATA, PRETTY, VERSION
 from .gpu_safety import (
     GpuSafetyAcknowledgementStatus,
@@ -217,6 +217,14 @@ def doctor(acknowledge_gpu_crash=False):
     # switched off, Discord not running, or a build with no application id --
     # and only this line tells them apart.
     print(f"  {'discord':12} : {discord.presence_summary(load_settings())}")
+    # And the half of "my friends do not see me" that is not Discord at all:
+    # under Wine nothing in the game publishes Xbox Live presence, so the
+    # launcher does it, and this says whether it will (#238, #243).
+    print(f"  {'xbox friends':12} : "
+          f"{presence.presence_summary(load_settings())}")
+    presence_problem = presence.presence_problem(load_settings())
+    if presence_problem:
+        warn(presence_problem)
     if miss:
         warn("To install: " + hint.format(" ".join(sorted(set(miss)))))
         return False
