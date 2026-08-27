@@ -82,7 +82,12 @@ Publishing one takes two passes, like every other pinned artifact — run
 `.github/workflows/build-xodus.yml`, read the SHA-256 it reports, pin
 `XODUS_REV` and `XODUS_ARCHIVE_SHA256` in `bol/config.py`, then run it again
 with `publish` on. Until that pin lands, the launcher keeps downloading the
-unpatched asset it names today.
+unpatched asset it names today — which is exactly what happened to the four
+patches above: they sat on main for a week while every download still raced
+its own package cache (issues #241 and #242), because nothing tied the pin
+back to the directory. `ci.yml` now checks that `XODUS_REV` names the patch
+set on the branch, so a patch added here fails the build until it is built and
+pinned.
 
 ## The WebKitGTK runtime beside it
 

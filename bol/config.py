@@ -141,7 +141,13 @@ DISCORD_SMALL_IMAGE = ""
 # redistributed a DRM-stripped copy of the game. See third_party/xodus/README.md.
 XODUS_REPO = "xodus-gaming/xodus"
 XODUS_SOURCE_COMMIT = "4615749c6e02cc3b9acce2abbe9916fe8c376f9a"
-XODUS_REV = "4615749c6e02"
+# A patched binary is not the upstream commit's binary, so the rev names the
+# patches too: <commit12>-p<n>, for the n patch files in
+# third_party/xodus/patches. scripts/build-xodus-cli.sh derives it the same
+# way, so adding a patch there and forgetting this makes the build produce an
+# archive the workflow's assert cannot find -- which is the intended failure,
+# not a silent replacement of a published one.
+XODUS_REV = "4615749c6e02-p4"
 # Integrity pin for the CI-built xodus-cli archive, produced by the reviewed
 # build-xodus.yml run of this branch. The workflow refuses any archive that
 # does not reproduce these bytes.
