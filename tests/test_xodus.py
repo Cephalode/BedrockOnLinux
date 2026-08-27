@@ -362,6 +362,16 @@ class FailureLineTests(unittest.TestCase):
 
 
 class InstallErrorTests(unittest.TestCase):
+    def setUp(self):
+        # install() records what the downloader printed; nothing here is
+        # allowed near the launcher's real data directory.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patch = mock.patch.object(xodus, "DOWNLOAD_LOG",
+                                  Path(tmp.name) / "store-download.log")
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def _patched(self, code, tail):
         return (
             mock.patch.object(xodus, "ensure_cli",
@@ -477,11 +487,21 @@ class InstallCacheTests(unittest.TestCase):
     installs nothing at all.
     """
 
+    def setUp(self):
+        # install() records what the downloader printed; nothing here is
+        # allowed near the launcher's real data directory.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patch = mock.patch.object(xodus, "DOWNLOAD_LOG",
+                                  Path(tmp.name) / "store-download.log")
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def _install(self, dest, runs, product="9NBLGGH2JHXJ", size=0,
                  free=40 << 30):
         calls = []
 
-        def fake(cmd, progress=None):
+        def fake(cmd, progress=None, record=None):
             calls.append(cmd[2])
             return runs[len(calls) - 1](dest)
 
@@ -612,12 +632,22 @@ class InstallRoomTests(unittest.TestCase):
     its verdict and exits 0 all the same.
     """
 
+    def setUp(self):
+        # install() records what the downloader printed; nothing here is
+        # allowed near the launcher's real data directory.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patch = mock.patch.object(xodus, "DOWNLOAD_LOG",
+                                  Path(tmp.name) / "store-download.log")
+        patch.start()
+        self.addCleanup(patch.stop)
+
     GIB = 1 << 30
 
     def _install(self, dest, runs, sources="9NBLGGH2JHXJ", size=0, free=0):
         calls = []
 
-        def fake(cmd, progress=None):
+        def fake(cmd, progress=None, record=None):
             calls.append(cmd[2])
             return runs[len(calls) - 1](dest)
 
@@ -890,6 +920,80 @@ class ProgressTests(unittest.TestCase):
             xodus._consume(f"line {i}", tail, None)
         self.assertEqual(len(tail), 40)
         self.assertEqual(tail[-1], "line 199")
+
+    def test_a_message_that_lands_on_a_bar_is_still_read(self):
+        # #242: xodus-cli panics from one thread while indicatif redraws its
+        # bars from another, both onto stderr and neither ending the line, so
+        # the sentence saying what went wrong arrives inside a frame. Dropping
+        # the frame dropped the sentence with it, and the launcher had nothing
+        # left to report but "printed no reason for it".
+        tail = []
+        xodus._consume(
+            "Downloading ntfs...              183.79 MiB/    2.32 GiB   "
+            "8.31 MiB/s [###>------------------------------------]   8%"
+            "thread 'main' (8530) panicked at "
+            "crates/xodus-cli/src/commands/streaming.rs:280:14:",
+            tail, None)
+        self.assertEqual(
+            tail,
+            ["thread 'main' (8530) panicked at "
+             "crates/xodus-cli/src/commands/streaming.rs:280:14:"])
+
+    def test_a_redraw_of_every_bar_at_once_is_still_only_bars(self):
+        # One redraw carries a frame per bar, cursor moves between them and no
+        # newline anywhere -- and a file name can hold digits ("hurt_land1"),
+        # which is what stops the total bar's own pattern from matching them.
+        tail = []
+        xodus._consume(
+            "...mob\\nautilus\\hurt_land1.fsb          0 B/    6.00 KiB"
+            "        0 B/s [----------------------------------------]   0%"
+            "   ...s\\blocks\\dark_oak_shelf.png          0 B/       603 B"
+            "        0 B/s [----------------------------------------]   0%",
+            tail, None)
+        self.assertEqual(tail, [])
+
+    def test_the_padding_around_a_redraw_is_not_output(self):
+        # A pty starts out reporting no window size at all, and indicatif pads
+        # every frame to the width it is given: one redraw of three bars
+        # measured here was 16 MiB of NUL around 438 characters of bars.
+        tail = []
+        xodus._consume(
+            "\x00" * 4096
+            + "Downloading    12.00 MiB/    862.00 MiB     12.00 MiB "
+              "[#] 1%" + "\x00" * 4096,
+            tail, None)
+        self.assertEqual(tail, [])
+
+    def test_what_the_download_printed_is_written_out(self):
+        # The last forty lines in memory are enough to classify a failure and
+        # not enough to understand one; #242 was reported three times over
+        # with nothing left anywhere to read.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "store-download.log"
+            with mock.patch.object(xodus, "DOWNLOAD_LOG", log):
+                handle = xodus._open_download_log(Path(tmp) / "1.26.44.3")
+                self.assertIsNotNone(handle)
+                record = xodus._record_to(handle)
+                tail = []
+                xodus._consume("Downloading    1.00 MiB/    2.00 MiB [#] 50%",
+                               tail, None, record)
+                xodus._consume("not entitled to this content: 7792d9ce",
+                               tail, None, record)
+                handle.close()
+            written = log.read_text(encoding="utf-8")
+        self.assertIn("store download into", written)
+        self.assertIn("not entitled to this content: 7792d9ce", written)
+        # Bars are what the progress callback is for.
+        self.assertNotIn("[#]", written)
+
+    def test_a_download_log_that_cannot_be_opened_is_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "missing" / "store-download.log"
+            with mock.patch.object(xodus, "DOWNLOAD_LOG", log), \
+                    mock.patch.object(Path, "mkdir",
+                                      side_effect=OSError("read-only")):
+                self.assertIsNone(xodus._open_download_log(Path(tmp)))
+        self.assertIsNone(xodus._record_to(None))
 
 
 class EncryptedExeTests(unittest.TestCase):

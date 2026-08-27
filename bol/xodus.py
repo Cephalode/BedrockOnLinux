@@ -12,6 +12,7 @@ linked. See third_party/xodus/README.md for the pin and the licensing note.
 """
 # SPDX-License-Identifier: MIT
 
+import fcntl
 import hashlib
 import json
 import os
@@ -20,10 +21,12 @@ import re
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+import termios
 import threading
 import time
 import urllib.parse
@@ -152,7 +155,28 @@ _UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30,
 # a percentage that has nothing to do with the real download -- until the
 # next line carrying the real "Downloading" bar corrects it (#223).
 _TOTAL_BAR = re.compile(r"^(initializing|downloading)\s*$", re.I)
+# One whole redrawn frame: label, bytes, rate, the bar and its percentage.
+# indicatif redraws every bar it has many times a second, all of them on one
+# line separated by cursor moves rather than newlines, while xodus-cli prints
+# onto the same stream from another thread -- so a message can arrive with a
+# redraw around it, and dropping the whole line drops the only sentence
+# saying what went wrong ("installed no game and printed no reason for it",
+# #242). Taking the frames out leaves exactly what was not a bar.
+#
+# The label is bounded rather than kept clear of digits the way _PROGRESS's
+# is: these are file names, "hurt_land1.fsb" among them, and indicatif
+# truncates each one to the 30 columns the template gives it.
+_BAR_FRAME = re.compile(
+    r"\S.{0,29}?\s{2,}[\d.]+\s*[KMGT]?i?B\s*/\s*[\d.]+\s*[KMGT]?i?B"
+    r"[^\[\]]*\[[^\]]*\]\s*\d+\s*%")
+# What is left of a frame the read happened to cut in half. Sizes written the
+# way a bar writes them, which no sentence xodus-cli prints ever is: its own
+# out-of-room line counts in plain bytes.
+_BAR_REMNANT = re.compile(r"[\d.]+\s*[KMGT]?i?B\s*/\s*[\d.]+\s*[KMGT]?i?B")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# No line xodus-cli means to print is anywhere near this long, and one that is
+# has been run together with a redraw rather than written.
+_LINE_CAP = 1000
 # ld.so, not Xodus: "…/xodus-cli: error while loading shared libraries:
 # libwebkit2gtk-4.1.so.0: cannot open shared object file: No such file or
 # directory" is all a host without WebKitGTK ever gets to print.
@@ -821,6 +845,52 @@ _DEVICE_LIMIT_MESSAGE = (
     "then try again.")
 
 
+DOWNLOAD_LOG = LOGS / "store-download.log"
+
+
+def _open_download_log(dest):
+    """Start a fresh record of what the downloader prints, or None.
+
+    _run_streaming keeps the last forty lines in memory for the error
+    message, which is enough to classify a failure and not enough to
+    understand one: issue #242 arrived as "installed no game and printed no
+    reason for it" three times over, with nothing left anywhere to say what
+    the downloader had actually been doing. This is that missing file, in the
+    same place and shape as the sign-in's (LOGIN_LOG). It holds one install --
+    every attempt of it -- and is rewritten by the next.
+    """
+    try:
+        DOWNLOAD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(DOWNLOAD_LOG, "w", encoding="utf-8")
+        handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} store download "
+                     f"into {dest}\n")
+        handle.flush()
+    except OSError:
+        return None
+    return handle
+
+
+def _record_to(handle):
+    """A line sink for _run_streaming, or None when there is nowhere to put it."""
+    if handle is None:
+        return None
+
+    def record(line):
+        _note(handle, line)
+    return record
+
+
+def _note(handle, text):
+    """Put one line in the download log, if there is one to put it in."""
+    if handle is None:
+        return
+    try:
+        handle.write(text + "\n")
+        handle.flush()
+    except OSError:
+        pass
+
+
 def _human(size):
     """A size a sentence can carry."""
     value = float(size)
@@ -1024,17 +1094,38 @@ def install(product, dest: Path, progress=None):
         if _short_of_room(needed, free):
             raise XodusError(_no_room_message(dest, needed, free))
 
-    failure = ""
     # Every mirror once, plus a few goes at whichever one loses the cache
     # race, which is the same package either way.
     plan = list(sources)
     races_left = _CACHE_RACE_RETRIES
+    log = _open_download_log(dest)
+    try:
+        return _stream_until_installed(
+            binary, dest, plan, races_left, needed, progress, log)
+    finally:
+        if log:
+            try:
+                log.close()
+            except OSError:
+                pass
+
+
+def _stream_until_installed(binary, dest, plan, races_left, needed, progress,
+                            log):
+    """Run the mirrors in ``plan`` until one of them installs the build."""
+    failure = ""
+    attempt = 0
+    record = _record_to(log)
     while plan:
         source = plan.pop(0)
+        attempt += 1
         cmd = [str(binary), "streaming", source, str(dest)]
-        code, tail = _run_streaming(cmd, progress)
+        _note(log, f"\n== attempt {attempt}: {source}")
+        code, tail = _run_streaming(cmd, progress, record)
+        _note(log, f"-- exit {code}")
         root = game_root(dest)
         if code == 0 and root is not None and has_package_cache(dest):
+            _note(log, "-- installed")
             return dest
         _drop_cache(dest)
         text = "\n".join(tail)
@@ -1055,7 +1146,8 @@ def install(product, dest: Path, progress=None):
         if code == 0 and root is None:
             failure = ("The Minecraft download installed no game"
                        + (f": {line}" if line else
-                          " and printed no reason for it."))
+                          f" and printed no reason for it — what it did print "
+                          f"is in {DOWNLOAD_LOG}."))
         elif code == 0:
             # Every path that ends the download early -- no licence, no disk
             # space -- returns before xodus-cli renames its package into
@@ -1112,15 +1204,29 @@ def _drawable_term(env):
     return env
 
 
-def _run_streaming(cmd, progress=None):
+def _run_streaming(cmd, progress=None, record=None):
     """Run xodus-cli and translate its progress bars into progress(done, total).
 
     indicatif hides its bars entirely when stderr is not a terminal, so the
     child gets a pty; without one there would be no progress to report at all.
+
+    ``record`` is called with every line that is not a progress frame, so a
+    download that fails leaves more behind than the last forty lines held in
+    memory.
     """
     tail = []
     env = _drawable_term(_env(cmd[0]))
     master, slave = pty.openpty()
+    # A pty starts out reporting no size at all, and indicatif pads every
+    # frame it draws to the width it is told: one redraw of three bars
+    # measured here arrived as 16 MiB of NUL padding around 438 characters of
+    # bars. An ordinary window keeps a download's output the size of its
+    # output.
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", 24, 120, 0, 0))
+    except OSError:
+        pass
     try:
         proc = subprocess.Popen(cmd, stdout=slave, stderr=slave, stdin=slave,
                                 env=env, close_fds=True)
@@ -1131,9 +1237,14 @@ def _run_streaming(cmd, progress=None):
             from exc
     os.close(slave)
     buffer = ""
+    # A process that has exited is not a stream that has ended: what it wrote
+    # on its way out is still in the pty, and a panic message is written
+    # exactly there. Once it is gone, keep draining until a read comes back
+    # with nothing rather than leaving on the first idle poll.
+    exited = False
     try:
         while True:
-            ready, _, _ = select.select([master], [], [], 0.5)
+            ready, _, _ = select.select([master], [], [], 0 if exited else 0.5)
             if ready:
                 try:
                     chunk = os.read(master, 65536)
@@ -1147,33 +1258,49 @@ def _run_streaming(cmd, progress=None):
                 parts = re.split(r"[\r\n]", buffer)
                 buffer = parts.pop()
                 for line in parts:
-                    _consume(_ANSI.sub("", line), tail, progress)
-            elif proc.poll() is not None:
+                    _consume(_ANSI.sub("", line), tail, progress, record)
+                continue
+            if exited:
                 break
+            exited = proc.poll() is not None
     finally:
         os.close(master)
         proc.wait()
     if buffer:
-        _consume(_ANSI.sub("", buffer), tail, progress)
+        _consume(_ANSI.sub("", buffer), tail, progress, record)
     return proc.returncode, tail
 
 
-def _consume(line, tail, progress):
-    line = line.rstrip()
+def _consume(line, tail, progress, record=None):
+    # NULs are padding rather than output: one redraw measured here carried
+    # 16 MiB of them around 438 characters of bars, and they are what a
+    # message arriving in the middle of a frame gets buried in.
+    line = line.replace("\x00", "").rstrip()
     if not line:
         return
     match = _PROGRESS.match(line)
-    if match:
-        # Only the total bar drives the launcher's progress; the per-file bars
-        # would make it jump backwards on every new file.
-        if progress and _TOTAL_BAR.match(match.group("msg").strip()):
-            done = _bytes(match.group("done"), match.group("du"))
-            total = _bytes(match.group("total"), match.group("tu"))
-            if total:
-                progress(min(done, total), total)
+    # Only the total bar drives the launcher's progress; the per-file bars
+    # would make it jump backwards on every new file.
+    if match and progress and _TOTAL_BAR.match(match.group("msg").strip()):
+        done = _bytes(match.group("done"), match.group("du"))
+        total = _bytes(match.group("total"), match.group("tu"))
+        if total:
+            progress(min(done, total), total)
+    line = _after_bars(line)
+    if not line:
         return
+    if record:
+        record(line)
     tail.append(line)
     del tail[:-40]
+
+
+def _after_bars(line):
+    """What a redraw says once every bar frame in it has been taken out."""
+    line = _BAR_FRAME.sub(" ", line).strip()
+    if not line or _BAR_REMNANT.search(line):
+        return ""
+    return line[:_LINE_CAP]
 
 
 # ---------------------------------------------------------------- launching

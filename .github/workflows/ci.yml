@@ -110,6 +110,37 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Verify XODUS_REV names the patches the binary is built with
+        run: |
+          set -euo pipefail
+          cfg=bol/config.py
+          # third_party/xodus/patches/ is what BedrockOnLinux fixes in the
+          # downloader itself, and scripts/build-xodus-cli.sh applies all of
+          # them before compiling: a build with n patches is published as
+          # <commit12>-p<n>, because a revision has to name exactly one set of
+          # bytes. Nothing tied that back to the pin, so four patches -- the
+          # package-cache race of #217 among them -- were written, tested and
+          # merged while every user went on downloading the unpatched binary
+          # and hitting the bug they fix (#241, #242). The pin is the only
+          # thing that ships them.
+          commit="$(grep -m1 '^XODUS_SOURCE_COMMIT = ' "$cfg" | cut -d'"' -f2)"
+          rev="$(grep -m1 '^XODUS_REV = ' "$cfg" | cut -d'"' -f2)"
+          level="$(find third_party/xodus/patches -maxdepth 1 -name '*.patch' | wc -l)"
+          want="${commit:0:12}"
+          [ "$level" -eq 0 ] || want="${want}-p${level}"
+          echo "patches: ${level}"
+          echo "pinned : ${rev}"
+          echo "expects: ${want}"
+          if [ "$rev" != "$want" ]; then
+            echo "::error::XODUS_REV is '${rev}' but third_party/xodus/patches holds" \
+                 "${level} patch(es), so scripts/build-xodus-cli.sh builds and" \
+                 "publishes '${want}'. Adding or removing a patch means a new" \
+                 "binary: run build-xodus.yml, pin the SHA-256 it prints as" \
+                 "XODUS_ARCHIVE_SHA256, and set XODUS_REV to '${want}'." >&2
+            exit 1
+          fi
+          echo "   ok — the pinned revision names the patch set on this branch."
+
       - name: Verify committed release pins resolve to a matching published asset
         run: |
           set -euo pipefail
