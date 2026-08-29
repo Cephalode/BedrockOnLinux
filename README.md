@@ -18,6 +18,7 @@ Friends, servers and Realms.**
 ![Arch](https://img.shields.io/badge/Arch-1793D1?style=flat-square&logo=archlinux&logoColor=white)
 ![openSUSE](https://img.shields.io/badge/openSUSE-73BA25?style=flat-square&logo=opensuse&logoColor=white)
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-1A9FFF?style=flat-square&logo=steamdeck&logoColor=white)
+![NixOS](https://img.shields.io/badge/NixOS-5277C3?style=flat-square&logo=nixos&logoColor=white)
 
 ![BedrockOnLinux launcher](screenshot.png)
 
@@ -49,9 +50,45 @@ Download the file you want from the
 | `.deb` | Debian, Ubuntu, Mint, LMDE | `sudo apt install ./bedrock-on-linux_*_amd64.deb` |
 | `.rpm` | Fedora, Nobara | `sudo dnf install ./bedrock-on-linux-*.x86_64.rpm` |
 | Flatpak | Atomic systems such as Bazzite | `flatpak install --user ./BedrockOnLinux-*-x86_64.flatpak` |
+| Nix | NixOS, or any Linux with Nix installed | `nix run github:Wyze3306/BedrockOnLinux` |
 
-If you are not sure, take the AppImage: it works nearly everywhere and needs
-nothing installed.
+### Nix / NixOS
+
+Try it without installing anything:
+
+```bash
+nix run github:Wyze3306/BedrockOnLinux
+```
+
+Or add it as a flake input to install it declaratively, for example into
+`environment.systemPackages`:
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    bedrock-on-linux = {
+      url = "github:Wyze3306/BedrockOnLinux";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, bedrock-on-linux, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        {
+          environment.systemPackages = [
+            bedrock-on-linux.packages.x86_64-linux.default
+          ];
+        }
+        # ...your other modules
+      ];
+    };
+  };
+}
+```
 
 ## Play
 
